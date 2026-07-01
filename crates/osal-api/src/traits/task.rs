@@ -1,6 +1,6 @@
 //! Task trait — independent execution context.
 //!
-//! See [the backend contract](../../../docs/backend-contract.md#7-task-contract)
+//! See [the backend contract](../../../docs/behavior-contract.md#8-task-contract)
 //! for the full behavioral specification.
 
 use crate::error::Result;

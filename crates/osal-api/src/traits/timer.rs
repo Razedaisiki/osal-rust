@@ -1,6 +1,6 @@
 //! Timer trait — delayed and periodic callbacks.
 //!
-//! See [the backend contract](../../../docs/backend-contract.md#11-timer-contract)
+//! See [the backend contract](../../../docs/behavior-contract.md#12-timer-contract)
 //! for the full behavioral specification.
 
 use core::time::Duration;

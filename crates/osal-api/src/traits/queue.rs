@@ -1,6 +1,6 @@
 //! Queue trait — bounded FIFO message queue.
 //!
-//! See [the backend contract](../../../docs/backend-contract.md#10-queue-contract)
+//! See [the backend contract](../../../docs/behavior-contract.md#11-queue-contract)
 //! for the full behavioral specification.
 
 use crate::error::Result;

@@ -1,6 +1,6 @@
 //! Clock trait — monotonic time measurement and delay.
 //!
-//! See [the backend contract](../../../docs/backend-contract.md#5-time-and-timeout-semantics)
+//! See [the backend contract](../../../docs/behavior-contract.md#6-time-and-timeout-semantics)
 //! for the full behavioral specification.
 
 use core::time::Duration;

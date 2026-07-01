@@ -783,3 +783,10 @@ Backends must pass all non-skipped tests.
 | heap_free() returns value | Non-zero on POSIX, usize::MAX OK | R | R |
 | task_count() returns tasks | Matches spawned count | R | R |
 | Critical section mutual exclusion | Nested enter/exit are safe | R | R |
+
+---
+
+---
+
+> For object ownership, lifetime, clone semantics, and destruction
+> safety rules, see [Object Lifetime and Ownership](object-lifetime.md).
