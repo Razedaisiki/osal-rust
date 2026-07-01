@@ -9,7 +9,7 @@
 //! - **Fake clock**: Deterministic time for reproducible tests
 //! - **Fault injection**: Test error handling paths
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 extern crate alloc;
 

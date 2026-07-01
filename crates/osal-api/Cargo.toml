@@ -13,7 +13,6 @@ crate-type = ["rlib"]
 [features]
 default = []
 std = []
-alloc = []
 
 [dependencies]
 # No dependencies — osal-api is the foundation of the entire workspace

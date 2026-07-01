@@ -8,6 +8,8 @@
 //! - Memory configuration for host processes
 //! - Boot/startup hooks for development and CI
 
+#![no_std]
+
 // Modules to be populated in later phases:
 // pub mod console;
 // pub mod clock;

@@ -11,12 +11,11 @@ description = "Operating System Abstraction Layer — facade crate"
 crate-type = ["rlib"]
 
 [features]
-default = ["posix"]
-posix = ["osal-backend-posix"]
-mock = ["osal-backend-mock"]
+default = ["backend-posix"]
+backend-posix = ["dep:osal-backend-posix"]
+backend-mock = ["dep:osal-backend-mock"]
 
-std = ["osal-api/std", "osal-shared/std"]
-alloc = ["osal-api/alloc", "osal-shared/alloc"]
+std = ["osal-api/std"]
 
 [dependencies]
 osal-api = { path = "../osal-api" }

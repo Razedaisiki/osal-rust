@@ -27,27 +27,25 @@
 //! osal = "0.1"
 //!
 //! # Mock (testing, simulation)
-//! osal = { version = "0.1", default-features = false, features = ["mock"] }
+//! osal = { version = "0.1", default-features = false, features = ["backend-mock"] }
 //! ```
 //!
 //! Only one backend may be active at a time. The compilation fails
 //! if zero or multiple backends are selected.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 extern crate alloc;
 
-// Backend mutual exclusion guard
-#[cfg(not(any(feature = "posix", feature = "mock")))]
+#[cfg(not(any(feature = "backend-posix", feature = "backend-mock")))]
 compile_error!(
     "At least one OSAL backend must be enabled. \
-     Enable the 'posix' or 'mock' feature."
+     Enable the 'backend-posix' or 'backend-mock' feature."
 );
 
-#[cfg(all(feature = "posix", feature = "mock"))]
+#[cfg(all(feature = "backend-posix", feature = "backend-mock"))]
 compile_error!(
-    "Only one OSAL backend may be enabled at a time. \
-     Choose either 'posix' or 'mock'."
+    "Only one OSAL backend may be enabled at a time."
 );
 
 /// Re-export the public API types.

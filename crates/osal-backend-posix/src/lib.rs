@@ -12,7 +12,7 @@
 //! platform. It runs on Linux, macOS, and other POSIX-compatible
 //! systems.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 extern crate alloc;
 

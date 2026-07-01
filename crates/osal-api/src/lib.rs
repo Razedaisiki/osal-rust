@@ -13,7 +13,7 @@
 //! End users should use the `osal` facade crate instead of depending on
 //! `osal-api` directly.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 extern crate alloc;
 

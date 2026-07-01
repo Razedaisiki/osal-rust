@@ -11,7 +11,7 @@
 //! Used with `osal-testkit` to run contract tests without a real
 //! operating system backend.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 extern crate alloc;
 

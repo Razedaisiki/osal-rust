@@ -17,7 +17,28 @@ internal mechanisms as long as the observable behavior matches.
 
 ---
 
-## 2. Non-goals
+## 2. Runtime Model
+
+OSAL public APIs are designed for `no_std` environments.
+
+OSAL requires an allocator for its dynamic object model (boxed
+callbacks, dynamic queues, task arguments, runtime registries).
+Allocation support is a **project-level runtime assumption**, not an
+optional Cargo feature. Every crate that needs heap allocation
+declares `extern crate alloc` unconditionally.
+
+Rust `std` support, when available, enables optional host-oriented
+integrations only (e.g. `impl std::error::Error`). It does **not**
+determine backend availability. POSIX and FreeRTOS backends remain
+`no_std` while binding to platform-native facilities through FFI or
+platform crates (`libc`, RTOS C APIs).
+
+The `std` Cargo feature is reserved for future host-only capabilities.
+It is not required to build, test, or use any backend.
+
+---
+
+## 3. Non-goals
 
 The following are explicitly **not** covered by this contract:
 
@@ -35,7 +56,7 @@ but portable application code must not depend on them.
 
 ---
 
-## 3. Backend selection model
+## 4. Backend selection model
 
 An OSAL application links against exactly **one** backend at compile
 time. The backend is selected via a Cargo feature flag on the `osal`
@@ -56,7 +77,7 @@ backend crates directly.
 
 ---
 
-## 4. Common error semantics
+## 5. Common error semantics
 
 All fallible operations return `Result<T, osal_api::Error>`.
 
@@ -91,7 +112,7 @@ All fallible operations return `Result<T, osal_api::Error>`.
 
 ---
 
-## 5. Time and timeout semantics
+## 6. Time and timeout semantics
 
 ### Primary types
 
@@ -137,7 +158,7 @@ universal time representation across the OSAL API.
 
 ---
 
-## 6. Object lifecycle
+## 7. Object lifecycle
 
 All OSAL objects follow a common lifecycle:
 
@@ -171,7 +192,7 @@ Create ──→ (Start) ──→ Use ──→ Delete / Drop
 
 ---
 
-## 7. Task contract
+## 8. Task contract
 
 ### Type: `Task`
 
@@ -271,7 +292,7 @@ impl ExitCode {
 
 ---
 
-## 8. Mutex contract
+## 9. Mutex contract
 
 ### Type: `Mutex<T>`
 
@@ -337,7 +358,7 @@ impl<T> Drop for MutexGuard<'_, T> { /* releases one lock level */ }
 
 ---
 
-## 9. Semaphore contract
+## 10. Semaphore contract
 
 ### Type: `CountingSemaphore`
 
@@ -408,7 +429,7 @@ impl BinarySemaphore {
 
 ---
 
-## 10. Queue contract
+## 11. Queue contract
 
 ### Type: `Queue`
 
@@ -486,7 +507,7 @@ then M2, and task B receives twice, B receives M1 then M2.
 
 ---
 
-## 11. Timer contract
+## 12. Timer contract
 
 ### Type: `Timer`
 
@@ -559,7 +580,7 @@ impl Timer {
 
 ---
 
-## 12. Unsupported capability rules
+## 13. Unsupported capability rules
 
 Some backends cannot implement every operation. The following rules
 govern how unsupported capabilities must be handled:
@@ -588,7 +609,7 @@ govern how unsupported capabilities must be handled:
 
 ---
 
-## 13. Mock backend requirements
+## 14. Mock backend requirements
 
 The mock backend (`osal-backend-mock`) is a fully in-memory,
 deterministic implementation used for unit tests and contract
@@ -620,7 +641,7 @@ validated.
 
 ---
 
-## 14. POSIX backend requirements
+## 15. POSIX backend requirements
 
 The POSIX backend (`osal-backend-posix`) implements all OSAL primitives
 using pthread and related POSIX APIs.
@@ -659,7 +680,7 @@ using pthread and related POSIX APIs.
 
 ---
 
-## 15. Conformance test matrix
+## 16. Conformance test matrix
 
 Each behavioral requirement maps to one or more contract tests.
 Backends must pass all non-skipped tests.

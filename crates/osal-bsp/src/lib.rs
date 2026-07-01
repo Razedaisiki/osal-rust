@@ -13,7 +13,7 @@
 //! BSP logic is intentionally separated from OS backend logic so
 //! that platform details do not leak into the OSAL API.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 // Modules to be populated in later phases:
 // pub mod boot;

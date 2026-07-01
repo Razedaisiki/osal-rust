@@ -13,7 +13,6 @@ crate-type = ["rlib"]
 [features]
 default = []
 std = ["osal-api/std", "osal-shared/std"]
-alloc = ["osal-api/alloc", "osal-shared/alloc"]
 
 [dependencies]
 osal-api = { path = "../osal-api" }

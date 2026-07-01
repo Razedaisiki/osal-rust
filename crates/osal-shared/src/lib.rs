@@ -10,7 +10,7 @@
 //! This crate prevents each backend from inventing its own
 //! object lifecycle and validation logic.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+#![no_std]
 
 // Modules to be populated in later phases:
 // pub mod id_alloc;
