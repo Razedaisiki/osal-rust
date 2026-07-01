@@ -2,23 +2,17 @@
 //!
 //! Each sub-module defines the contract that backend implementations
 //! must fulfill. The traits are designed to be implementable across
-//! diverse platforms: POSIX hosts, real-time kernels, and mock
+//! diverse platforms — POSIX hosts, real-time kernels, and mock
 //! environments.
 //!
-//! Trait modules will be populated in Phase 2.
+//! Backend crates implement these traits for their target platform.
+//! Users write application code against the traits via the `osal`
+//! facade crate.
 
-// --- Synchronization primitives (Phase 2) ---
-// pub mod mutex;
-// pub mod semaphore;
-// pub mod event_flags;
-
-// --- Communication (Phase 2) ---
-// pub mod queue;
-
-// --- Execution (Phase 2) ---
-// pub mod task;
-// pub mod timer;
-
-// --- System (Phase 2) ---
-// pub mod clock;
-// pub mod system;
+pub mod clock;
+pub mod mutex;
+pub mod queue;
+pub mod semaphore;
+pub mod system;
+pub mod task;
+pub mod timer;
