@@ -1,7 +1,13 @@
-//! Mock queue implementation.
+//! Mock queue implementation with optional fault injection.
 //!
 //! Wraps [`ByteQueue`] in `Rc<RefCell<>>` for shared ownership,
 //! implementing the [`Queue`] trait for contract testing.
+//!
+//! # Fault injection
+//!
+//! When created via [`MockQueue::new_with_faults`], the queue consults
+//! a shared [`FaultState`] before each send. One-shot: each fault
+//! triggers once, then clears.
 //!
 //! # Timeout semantics
 //!
@@ -21,20 +27,24 @@ use osal_api::traits::queue::Queue;
 use osal_portable::byte_queue::ByteQueue;
 use osal_shared::validation;
 
+use crate::fault::FaultState;
+
 // ---------------------------------------------------------------------------
 // Inner state
 // ---------------------------------------------------------------------------
 
 struct MockQueueInner {
     buffer: ByteQueue,
+    faults: Option<Rc<RefCell<FaultState>>>,
 }
 
 impl MockQueueInner {
-    fn new(capacity: usize, msg_size: usize) -> Result<Self> {
+    fn new(capacity: usize, msg_size: usize, faults: Option<Rc<RefCell<FaultState>>>) -> Result<Self> {
         validation::validate_queue_capacity(capacity)?;
         validation::validate_queue_message_size(msg_size)?;
         Ok(Self {
             buffer: ByteQueue::new(capacity, msg_size)?,
+            faults,
         })
     }
 }
@@ -60,11 +70,36 @@ impl Clone for MockQueue {
 }
 
 impl MockQueue {
-    /// Create a new mock queue.
+    /// Create a new mock queue without fault injection.
     pub fn new(capacity: usize, msg_size: usize) -> Result<Self> {
         Ok(Self {
-            inner: Rc::new(RefCell::new(MockQueueInner::new(capacity, msg_size)?)),
+            inner: Rc::new(RefCell::new(MockQueueInner::new(capacity, msg_size, None)?)),
         })
+    }
+
+    /// Create a new mock queue with fault injection support.
+    pub fn new_with_faults(
+        capacity: usize,
+        msg_size: usize,
+        faults: Rc<RefCell<FaultState>>,
+    ) -> Result<Self> {
+        // Check for injected create fault (one-shot).
+        if let Some(fault) = faults.borrow_mut().next_queue_create.take() {
+            return Err(fault);
+        }
+        Ok(Self {
+            inner: Rc::new(RefCell::new(MockQueueInner::new(capacity, msg_size, Some(faults))?)),
+        })
+    }
+
+    /// Try to consume a one-shot send fault. Returns the configured
+    /// error if one is pending, otherwise `None`.
+    fn take_send_fault(&self) -> Option<Error> {
+        self.inner
+            .borrow()
+            .faults
+            .as_ref()
+            .and_then(|f| f.borrow_mut().next_queue_send.take())
     }
 }
 
@@ -78,6 +113,11 @@ impl Queue for MockQueue {
     }
 
     fn send(&self, data: &[u8], timeout: Timeout) -> Result<()> {
+        // Check for injected fault first.
+        if let Some(fault) = self.take_send_fault() {
+            return Err(fault);
+        }
+
         match timeout {
             Timeout::NoWait => self.inner.borrow_mut().buffer.try_send(data),
             Timeout::After(_) => match self.inner.borrow_mut().buffer.try_send(data) {
@@ -130,21 +170,5 @@ impl Queue for MockQueue {
 
     fn len(&self) -> usize {
         self.inner.borrow().buffer.len()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// QueueFactory (testkit)
-// ---------------------------------------------------------------------------
-
-/// Factory for creating mock queues.
-pub struct MockQueueFactory;
-
-#[cfg(feature = "testkit")]
-impl osal_testkit::factory::QueueFactory for MockQueueFactory {
-    type Queue = MockQueue;
-
-    fn create_queue(&self, capacity: usize, msg_size: usize) -> Result<Self::Queue> {
-        MockQueue::new(capacity, msg_size)
     }
 }
