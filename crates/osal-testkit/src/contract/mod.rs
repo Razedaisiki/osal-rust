@@ -18,6 +18,7 @@
 //! ```
 
 pub mod clock;
+pub mod lifetime;
 pub mod mutex;
 pub mod queue;
 pub mod semaphore;
