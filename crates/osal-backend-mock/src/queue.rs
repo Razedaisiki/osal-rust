@@ -28,6 +28,7 @@ use osal_portable::byte_queue::ByteQueue;
 use osal_shared::validation;
 
 use crate::fault::FaultState;
+use crate::wait::apply_timeout;
 
 // ---------------------------------------------------------------------------
 // Inner state
@@ -113,39 +114,22 @@ impl Queue for MockQueue {
     }
 
     fn send(&self, data: &[u8], timeout: Timeout) -> Result<()> {
-        // Check for injected fault first.
         if let Some(fault) = self.take_send_fault() {
             return Err(fault);
         }
-
-        match timeout {
-            Timeout::NoWait => self.inner.borrow_mut().buffer.try_send(data),
-            Timeout::After(_) => match self.inner.borrow_mut().buffer.try_send(data) {
-                Err(Error::QueueFull) => Err(Error::Timeout),
-                other => other,
-            },
-            Timeout::Forever => match self.inner.borrow_mut().buffer.try_send(data) {
-                Err(Error::QueueFull) => Err(Error::Unsupported),
-                other => other,
-            },
-        }
+        apply_timeout(
+            timeout,
+            self.inner.borrow_mut().buffer.try_send(data),
+            Error::QueueFull,
+        )
     }
 
     fn recv(&self, buffer: &mut [u8], timeout: Timeout) -> Result<()> {
-        match timeout {
-            Timeout::NoWait => {
-                let _n = self.inner.borrow_mut().buffer.try_recv(buffer)?;
-                Ok(())
-            }
-            Timeout::After(_) => match self.inner.borrow_mut().buffer.try_recv(buffer) {
-                Err(Error::QueueEmpty) => Err(Error::Timeout),
-                other => other.map(|_| ()),
-            },
-            Timeout::Forever => match self.inner.borrow_mut().buffer.try_recv(buffer) {
-                Err(Error::QueueEmpty) => Err(Error::Unsupported),
-                other => other.map(|_| ()),
-            },
-        }
+        apply_timeout(
+            timeout,
+            self.inner.borrow_mut().buffer.try_recv(buffer).map(|_| ()),
+            Error::QueueEmpty,
+        )
     }
 
     fn close(&self) {
