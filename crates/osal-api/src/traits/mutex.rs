@@ -1,6 +1,6 @@
 //! Mutex trait — recursive mutual exclusion lock.
 //!
-//! See [the backend contract](../../../docs/behavior-contract.md#9-mutex-contract)
+//! See [the behavior contract](../../../../docs/behavior-contract.md#9-mutex-contract)
 //! for the full behavioral specification.
 
 use core::ops::{Deref, DerefMut};

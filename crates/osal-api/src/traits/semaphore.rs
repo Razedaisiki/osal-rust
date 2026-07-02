@@ -1,6 +1,6 @@
 //! Semaphore traits — counting and binary semaphores.
 //!
-//! See [the backend contract](../../../docs/behavior-contract.md#10-semaphore-contract)
+//! See [the behavior contract](../../../../docs/behavior-contract.md#10-semaphore-contract)
 //! for the full behavioral specification.
 
 use crate::error::Result;

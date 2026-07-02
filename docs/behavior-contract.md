@@ -233,7 +233,7 @@ impl TaskBuilder {
 
 ```rust
 impl Task {
-    pub fn join(self, timeout: Timeout) -> Result<ExitCode>;
+    pub fn join(&self, timeout: Timeout) -> Result<ExitCode>;
     pub fn handle(&self) -> Handle;
     pub fn priority(&self) -> Priority;
 }
@@ -241,11 +241,11 @@ impl Task {
 
 - `join(timeout)`: blocks until the task exits.
   - Returns `Ok(ExitCode)` on successful join.
+  - Once the task has exited, the exit code is cached; subsequent
+    calls to `join` return it immediately.
   - Returns `Error::Timeout` if the task does not exit within the
-    timeout.
+    timeout. The caller retains the handle and may retry.
   - Returns `Error::NotInitialized` if the task was never spawned.
-  - After `join` returns `Ok`, the task handle is invalid and the
-    `Task` is consumed.
 - `handle()`: returns an opaque `Handle` uniquely identifying this
   task.
 - `priority()`: returns the task's current priority.
@@ -491,10 +491,20 @@ impl Queue {
     `Error::QueueClosed`.
 - `close()`:
   - Marks the queue as closed.
-  - Wakes all blocked senders and receivers (they return
-    `Error::QueueClosed`).
-  - Subsequent operations return `Error::QueueClosed`.
+  - Wakes all blocked senders (they return `Error::QueueClosed`).
+  - Wakes all blocked receivers **only if the queue is empty**;
+    receivers blocked on a non-empty queue continue to drain.
+  - Does **not** discard already enqueued messages.
   - Idempotent: calling `close()` multiple times is safe.
+
+**After-close rules:**
+
+| Operation | Behavior after close |
+|-----------|---------------------|
+| `send` / `isr_send` | Always returns `Error::QueueClosed` |
+| `recv` / `isr_recv` | Succeeds while queued messages remain |
+| `recv` / `isr_recv` | Returns `Error::QueueClosed` when closed **and** empty |
+| `len` / `is_empty` / `is_full` / `capacity` / `msg_size` | Continue to work |
 - `isr_send(data)`: non-blocking; equivalent to
   `send(data, Timeout::NoWait)`.
 - `isr_recv(buffer)`: non-blocking; equivalent to
@@ -754,9 +764,11 @@ Backends must pass all non-skipped tests.
 | Non-blocking recv on empty | `Error::QueueEmpty` | R | R |
 | Message size mismatch | `Error::InvalidMessageSize` on send/recv | R | R |
 | Close wakes blocked senders | Pending sends return `QueueClosed` | R | R |
-| Close wakes blocked receivers | Pending recvs return `QueueClosed` | R | R |
+| Close wakes receivers only if empty | Blocked receivers on empty queue return `QueueClosed` | R | R |
 | Close is idempotent | Calling close twice is safe | R | R |
-| Operations after close | All return `QueueClosed` | R | R |
+| Send fails after close | `send` returns `QueueClosed` | R | R |
+| Recv drains remaining after close | `recv` succeeds while messages remain | R | R |
+| Recv fails after close and empty | `recv` returns `QueueClosed` | R | R |
 
 ### Timer tests
 

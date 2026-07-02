@@ -99,13 +99,15 @@ A `Task` handle represents ownership of a backend task object.
 A `Queue` exists until explicitly closed or dropped.
 
 Closing a queue shall:
-- Reject future `send` operations.
-- Wake all blocked receivers.
-- Wake all blocked senders.
-- Preserve already enqueued messages (they remain readable until the
-  queue is dropped or drained).
+- Reject future `send` operations (always returns `Error::QueueClosed`).
+- Wake all blocked senders (they return `Error::QueueClosed`).
+- Wake blocked receivers **only if the queue is empty**; receivers
+  blocked on a non-empty queue continue to drain.
+- Preserve already enqueued messages — they remain readable via `recv`
+  until the queue is empty or dropped.
 
-Operations on a closed queue shall return `Error::QueueClosed`.
+After close, `recv` returns `Error::QueueClosed` only when the queue
+is both closed **and** empty.
 
 ## 8. Timer Lifetime
 
@@ -214,21 +216,30 @@ handle can perform any operation allowed by the object's API.
 
 ## 15. Last-Handle Drop Behavior
 
-When the last handle to a shared resource is dropped, all tasks
-blocked on that resource must be woken.
+Explicit `close()` or `delete` operations **must** wake all blocked
+tasks and return an appropriate error (`Error::QueueClosed`,
+`Error::LockFailed`, etc.).
 
-| Resource | Wake behavior on last-handle drop |
-|----------|----------------------------------|
-| Queue | All blocked senders and receivers woken with `Error::QueueClosed` |
-| Semaphore | All blocked acquirers woken with `Error::QueueClosed` |
-| Mutex | Blocked lockers woken with `Error::LockFailed` |
-| Timer | No waking needed (callbacks prevented per 8) |
-| Task | No waking needed (Task handles are not shared by default) |
+Last-handle `Drop` is responsible for **resource cleanup only**.
+It is not required to wake blocked tasks.
 
-The woken tasks must receive the error **before** the resource is
-deallocated. After the error is returned, the task must not attempt
-to access the destroyed resource through the woken handle (the caller
-drops its own handle separately).
+In practice, when the public API uses `&self` methods for blocking
+operations:
+
+```rust
+queue.recv(&mut buf, Timeout::Forever)?;
+```
+
+the blocking caller holds a shared reference to the handle. The
+reference count cannot reach zero while a task is blocked, so
+last-handle drop cannot occur concurrently with a blocking call.
+This is guaranteed by the Rust borrow model for in-process backends
+(POSIX, Mock).
+
+For FFI-based backends (FreeRTOS) where blocking calls may use raw
+pointers internally, implementations must ensure that wake-before-free
+ordering is maintained when a resource is explicitly closed or
+deleted from another task.
 
 ## 16. Explicit Close with Shared Handles
 

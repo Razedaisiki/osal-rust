@@ -1,6 +1,6 @@
 //! System trait — global system operations.
 //!
-//! See [the backend contract](../../../docs/behavior-contract.md)
+//! See [the behavior contract](../../../../docs/behavior-contract.md)
 //! for the full behavioral specification.
 
 /// Global system-level operations.
