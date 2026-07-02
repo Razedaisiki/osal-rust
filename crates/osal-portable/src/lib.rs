@@ -14,8 +14,6 @@
 
 #![no_std]
 
-// Modules to be populated in later phases:
-// pub mod time_convert;
-// pub mod ring_buffer;
-// pub mod static_pool;
-// pub mod fallback;
+extern crate alloc;
+
+pub mod byte_queue;
