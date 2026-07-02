@@ -23,3 +23,4 @@ pub mod mutex;
 pub mod queue;
 pub mod semaphore;
 pub mod task;
+pub mod timer;

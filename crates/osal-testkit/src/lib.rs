@@ -10,6 +10,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 pub mod assertions;
 pub mod contract;
 pub mod factory;
