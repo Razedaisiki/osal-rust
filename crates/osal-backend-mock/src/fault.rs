@@ -1,6 +1,4 @@
 //! Fault injection for mock backend testing.
-//!
-//! Implements [`FaultFactory`] for simulating error conditions.
 
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -14,7 +12,9 @@ use osal_api::error::Error;
 /// Shared fault injection state.
 #[derive(Default)]
 pub struct FaultState {
+    /// If set, the next queue creation returns this error.
     pub next_queue_create: Option<Error>,
+    /// If set, the next queue send returns this error.
     pub next_queue_send: Option<Error>,
 }
 
@@ -27,10 +27,10 @@ impl FaultState {
 }
 
 // ---------------------------------------------------------------------------
-// FaultFactory implementation
+// MockFaultFactory
 // ---------------------------------------------------------------------------
 
-/// Implements testkit's [`FaultFactory`] backed by shared state.
+/// Fault injection factory backed by shared state.
 pub struct MockFaultFactory {
     state: Rc<RefCell<FaultState>>,
 }
@@ -43,22 +43,23 @@ impl MockFaultFactory {
         }
     }
 
-    /// Return a clone of the shared fault state (for queue integration).
+    /// Return a clone of the shared fault state.
     pub fn state(&self) -> Rc<RefCell<FaultState>> {
         Rc::clone(&self.state)
     }
 }
 
+#[cfg(feature = "testkit")]
 impl osal_testkit::factory::FaultFactory for MockFaultFactory {
     fn clear_faults(&self) {
-        self.state.borrow_mut().clear();
+        self.state().borrow_mut().clear();
     }
 
     fn fail_next_queue_create(&self, error: Error) {
-        self.state.borrow_mut().next_queue_create = Some(error);
+        self.state().borrow_mut().next_queue_create = Some(error);
     }
 
     fn fail_next_queue_send(&self, error: Error) {
-        self.state.borrow_mut().next_queue_send = Some(error);
+        self.state().borrow_mut().next_queue_send = Some(error);
     }
 }

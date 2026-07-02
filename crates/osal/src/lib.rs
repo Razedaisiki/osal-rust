@@ -61,6 +61,7 @@ pub mod backend;
 /// use osal::prelude::*;
 /// ```
 pub mod prelude {
+    pub use osal_api::error::{Error, Result};
     pub use osal_api::prelude::*;
     #[cfg(feature = "backend-mock")]
     pub use crate::backend::Queue;

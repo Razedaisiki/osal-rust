@@ -8,8 +8,6 @@
 //! ```
 
 use osal::prelude::*;
-use osal_api::error::Result;
-use osal_api::time::Timeout;
 
 fn main() -> Result<()> {
     let q = Queue::new(4, 4)?;

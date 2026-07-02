@@ -3,6 +3,9 @@
 //! Uses a static atomic counter so that [`MockClock`] can implement
 //! the static [`Clock`] trait while supporting per-test time control
 //! via [`MockClockControl`].
+//!
+//! Tests should call [`reset()`] at the start of each test to ensure
+//! isolation from other tests that advance the clock.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
@@ -80,15 +83,24 @@ impl Clock for MockClock {
 
 /// Control interface for the mock clock.
 ///
-/// Implements testkit's [`ClockControl`] for contract tests.
+/// Provides `advance(d)` and `reset()` for test code.
 pub struct MockClockControl;
 
+impl MockClockControl {
+    /// Reset the mock clock to zero.
+    pub fn reset(&self) {
+        reset();
+    }
+}
+
+#[cfg(feature = "testkit")]
 impl osal_testkit::factory::ClockControl for MockClockControl {
     fn advance_clock(&self, d: Duration) {
         advance(d);
     }
 }
 
+#[cfg(feature = "testkit")]
 impl osal_testkit::factory::ClockFactory for MockClockControl {
     type Clock = MockClock;
 }

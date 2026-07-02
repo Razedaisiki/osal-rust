@@ -2,16 +2,23 @@
 //!
 //! Wraps [`ByteQueue`] in `Rc<RefCell<>>` for shared ownership,
 //! implementing the [`Queue`] trait for contract testing.
+//!
+//! # Timeout semantics
+//!
+//! - `Timeout::NoWait`: immediate try_send / try_recv.
+//! - `Timeout::After(_)`: maps `QueueFull`/`QueueEmpty` →
+//!   `Error::Timeout` (no real waiting).
+//! - `Timeout::Forever`: succeeds if ready; returns `Error::Unsupported`
+//!   if the operation would block.
 
 use alloc::rc::Rc;
 use core::cell::RefCell;
 
-use osal_api::error::Result;
+use osal_api::error::{Error, Result};
 use osal_api::time::Timeout;
 use osal_api::traits::queue::Queue;
 
 use osal_portable::byte_queue::ByteQueue;
-use osal_shared::close_state::CloseFlag;
 use osal_shared::validation;
 
 // ---------------------------------------------------------------------------
@@ -20,7 +27,6 @@ use osal_shared::validation;
 
 struct MockQueueInner {
     buffer: ByteQueue,
-    close_flag: CloseFlag,
 }
 
 impl MockQueueInner {
@@ -29,7 +35,6 @@ impl MockQueueInner {
         validation::validate_queue_message_size(msg_size)?;
         Ok(Self {
             buffer: ByteQueue::new(capacity, msg_size)?,
-            close_flag: CloseFlag::new(),
         })
     }
 }
@@ -41,7 +46,7 @@ impl MockQueueInner {
 /// A mock queue for contract testing.
 ///
 /// Uses `Rc<RefCell<>>` internally so cloned handles share the same
-/// backend resource. Supports immediate (non-blocking) operations.
+/// backend resource.
 pub struct MockQueue {
     inner: Rc<RefCell<MockQueueInner>>,
 }
@@ -75,33 +80,35 @@ impl Queue for MockQueue {
     fn send(&self, data: &[u8], timeout: Timeout) -> Result<()> {
         match timeout {
             Timeout::NoWait => self.inner.borrow_mut().buffer.try_send(data),
-            Timeout::After(_) => {
-                // Non-blocking only for now; blocking not yet implemented.
-                self.inner.borrow_mut().buffer.try_send(data)
-            }
-            Timeout::Forever => {
-                // Non-blocking only for now; blocking not yet implemented.
-                self.inner.borrow_mut().buffer.try_send(data)
-            }
+            Timeout::After(_) => match self.inner.borrow_mut().buffer.try_send(data) {
+                Err(Error::QueueFull) => Err(Error::Timeout),
+                other => other,
+            },
+            Timeout::Forever => match self.inner.borrow_mut().buffer.try_send(data) {
+                Err(Error::QueueFull) => Err(Error::Unsupported),
+                other => other,
+            },
         }
     }
 
     fn recv(&self, buffer: &mut [u8], timeout: Timeout) -> Result<()> {
-        // Drain semantics: recv succeeds while messages remain even after close.
         match timeout {
             Timeout::NoWait => {
                 let _n = self.inner.borrow_mut().buffer.try_recv(buffer)?;
                 Ok(())
             }
-            Timeout::After(_) | Timeout::Forever => {
-                let _n = self.inner.borrow_mut().buffer.try_recv(buffer)?;
-                Ok(())
-            }
+            Timeout::After(_) => match self.inner.borrow_mut().buffer.try_recv(buffer) {
+                Err(Error::QueueEmpty) => Err(Error::Timeout),
+                other => other.map(|_| ()),
+            },
+            Timeout::Forever => match self.inner.borrow_mut().buffer.try_recv(buffer) {
+                Err(Error::QueueEmpty) => Err(Error::Unsupported),
+                other => other.map(|_| ()),
+            },
         }
     }
 
     fn close(&self) {
-        self.inner.borrow_mut().close_flag.close();
         self.inner.borrow_mut().buffer.close();
     }
 
@@ -127,12 +134,13 @@ impl Queue for MockQueue {
 }
 
 // ---------------------------------------------------------------------------
-// QueueFactory implementation
+// QueueFactory (testkit)
 // ---------------------------------------------------------------------------
 
 /// Factory for creating mock queues.
 pub struct MockQueueFactory;
 
+#[cfg(feature = "testkit")]
 impl osal_testkit::factory::QueueFactory for MockQueueFactory {
     type Queue = MockQueue;
 

@@ -18,10 +18,15 @@ use crate::time::Timeout;
 ///
 /// # Close semantics
 ///
-/// [`close`](Queue::close) permanently shuts down the queue. All
-/// blocked senders and receivers are woken with `Error::QueueClosed`.
-/// Subsequent operations also return `Error::QueueClosed`.
-/// `close` is idempotent.
+/// Closing prevents future sends. Already queued messages remain
+/// readable. A receiver returns `Error::QueueClosed` only when the
+/// queue is both closed and empty.
+///
+/// Blocked senders are woken with `Error::QueueClosed`. Blocked
+/// receivers are woken if the queue is empty; otherwise they may
+/// continue draining buffered messages.
+///
+/// [`close`](Queue::close) is idempotent.
 ///
 /// # Examples
 ///
