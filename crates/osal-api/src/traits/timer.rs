@@ -49,12 +49,7 @@ pub trait Timer: Sized {
     ///
     /// Returns `Error::InvalidParameter` if `period` is zero.
     /// Returns `Error::OutOfMemory` on allocation failure.
-    fn new(
-        name: &str,
-        period: Duration,
-        mode: TimerMode,
-        callback: TimerCallback,
-    ) -> Result<Self>;
+    fn new(name: &str, period: Duration, mode: TimerMode, callback: TimerCallback) -> Result<Self>;
 
     /// Start or restart the countdown.
     ///

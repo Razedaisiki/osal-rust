@@ -44,9 +44,7 @@ compile_error!(
 );
 
 #[cfg(all(feature = "backend-posix", feature = "backend-mock"))]
-compile_error!(
-    "Only one OSAL backend may be enabled at a time."
-);
+compile_error!("Only one OSAL backend may be enabled at a time.");
 
 /// Re-export the public API types.
 ///
