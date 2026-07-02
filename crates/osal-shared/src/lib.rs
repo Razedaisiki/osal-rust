@@ -12,8 +12,5 @@
 
 #![no_std]
 
-// Modules to be populated in later phases:
-// pub mod id_alloc;
-// pub mod registry;
-// pub mod validation;
-// pub mod lifecycle;
+pub mod close_state;
+pub mod validation;
