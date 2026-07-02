@@ -71,12 +71,33 @@ pub fn guard_drop_releases_one_level<F: MutexFactory>(factory: &F) {
     let _still_ok = m.lock(Timeout::NoWait).unwrap();
 }
 
-/// All contract tests for the Mutex trait.
-pub fn run_all<F: MutexFactory>(factory: &F) {
+// ---------------------------------------------------------------------------
+// Grouped entry points
+// ---------------------------------------------------------------------------
+
+/// Basic lock/unlock and guard semantics (no recursion, no concurrency).
+pub fn run_immediate_contracts<F: MutexFactory>(factory: &F) {
     lock_unlock::<F>(factory);
-    try_lock_fails_when_held::<F>(factory);
     lock_forever::<F>(factory);
     lock_no_wait::<F>(factory);
+    try_lock_fails_when_held::<F>(factory);
+}
+
+/// Recursive locking semantics.
+pub fn run_recursive_contracts<F: MutexFactory>(factory: &F) {
     recursive_lock::<F>(factory);
     guard_drop_releases_one_level::<F>(factory);
+}
+
+/// Cross-task concurrency tests (requires [`TaskFactory`]).
+///
+/// Currently a placeholder — no tests depend on multiple tasks yet.
+pub fn run_concurrency_contracts<F: MutexFactory>(_factory: &F) {
+    // Future: mutex_excludes_other_task, mutex_timeout_when_held, etc.
+}
+
+/// All current contract tests.
+pub fn run_all<F: MutexFactory>(factory: &F) {
+    run_immediate_contracts(factory);
+    run_recursive_contracts(factory);
 }

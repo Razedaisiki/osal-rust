@@ -162,8 +162,12 @@ pub fn recv_timeout<F: QueueFactory>(factory: &F) {
 // Aggregator
 // ---------------------------------------------------------------------------
 
-/// Run all queue contract tests.
-pub fn run_all<F: QueueFactory>(factory: &F) {
+// ---------------------------------------------------------------------------
+// Grouped entry points
+// ---------------------------------------------------------------------------
+
+/// Immediate-behavior tests (no blocking, no close, no ISR).
+pub fn run_immediate_contracts<F: QueueFactory>(factory: &F) {
     create::<F>(factory);
     reject_zero_capacity::<F>(factory);
     reject_zero_msg_size::<F>(factory);
@@ -173,11 +177,31 @@ pub fn run_all<F: QueueFactory>(factory: &F) {
     recv_empty_no_wait::<F>(factory);
     send_wrong_size::<F>(factory);
     recv_wrong_size::<F>(factory);
+}
+
+/// Lifetime / close-drain tests.
+pub fn run_lifetime_contracts<F: QueueFactory>(factory: &F) {
     send_after_close::<F>(factory);
     recv_empty_after_close::<F>(factory);
     recv_drains_after_close::<F>(factory);
     close_idempotent::<F>(factory);
+}
+
+/// ISR-variant tests.
+pub fn run_isr_contracts<F: QueueFactory>(factory: &F) {
     isr_send::<F>(factory);
     isr_recv::<F>(factory);
+}
+
+/// Wait / timeout tests (requires [`ClockFactory`]).
+pub fn run_wait_contracts<F: QueueFactory>(factory: &F) {
     recv_timeout::<F>(factory);
+}
+
+/// All current contract tests.
+pub fn run_all<F: QueueFactory>(factory: &F) {
+    run_immediate_contracts(factory);
+    run_lifetime_contracts(factory);
+    run_isr_contracts(factory);
+    run_wait_contracts(factory);
 }

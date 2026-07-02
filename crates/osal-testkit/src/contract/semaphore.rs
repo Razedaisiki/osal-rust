@@ -128,9 +128,12 @@ pub fn binary_isr_release<F: SemaphoreFactory>(factory: &F) {
 // Aggregator
 // ---------------------------------------------------------------------------
 
-/// Run all semaphore contract tests.
-pub fn run_all<F: SemaphoreFactory>(factory: &F) {
-    // CountingSemaphore
+// ---------------------------------------------------------------------------
+// Grouped entry points
+// ---------------------------------------------------------------------------
+
+/// Counting semaphore immediate tests (no wait/concurrency).
+pub fn run_counting_immediate_contracts<F: SemaphoreFactory>(factory: &F) {
     counting_create::<F>(factory);
     counting_reject_initial_gt_max::<F>(factory);
     counting_reject_max_zero::<F>(factory);
@@ -138,14 +141,32 @@ pub fn run_all<F: SemaphoreFactory>(factory: &F) {
     counting_release_increments::<F>(factory);
     counting_release_at_max_fails::<F>(factory);
     counting_acquire_empty_no_wait::<F>(factory);
-    counting_acquire_timeout::<F>(factory);
-    counting_isr_acquire::<F>(factory);
-    counting_isr_release::<F>(factory);
+}
 
-    // BinarySemaphore
+/// Counting semaphore timeout-based tests.
+pub fn run_counting_wait_contracts<F: SemaphoreFactory>(factory: &F) {
+    counting_acquire_timeout::<F>(factory);
+}
+
+/// Binary semaphore immediate tests.
+pub fn run_binary_immediate_contracts<F: SemaphoreFactory>(factory: &F) {
     binary_create::<F>(factory);
     binary_acquire_release::<F>(factory);
     binary_double_release_fails::<F>(factory);
+}
+
+/// ISR-variant tests for both semaphore types.
+pub fn run_isr_contracts<F: SemaphoreFactory>(factory: &F) {
+    counting_isr_acquire::<F>(factory);
+    counting_isr_release::<F>(factory);
     binary_isr_acquire::<F>(factory);
     binary_isr_release::<F>(factory);
+}
+
+/// All current contract tests.
+pub fn run_all<F: SemaphoreFactory>(factory: &F) {
+    run_counting_immediate_contracts(factory);
+    run_counting_wait_contracts(factory);
+    run_binary_immediate_contracts(factory);
+    run_isr_contracts(factory);
 }
