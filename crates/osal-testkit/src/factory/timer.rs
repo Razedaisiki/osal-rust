@@ -14,9 +14,8 @@ pub trait TimerFactory {
 
     /// Create a timer with the given configuration.
     ///
-    /// The factory is responsible for allocating the callback
-    /// (which requires alloc), keeping the testkit crate itself
-    /// alloc-free.
+    /// This default implementation requires `alloc` (the testkit crate
+    /// links `alloc` for `TimerCallback` support).
     fn create_timer(
         &self,
         name: &str,
@@ -27,8 +26,7 @@ pub trait TimerFactory {
 
     /// Create a no-op callback for use in creation/control tests.
     ///
-    /// The factory handles allocation; the testkit crate itself
-    /// remains alloc-free.
+    /// The default implementation requires `alloc`.
     fn dummy_callback(&self) -> TimerCallback {
         Box::new(|| {})
     }

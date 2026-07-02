@@ -20,7 +20,7 @@ pub fn queue_create_fault_is_reported<F: QueueFactory + FaultFactory>(factory: &
     factory.clear_faults();
     factory.fail_next_queue_create(Error::OutOfMemory);
     let result = factory.create_queue(4, 2);
-    assert!(result.is_err());
+    assert!(matches!(result, Err(Error::OutOfMemory)));
 }
 
 /// Queue send fault is reported.
@@ -29,7 +29,7 @@ pub fn queue_send_fault_is_reported<F: QueueFactory + FaultFactory>(factory: &F)
     let q = factory.create_queue(4, 2).unwrap();
     factory.fail_next_queue_send(Error::QueueFull);
     let result = q.send(&[1, 2], Timeout::NoWait);
-    assert!(result.is_err());
+    assert!(matches!(result, Err(Error::QueueFull)));
 }
 
 /// Faults can be cleared.

@@ -13,6 +13,7 @@
 
 use core::time::Duration;
 
+use osal_api::error::Error;
 use osal_api::traits::timer::Timer as _;
 use osal_api::types::TimerMode;
 
@@ -26,7 +27,7 @@ use crate::factory::TimerFactory;
 pub fn new_rejects_zero_period<F: TimerFactory>(factory: &F) {
     let result =
         factory.create_timer("zero", Duration::ZERO, TimerMode::OneShot, factory.dummy_callback());
-    assert!(result.is_err());
+    assert!(matches!(result, Err(Error::InvalidParameter)));
 }
 
 /// A newly created timer does not start automatically.
@@ -72,7 +73,7 @@ pub fn change_period_rejects_zero<F: TimerFactory>(factory: &F) {
         )
         .unwrap();
     let result = timer.change_period(Duration::ZERO);
-    assert!(result.is_err());
+    assert!(matches!(result, Err(Error::InvalidParameter)));
 }
 
 // ---------------------------------------------------------------------------
