@@ -49,6 +49,16 @@ fn mock_clock_controlled_contracts() {
 }
 
 // ---------------------------------------------------------------------------
+// Timeout contracts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mock_queue_wait_contracts() {
+    let factory = MockQueueFactory;
+    osal_testkit::contract::queue::run_wait_contracts(&factory);
+}
+
+// ---------------------------------------------------------------------------
 // Fault contracts
 // ---------------------------------------------------------------------------
 

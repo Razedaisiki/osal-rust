@@ -39,19 +39,19 @@ cargo test -p osal-backend-mock
 - `queue::run_immediate_contracts` — 8 tests ✓
 - `queue::run_lifetime_contracts` — 4 tests ✓
 - `lifetime::run_clone_contracts` — 3 tests ✓
+- `queue::run_wait_contracts` — 2 tests ✓
+- `fault::run_queue_fault_contracts` — 3 tests ✓
 - `clock::run_basic_contracts` — 3 tests ✓
 - `clock::run_controlled_contracts` — 2 tests ✓
 
 ## Intentionally Deferred
 
-- Queue blocking wait/wakeup (requires cooperative scheduler)
+- Queue blocking wakeup (recv_blocks_until_send, close_wakes_blocked)
 - ISR contract tests (requires ISR simulation)
-- Fault contract tests (requires integrating fault state into MockQueue)
 - POSIX Queue implementation
 
 ## Next Steps
 
-1. Integrate fault state into MockQueue → run fault contracts
-2. Implement queue wait model (block-on-empty, wake-on-send)
-3. POSIX Queue using pthread_cond_t + ByteQueue
+1. POSIX Queue using pthread_cond_t + ByteQueue
+2. Mutex + Semaphore foundation slice
 4. Apply same pattern to Mutex, Semaphore, Timer
