@@ -7,7 +7,7 @@ use osal_api::error::Error;
 use osal_api::time::Timeout;
 use osal_api::traits::semaphore::{BinarySemaphore as _, CountingSemaphore as _};
 
-use crate::factory::SemaphoreFactory;
+use crate::factory::{ClockFactory, SemaphoreFactory, TaskFactory};
 
 // ---------------------------------------------------------------------------
 // CountingSemaphore
@@ -162,6 +162,14 @@ pub fn run_isr_contracts<F: SemaphoreFactory>(factory: &F) {
     binary_isr_acquire::<F>(factory);
     binary_isr_release::<F>(factory);
 }
+
+/// Cross-task concurrency tests (requires [`TaskFactory`] + [`ClockFactory`]).
+///
+/// Currently a placeholder. Future tests:
+/// - counting_release_wakes_one_waiter
+/// - counting_timeout_when_empty
+/// - binary_release_wakes_one_waiter
+pub fn run_wait_contracts<F: SemaphoreFactory + TaskFactory + ClockFactory>(_factory: &F) {}
 
 /// All current contract tests.
 pub fn run_all<F: SemaphoreFactory>(factory: &F) {

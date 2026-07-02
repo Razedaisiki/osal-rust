@@ -6,7 +6,7 @@
 use osal_api::time::Timeout;
 use osal_api::traits::mutex::Mutex as _;
 
-use crate::factory::MutexFactory;
+use crate::factory::{MutexFactory, TaskFactory};
 
 /// Lock succeeds on an uncontended mutex; guard provides access;
 /// drop releases the lock.
@@ -91,10 +91,11 @@ pub fn run_recursive_contracts<F: MutexFactory>(factory: &F) {
 
 /// Cross-task concurrency tests (requires [`TaskFactory`]).
 ///
-/// Currently a placeholder — no tests depend on multiple tasks yet.
-pub fn run_concurrency_contracts<F: MutexFactory>(_factory: &F) {
-    // Future: mutex_excludes_other_task, mutex_timeout_when_held, etc.
-}
+/// Currently a placeholder. Future tests:
+/// - mutex_excludes_other_task
+/// - mutex_timeout_when_held_by_other_task
+/// - guard_drop_wakes_waiter
+pub fn run_concurrency_contracts<F: MutexFactory + TaskFactory>(_factory: &F) {}
 
 /// All current contract tests.
 pub fn run_all<F: MutexFactory>(factory: &F) {
