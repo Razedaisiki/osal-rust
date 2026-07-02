@@ -40,7 +40,7 @@ extern crate alloc;
 #[cfg(not(any(feature = "backend-posix", feature = "backend-mock")))]
 compile_error!(
     "At least one OSAL backend must be enabled. \
-     Enable the 'backend-posix' or 'backend-mock' feature."
+     Enable the 'backend-mock' feature (backend-posix is not yet implemented)."
 );
 
 #[cfg(all(feature = "backend-posix", feature = "backend-mock"))]
@@ -62,6 +62,7 @@ pub mod backend;
 /// ```
 pub mod prelude {
     pub use osal_api::prelude::*;
+    #[cfg(feature = "backend-mock")]
     pub use crate::backend::Queue;
     pub use osal_api::traits::queue::Queue as _;
 }

@@ -11,7 +11,7 @@ description = "Operating System Abstraction Layer — facade crate"
 crate-type = ["rlib"]
 
 [features]
-default = ["backend-posix"]
+default = ["backend-mock"]
 backend-posix = ["dep:osal-backend-posix"]
 backend-mock = ["dep:osal-backend-mock"]
 

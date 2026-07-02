@@ -11,5 +11,5 @@
 #[cfg(feature = "backend-mock")]
 pub use osal_backend_mock::queue::MockQueue as Queue;
 
-#[cfg(feature = "backend-posix")]
+#[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
 compile_error!("backend-posix Queue is not yet implemented");
