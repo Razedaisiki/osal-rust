@@ -17,6 +17,7 @@
 //! }
 //! ```
 
+pub mod clock;
 pub mod mutex;
 pub mod queue;
 pub mod semaphore;
