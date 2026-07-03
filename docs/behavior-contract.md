@@ -65,7 +65,7 @@ facade crate:
 ```toml
 [dependencies]
 osal = { version = "0.1" }                    # POSIX (default)
-osal = { version = "0.1", features = ["mock"] }  # Mock
+osal = { version = "0.1", default-features = false, features = ["backend-mock"] }  # Mock
 ```
 
 Only one backend feature may be active. Attempting to enable multiple
@@ -93,10 +93,11 @@ All fallible operations return `Result<T, osal_api::Error>`.
 | `InvalidMessageSize` | Queue message size mismatch | send/recv buffer length != msg_size |
 | `LockFailed` | Could not acquire lock | Mutex held by another context |
 | `NotFound` | Resource not found | Invalid handle or ID |
+| `Overflow` | Arithmetic overflow or count at max | capacity * msg_size overflow; semaphore at max_count |
 | `InvalidParameter` | Argument out of valid range | Zero-length name, count > max |
 | `AlreadyInitialized` | Resource already created/started | Double `spawn()` on a Task |
 | `NotInitialized` | Resource not yet started | `join()` on unstarted Task |
-| `Unsupported` | Backend cannot perform operation | ISR mutex on FreeRTOS |
+| `Unsupported` | Backend cannot perform operation | Mock Forever on full/empty queue |
 | `Internal(&'static str)` | Unexpected native error | errno, FreeRTOS status code |
 
 ### Rules
@@ -111,6 +112,38 @@ All fallible operations return `Result<T, osal_api::Error>`.
    success. It is not returned for immediate failures like queue-full.
 4. The `Error` type carries no lifetime parameter and no heap-allocated
    data (other than `Internal(&'static str)`).
+
+### Error precedence
+
+When a single operation satisfies multiple error conditions
+simultaneously, backends must return errors in the following order of
+precedence (highest first):
+
+```
+1. Input parameter validation  (InvalidParameter, InvalidMessageSize)
+2. Object state validation     (QueueClosed, NotInitialized)
+3. Current resource state      (QueueFull, QueueEmpty, LockFailed)
+4. Wait and timeout            (Timeout)
+5. Backend system errors       (Internal)
+```
+
+For Queue operations specifically:
+
+```
+InvalidMessageSize
+    ↓
+QueueClosed
+    ↓
+QueueFull / QueueEmpty
+    ↓
+Timeout
+    ↓
+Internal
+```
+
+This means a `send()` to a closed queue with wrong message size must
+return `Error::InvalidMessageSize`, not `Error::QueueClosed`. Parameter
+validation always takes priority over object state.
 
 ---
 
@@ -138,6 +171,22 @@ universal time representation across the OSAL API.
 | `NoWait` | The call must return immediately. If the operation would block, return the appropriate error (`QueueFull`, `QueueEmpty`, `LockFailed`, `Timeout`). |
 | `After(d)` | Block until success or `d` has elapsed, whichever comes first. If `d` expires, return `Error::Timeout`. The call must not return with `Timeout` before `d` has elapsed (no spurious early wakeups). It may return later due to scheduling. |
 | `Forever` | Block until success or a fatal error. Must not return `Error::Timeout`. |
+
+### `After(Duration::ZERO)` semantics
+
+`Timeout::After(Duration::ZERO)` is distinct from `Timeout::NoWait`:
+
+| Timeout | Queue full/empty result |
+|---------|------------------------|
+| `NoWait` | `QueueFull` or `QueueEmpty` |
+| `After(Duration::ZERO)` | `Error::Timeout` |
+
+- `NoWait` queries the immediate resource state and reports the specific
+  condition.
+- `After(d)` represents a time-bounded wait; a zero-duration wait
+  expires instantly if the resource is not immediately available.
+- If the resource is available, both `NoWait` and `After(ZERO)` succeed
+  immediately.
 
 ### Clock contract
 
@@ -320,7 +369,6 @@ impl<T> Mutex<T> {
 ```rust
 impl<T> Mutex<T> {
     pub fn lock(&self, timeout: Timeout) -> Result<MutexGuard<T>>;
-    pub fn isr_lock(&self) -> Result<MutexGuard<T>>;
 }
 ```
 
@@ -334,12 +382,11 @@ impl<T> Mutex<T> {
   - Returns `Error::Timeout` if the timeout expires.
   - Returns `Error::LockFailed` if `Timeout::NoWait` and the mutex
     is held by another task.
-- `isr_lock()`:
-  - Non-blocking: returns immediately.
-  - On platforms without true ISR context (POSIX, Mock), equivalent to
-    `lock(Timeout::NoWait)`.
-  - On platforms where ISR mutex operations are unsupported, returns
-    `Error::Unsupported`.
+
+> **ISR note:** Mutex operations are **not** ISR-safe. Use
+> [`Semaphore`] or future ISR extension traits for interrupt-context
+> signaling. ISR mutex support is deferred to a future `IsrMutex`
+> extension trait for the FreeRTOS backend.
 
 ### MutexGuard
 
@@ -408,8 +455,8 @@ impl CountingSemaphore {
   - Wakes exactly one blocked acquirer per `release()`.
 - `release()`:
   - If `count < max_count`: increment and wake one acquirer.
-  - If `count == max_count`: return `Error::InvalidParameter` (the
-    semaphore is full).
+  - If `count == max_count`: return `Error::Overflow` (the
+    semaphore is already at maximum count).
 - `isr_acquire()`: non-blocking; equivalent to
   `acquire(Timeout::NoWait)`.
 - `isr_release()`: ISR-safe; may be called from interrupt context.
@@ -448,20 +495,24 @@ impl Queue {
     pub fn new(capacity: usize, msg_size: usize) -> Result<Self>;
     pub fn capacity(&self) -> usize;
     pub fn msg_size(&self) -> usize;
-    pub fn len(&self) -> usize;
-    pub fn is_empty(&self) -> bool;
-    pub fn is_full(&self) -> bool;
+    pub fn len(&self) -> Result<usize>;
+    pub fn is_empty(&self) -> Result<bool>;
+    pub fn is_full(&self) -> Result<bool>;
 }
 ```
 
 - `new(capacity, msg_size)`:
   - Returns `Error::InvalidParameter` if `capacity == 0` or
     `msg_size == 0`.
+  - Returns `Error::Overflow` if `capacity * msg_size` would overflow `usize`.
   - Returns `Error::OutOfMemory` on allocation failure.
-- `capacity()`: maximum number of messages.
-- `msg_size()`: fixed size of each message in bytes.
-- `len()`: current number of messages in the queue.
-- `is_empty()` / `is_full()`: convenience queries.
+- `capacity()`: maximum number of messages (non-fallible; fixed at construction).
+- `msg_size()`: fixed size of each message in bytes (non-fallible; fixed at construction).
+- `len()`: current number of messages in the queue. Returns `Result<usize>`
+  because backends that synchronize internal state (e.g. via mutex) may
+  encounter lock acquisition failures.
+- `is_empty()` / `is_full()`: convenience queries; may fail if the
+  underlying lock acquisition fails.
 
 ### Operations
 
@@ -469,10 +520,7 @@ impl Queue {
 impl Queue {
     pub fn send(&self, data: &[u8], timeout: Timeout) -> Result<()>;
     pub fn recv(&self, buffer: &mut [u8], timeout: Timeout) -> Result<()>;
-    pub fn close(&self);
-
-    pub fn isr_send(&self, data: &[u8]) -> Result<()>;
-    pub fn isr_recv(&self, buffer: &mut [u8]) -> Result<()>;
+    pub fn close(&self) -> Result<()>;
 }
 ```
 
@@ -503,19 +551,20 @@ impl Queue {
     calls continue to drain them.
   - Does **not** discard already enqueued messages.
   - Idempotent: calling `close()` multiple times is safe.
+  - Returns `Ok(())` on success.
+
+> **ISR note:** ISR-safe send/receive (`send_from_isr`, `recv_from_isr`)
+> are deferred to a future `IsrQueue` extension trait for the FreeRTOS
+> backend. The core `Queue` trait only provides task-context operations.
 
 **After-close rules:**
 
 | Operation | Behavior after close |
 |-----------|---------------------|
-| `send` / `isr_send` | Always returns `Error::QueueClosed` |
-| `recv` / `isr_recv` | Succeeds while queued messages remain |
-| `recv` / `isr_recv` | Returns `Error::QueueClosed` when closed **and** empty |
+| `send` | Always returns `Error::QueueClosed` |
+| `recv` | Succeeds while queued messages remain |
+| `recv` | Returns `Error::QueueClosed` when closed **and** empty |
 | `len` / `is_empty` / `is_full` / `capacity` / `msg_size` | Continue to work |
-- `isr_send(data)`: non-blocking; equivalent to
-  `send(data, Timeout::NoWait)`.
-- `isr_recv(buffer)`: non-blocking; equivalent to
-  `recv(buffer, Timeout::NoWait)`.
 
 ### FIFO guarantee
 
@@ -617,7 +666,7 @@ govern how unsupported capabilities must be handled:
 
 | Capability | POSIX | Mock | Future FreeRTOS |
 |------------|-------|------|-----------------|
-| ISR operations | Try-lock, non-blocking | Try-lock, non-blocking | True ISR |
+| ISR operations | Not supported | Not supported | True ISR (extension trait) |
 | Task priority | Informational | Deterministic order | Hardware priority |
 | Stack watermark | Not tracked | Not tracked | Hardware tracked |
 | Scheduler start/stop | No-op | Controllable | Hardware scheduler |
@@ -681,8 +730,10 @@ using pthread and related POSIX APIs.
    Wall-clock changes must not affect OSAL timing.
 2. **Thread-safe initialization**: Global state (clock epoch, registry)
    uses `pthread_once_t`.
-3. **No real ISR**: `isr_*` methods are non-blocking try-operations.
-   They must never block.
+3. **No ISR support**: POSIX does not implement ISR-safe operations.
+   The core `Queue` and `Mutex` traits do not include ISR methods.
+   ISR operations are deferred to extension traits for the FreeRTOS
+   backend.
 4. **Scheduler no-ops**: `System::start()` and `System::stop()` are
    documented no-ops. Tasks run when created.
 5. **Priority is informational**: Task priority maps to pthread
@@ -737,7 +788,6 @@ Backends must pass all non-skipped tests.
 | Timeout expires | `Timeout::After(d)` returns `Timeout` | R | R |
 | Forever blocks until release | `Timeout::Forever` succeeds after release | R | R |
 | Guard is `!Send` | Compile-time check | R | R |
-| isr_lock is non-blocking | Returns immediately | R | R |
 
 ### Semaphore tests
 
@@ -750,11 +800,9 @@ Backends must pass all non-skipped tests.
 | release increments count | count goes from N to N+1 | R | R |
 | acquire blocks on empty | Task waits until release | R | R |
 | Timeout on empty | `Timeout::After(d)` returns `Timeout` | R | R |
-| release at max fails | `Error::InvalidParameter` | R | R |
+| release at max fails | `Error::Overflow` | R | R |
 | release wakes exactly one | N releases wake N waiters, not more | R | R |
 | BinarySemaphore basics | `new()`, `acquire()`, `release()` | R | R |
-| isr_acquire non-blocking | Returns immediately | R | R |
-| isr_release from ISR context | Mock simulates ISR context | R | R |
 
 ### Queue tests
 
