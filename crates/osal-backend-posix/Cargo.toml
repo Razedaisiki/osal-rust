@@ -13,9 +13,11 @@ crate-type = ["rlib"]
 [features]
 default = []
 std = []
+testkit = ["dep:osal-testkit"]
 
 [dependencies]
 osal-api = { path = "../osal-api" }
 osal-shared = { path = "../osal-shared" }
 osal-portable = { path = "../osal-portable" }
 libc = { workspace = true }
+osal-testkit = { path = "../osal-testkit", optional = true }
