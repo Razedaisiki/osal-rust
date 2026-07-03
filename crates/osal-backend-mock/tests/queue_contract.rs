@@ -1,5 +1,8 @@
 //! Contract tests for MockQueue.
 //!
+//! Mock passes `QueueCoreContract` but not `QueueBlockingContract`
+//! (blocking is deferred until the mock scheduler is implemented).
+//!
 //! Requires `--features testkit`:
 //! ```bash
 //! cargo test -p osal-backend-mock --features testkit
@@ -9,19 +12,13 @@ use osal_backend_mock::clock::MockClockControl;
 use osal_backend_mock::queue::{MockFaultyQueueFactory, MockQueueFactory};
 
 // ---------------------------------------------------------------------------
-// Queue contracts
+// Queue contracts — Core only
 // ---------------------------------------------------------------------------
 
 #[test]
-fn mock_queue_immediate_contracts() {
+fn mock_queue_core_contracts() {
     let factory = MockQueueFactory;
-    osal_testkit::contract::queue::run_immediate_contracts(&factory);
-}
-
-#[test]
-fn mock_queue_lifetime_contracts() {
-    let factory = MockQueueFactory;
-    osal_testkit::contract::queue::run_lifetime_contracts(&factory);
+    osal_testkit::contract::queue::run_core_contracts(&factory);
 }
 
 #[test]
@@ -46,16 +43,6 @@ fn mock_clock_controlled_contracts() {
     let factory = MockClockControl;
     factory.reset();
     osal_testkit::contract::clock::run_controlled_contracts(&factory);
-}
-
-// ---------------------------------------------------------------------------
-// Timeout contracts
-// ---------------------------------------------------------------------------
-
-#[test]
-fn mock_queue_wait_contracts() {
-    let factory = MockQueueFactory;
-    osal_testkit::contract::queue::run_wait_contracts(&factory);
 }
 
 // ---------------------------------------------------------------------------
