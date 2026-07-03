@@ -9,13 +9,30 @@ OSAL provides a unified API for developing multi-platform embedded and
 real-time applications. Write your application logic once and run it
 across different platforms by switching the backend.
 
-## Supported Backends
+## Capability Matrix
 
-| Backend | Status | Target |
-|---------|--------|--------|
-| POSIX   | Planned | Linux, macOS, CI |
-| Mock    | Planned | Unit tests, simulation |
-| FreeRTOS | Planned | ARM Cortex-M, RISC-V |
+| Capability       | API      | Portable | Mock     | POSIX    | Contract | Facade   |
+|-----------------|----------|----------|----------|----------|----------|----------|
+| Error           | ✓        | —        | ✓        | ✓        | ✓        | ✓        |
+| Timeout         | ✓        | —        | Partial  | ✓        | ✓        | ✓        |
+| Queue Core      | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        |
+| Queue Blocking  | ✓        | —        | Deferred | ✓        | ✓        | ✓        |
+| Queue ISR       | Deferred | —        | —        | —        | —        | —        |
+| Mutex           | API only | —        | —        | sys only | skeleton | —        |
+| Semaphore       | API only | —        | —        | —        | skeleton | —        |
+| System          | API only | —        | —        | —        | skeleton | —        |
+| Task            | API only | —        | —        | —        | skeleton | —        |
+| Timer           | API only | —        | —        | —        | skeleton | —        |
+| Clock           | ✓        | —        | ✓        | —        | ✓        | —        |
+
+**Legend:**
+- ✓ — Implemented and tested
+- API only — Trait defined, no backend implementation
+- sys only — Low-level sys wrapper exists, no trait impl yet
+- Partial — Core semantics implemented, blocking deferred
+- Deferred — Planned for future phase
+- skeleton — Contract test skeleton exists, not enabled
+- — — Not applicable to this layer
 
 ## Architecture
 
@@ -41,7 +58,9 @@ See [docs/architecture.md](docs/architecture.md) for details.
 
 ```toml
 [dependencies]
-osal = "0.1"
+osal = "0.1"                                         # POSIX (default)
+osal = { version = "0.1", default-features = false,
+         features = ["backend-mock"] }               # Mock
 ```
 
 ```rust
@@ -49,9 +68,15 @@ use osal::prelude::*;
 use core::time::Duration;
 
 fn main() {
-    // Create and lock a mutex
-    let counter = Mutex::new(0u32);
-    // ...
+    // Create a queue
+    let q = Queue::new(8, 4).unwrap();
+
+    // Send a message
+    q.send(&1u32.to_le_bytes(), Timeout::NoWait).unwrap();
+
+    // Receive it
+    let mut buf = [0u8; 4];
+    q.recv(&mut buf, Timeout::NoWait).unwrap();
 }
 ```
 
@@ -61,4 +86,13 @@ Proprietary. See [LICENSE](LICENSE) for details.
 
 ## Status
 
-Phase 1 — Workspace and architecture foundation.
+**Queue vertical slice stabilization (P0).**
+
+POSIX Queue and Mock Queue core are implemented and tested. Contract
+tests are split into `QueueCoreContract` (all backends) and
+`QueueBlockingContract` (POSIX only during P0). ISR operations are
+deferred to a future `IsrQueue` extension trait.
+
+CI enforces format, clippy, tests, docs, and feature matrix checks.
+
+See [CHANGELOG.md](CHANGELOG.md) for recent API changes.
