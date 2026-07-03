@@ -208,22 +208,13 @@ impl Queue for PosixQueue {
         }
     }
 
-    fn close(&self) {
-        let Ok(guard) = self.inner.mutex.lock_guard() else {
-            return;
-        };
+    fn close(&self) -> Result<()> {
+        let guard = self.inner.mutex.lock_guard()?;
         self.set_closed_locked(&guard);
         self.buffer_locked(&guard).close();
         let _ = self.inner.not_empty.broadcast();
         let _ = self.inner.not_full.broadcast();
-    }
-
-    fn isr_send(&self, data: &[u8]) -> Result<()> {
-        self.send(data, Timeout::NoWait)
-    }
-
-    fn isr_recv(&self, buffer: &mut [u8]) -> Result<()> {
-        self.recv(buffer, Timeout::NoWait)
+        Ok(())
     }
 
     fn capacity(&self) -> usize {
@@ -240,11 +231,9 @@ impl Queue for PosixQueue {
         self.buffer_locked(&guard).message_size()
     }
 
-    fn len(&self) -> usize {
-        let Ok(guard) = self.inner.mutex.lock_guard() else {
-            return 0;
-        };
-        self.buffer_locked(&guard).len()
+    fn len(&self) -> Result<usize> {
+        let guard = self.inner.mutex.lock_guard()?;
+        Ok(self.buffer_locked(&guard).len())
     }
 }
 

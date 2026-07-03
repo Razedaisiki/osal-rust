@@ -58,7 +58,7 @@ where
     let q1 = factory.create_queue(4, 2).unwrap();
     let q2 = q1.clone();
 
-    q1.close();
+    q1.close().unwrap();
 
     // Both handles see the queue as closed.
     let result = q2.send(&[1, 2], Timeout::NoWait);

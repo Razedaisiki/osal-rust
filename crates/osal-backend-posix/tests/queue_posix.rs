@@ -61,7 +61,7 @@ fn close_wakes_blocked_recv() {
 
     let handle = thread::spawn(move || {
         thread::sleep(Duration::from_millis(10));
-        q2.close();
+        let _ = q2.close();
     });
 
     let mut buf = [0u8; 4];
@@ -79,7 +79,7 @@ fn close_wakes_blocked_send() {
     let q2 = q.clone();
     let handle = thread::spawn(move || {
         thread::sleep(Duration::from_millis(10));
-        q2.close();
+        let _ = q2.close();
     });
 
     let result = q.send(&[5, 6, 7, 8], Timeout::Forever);

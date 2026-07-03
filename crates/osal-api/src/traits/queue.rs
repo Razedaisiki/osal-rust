@@ -51,6 +51,7 @@ pub trait Queue: Sized {
     /// fixed byte length of each message.
     ///
     /// Returns `Error::InvalidParameter` if either argument is zero.
+    /// Returns `Error::Overflow` if `capacity * msg_size` overflows `usize`.
     /// Returns `Error::OutOfMemory` on allocation failure.
     fn new(capacity: usize, msg_size: usize) -> Result<Self>;
 
@@ -70,9 +71,6 @@ pub trait Queue: Sized {
     /// | Wrong data length | `Error::InvalidMessageSize` |
     fn send(&self, data: &[u8], timeout: Timeout) -> Result<()>;
 
-    /// Non-blocking send, safe to call from ISR context.
-    fn isr_send(&self, data: &[u8]) -> Result<()>;
-
     // ---- receiving ----
 
     /// Receive a message, blocking according to `timeout`.
@@ -89,9 +87,6 @@ pub trait Queue: Sized {
     /// | Wrong buffer length | `Error::InvalidMessageSize` |
     fn recv(&self, buffer: &mut [u8], timeout: Timeout) -> Result<()>;
 
-    /// Non-blocking receive, safe to call from ISR context.
-    fn isr_recv(&self, buffer: &mut [u8]) -> Result<()>;
-
     // ---- lifecycle ----
 
     /// Permanently close the queue.
@@ -105,26 +100,35 @@ pub trait Queue: Sized {
     /// continue draining buffered messages.
     ///
     /// Idempotent: calling `close` on an already-closed queue is safe.
-    fn close(&self);
+    fn close(&self) -> Result<()>;
 
     // ---- introspection ----
 
     /// Maximum number of messages the queue can hold.
+    ///
+    /// This value is fixed at construction time and does not require
+    /// synchronization.
     fn capacity(&self) -> usize;
 
     /// Fixed byte size of each message.
+    ///
+    /// This value is fixed at construction time and does not require
+    /// synchronization.
     fn msg_size(&self) -> usize;
 
     /// Current number of messages in the queue.
-    fn len(&self) -> usize;
+    ///
+    /// May fail if the backend cannot acquire the internal lock
+    /// (e.g. mutex poisoned).
+    fn len(&self) -> Result<usize>;
 
     /// `true` if the queue contains no messages.
-    fn is_empty(&self) -> bool {
-        self.len() == 0
+    fn is_empty(&self) -> Result<bool> {
+        Ok(self.len()? == 0)
     }
 
     /// `true` if the queue is at capacity.
-    fn is_full(&self) -> bool {
-        self.len() == self.capacity()
+    fn is_full(&self) -> Result<bool> {
+        Ok(self.len()? == self.capacity())
     }
 }

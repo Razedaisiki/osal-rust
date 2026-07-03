@@ -132,16 +132,9 @@ impl Queue for MockQueue {
         )
     }
 
-    fn close(&self) {
+    fn close(&self) -> Result<()> {
         self.inner.borrow_mut().buffer.close();
-    }
-
-    fn isr_send(&self, data: &[u8]) -> Result<()> {
-        self.send(data, Timeout::NoWait)
-    }
-
-    fn isr_recv(&self, buffer: &mut [u8]) -> Result<()> {
-        self.recv(buffer, Timeout::NoWait)
+        Ok(())
     }
 
     fn capacity(&self) -> usize {
@@ -152,8 +145,8 @@ impl Queue for MockQueue {
         self.inner.borrow().buffer.message_size()
     }
 
-    fn len(&self) -> usize {
-        self.inner.borrow().buffer.len()
+    fn len(&self) -> Result<usize> {
+        Ok(self.inner.borrow().buffer.len())
     }
 }
 
