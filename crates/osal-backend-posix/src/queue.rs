@@ -24,8 +24,11 @@ struct QueueInner {
     mutex: PosixMutex,
     not_empty: PosixCondvar,
     not_full: PosixCondvar,
+    /// The ring buffer (the sole source of state including the `closed` flag).
     buffer: UnsafeCell<ByteQueue>,
-    closed: UnsafeCell<bool>,
+    /// Cached construction-time values — immutable, no lock needed.
+    capacity: usize,
+    message_size: usize,
 }
 
 unsafe impl Send for QueueInner {}
@@ -57,25 +60,15 @@ impl PosixQueue {
                 not_empty: PosixCondvar::new()?,
                 not_full: PosixCondvar::new()?,
                 buffer: UnsafeCell::new(ByteQueue::new(capacity, msg_size)?),
-                closed: UnsafeCell::new(false),
+                capacity,
+                message_size: msg_size,
             }),
         })
     }
 
-    // ---- UnsafeCell accessors (caller must hold the lock) ----------
-
+    /// Access the buffer (caller must hold the lock).
     fn buffer_locked(&self, _guard: &PosixMutexGuard<'_>) -> &mut ByteQueue {
         unsafe { &mut *self.inner.buffer.get() }
-    }
-
-    fn is_closed_locked(&self, _guard: &PosixMutexGuard<'_>) -> bool {
-        unsafe { *self.inner.closed.get() }
-    }
-
-    fn set_closed_locked(&self, _guard: &PosixMutexGuard<'_>) {
-        unsafe {
-            *self.inner.closed.get() = true;
-        }
     }
 }
 
@@ -89,11 +82,15 @@ impl Queue for PosixQueue {
     }
 
     fn send(&self, data: &[u8], timeout: Timeout) -> Result<()> {
-        validation::validate_send_message_size(self.msg_size(), data.len())?;
+        // Use cached message_size to avoid locking just for validation.
+        validation::validate_send_message_size(self.inner.message_size, data.len())?;
 
         let mut guard = self.inner.mutex.lock_guard()?;
 
-        if self.is_closed_locked(&guard) {
+        // ByteQueue's try_send checks InvalidMessageSize before closed,
+        // but we already validated the size. Check closed first here
+        // so we don't needlessly call try_send.
+        if self.buffer_locked(&guard).is_closed() {
             return Err(Error::QueueClosed);
         }
 
@@ -101,19 +98,19 @@ impl Queue for PosixQueue {
             Timeout::NoWait => {
                 let result = self.buffer_locked(&guard).try_send(data);
                 if result.is_ok() {
-                    let _ = self.inner.not_empty.signal();
+                    self.inner.not_empty.signal()?;
                 }
                 result
             }
             Timeout::After(d) => {
                 let deadline = condvar::abs_deadline(d);
                 loop {
-                    if self.is_closed_locked(&guard) {
+                    if self.buffer_locked(&guard).is_closed() {
                         return Err(Error::QueueClosed);
                     }
                     match self.buffer_locked(&guard).try_send(data) {
                         Ok(()) => {
-                            let _ = self.inner.not_empty.signal();
+                            self.inner.not_empty.signal()?;
                             return Ok(());
                         }
                         Err(Error::QueueFull) => {
@@ -128,12 +125,12 @@ impl Queue for PosixQueue {
                 }
             }
             Timeout::Forever => loop {
-                if self.is_closed_locked(&guard) {
+                if self.buffer_locked(&guard).is_closed() {
                     return Err(Error::QueueClosed);
                 }
                 match self.buffer_locked(&guard).try_send(data) {
                     Ok(()) => {
-                        let _ = self.inner.not_empty.signal();
+                        self.inner.not_empty.signal()?;
                         return Ok(());
                     }
                     Err(Error::QueueFull) => {
@@ -146,7 +143,7 @@ impl Queue for PosixQueue {
     }
 
     fn recv(&self, buffer: &mut [u8], timeout: Timeout) -> Result<()> {
-        validation::validate_recv_buffer_size(self.msg_size(), buffer.len())?;
+        validation::validate_recv_buffer_size(self.inner.message_size, buffer.len())?;
 
         let mut guard = self.inner.mutex.lock_guard()?;
 
@@ -154,25 +151,26 @@ impl Queue for PosixQueue {
             Timeout::NoWait => {
                 let result = self.buffer_locked(&guard).try_recv(buffer).map(|_| ());
                 if result.is_ok() {
-                    let _ = self.inner.not_full.signal();
+                    self.inner.not_full.signal()?;
                 }
                 result
             }
             Timeout::After(d) => {
                 let deadline = condvar::abs_deadline(d);
                 loop {
-                    if self.is_closed_locked(&guard)
-                        && self.buffer_locked(&guard).len() == 0
-                    {
+                    let is_closed = self.buffer_locked(&guard).is_closed();
+                    let is_empty = self.buffer_locked(&guard).len() == 0;
+
+                    if is_closed && is_empty {
                         return Err(Error::QueueClosed);
                     }
                     match self.buffer_locked(&guard).try_recv(buffer) {
                         Ok(_) => {
-                            let _ = self.inner.not_full.signal();
+                            self.inner.not_full.signal()?;
                             return Ok(());
                         }
                         Err(Error::QueueEmpty) => {
-                            if self.is_closed_locked(&guard) {
+                            if is_closed {
                                 return Err(Error::QueueClosed);
                             }
                             match self.inner.not_empty.timed_wait(&mut guard, &deadline) {
@@ -186,18 +184,19 @@ impl Queue for PosixQueue {
                 }
             }
             Timeout::Forever => loop {
-                if self.is_closed_locked(&guard)
-                    && self.buffer_locked(&guard).len() == 0
-                {
+                let is_closed = self.buffer_locked(&guard).is_closed();
+                let is_empty = self.buffer_locked(&guard).len() == 0;
+
+                if is_closed && is_empty {
                     return Err(Error::QueueClosed);
                 }
                 match self.buffer_locked(&guard).try_recv(buffer) {
                     Ok(_) => {
-                        let _ = self.inner.not_full.signal();
+                        self.inner.not_full.signal()?;
                         return Ok(());
                     }
                     Err(Error::QueueEmpty) => {
-                        if self.is_closed_locked(&guard) {
+                        if is_closed {
                             return Err(Error::QueueClosed);
                         }
                         self.inner.not_empty.wait(&mut guard)?;
@@ -210,25 +209,29 @@ impl Queue for PosixQueue {
 
     fn close(&self) -> Result<()> {
         let guard = self.inner.mutex.lock_guard()?;
-        self.set_closed_locked(&guard);
-        self.buffer_locked(&guard).close();
-        let _ = self.inner.not_empty.broadcast();
-        let _ = self.inner.not_full.broadcast();
+        let buffer = self.buffer_locked(&guard);
+
+        if buffer.is_closed() {
+            return Ok(());
+        }
+
+        buffer.close();
+
+        // Wake all blocked senders and receivers. If these fail the state
+        // has already been committed — the queue is closed regardless.
+        // We propagate the error for visibility.
+        self.inner.not_empty.broadcast()?;
+        self.inner.not_full.broadcast()?;
+
         Ok(())
     }
 
     fn capacity(&self) -> usize {
-        let Ok(guard) = self.inner.mutex.lock_guard() else {
-            return 0;
-        };
-        self.buffer_locked(&guard).capacity()
+        self.inner.capacity
     }
 
     fn msg_size(&self) -> usize {
-        let Ok(guard) = self.inner.mutex.lock_guard() else {
-            return 0;
-        };
-        self.buffer_locked(&guard).message_size()
+        self.inner.message_size
     }
 
     fn len(&self) -> Result<usize> {
