@@ -36,7 +36,9 @@ pub trait Clock {
     ///
     /// Equivalent to `now() - since`, saturating at zero if `since` is
     /// in the future (which should not happen with monotonic time).
-    fn elapsed(since: Duration) -> Duration;
+    fn elapsed(since: Duration) -> Duration {
+        Self::now().saturating_sub(since)
+    }
 
     /// Block the calling task for at least `duration`.
     ///

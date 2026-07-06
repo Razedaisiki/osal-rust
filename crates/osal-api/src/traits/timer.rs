@@ -12,7 +12,9 @@ use crate::types::TimerMode;
 ///
 /// The callback executes in a timer service context (not ISR). It
 /// should be short, non-blocking, and must not panic.
-pub type TimerCallback = alloc::boxed::Box<dyn Fn() + Send + 'static>;
+/// Uses `FnMut` to allow callbacks to maintain mutable state
+/// (e.g. counters, accumulators).
+pub type TimerCallback = alloc::boxed::Box<dyn FnMut() + Send + 'static>;
 
 /// A software timer that invokes a callback after a configurable period.
 ///
@@ -40,7 +42,7 @@ pub type TimerCallback = alloc::boxed::Box<dyn Fn() + Send + 'static>;
 /// )?;
 /// timer.start()?;
 /// ```
-pub trait Timer: Sized {
+pub trait Timer: Sized + Clone {
     /// Create a new timer in the stopped state.
     ///
     /// `name` is informational (for debugging). `period` is the time

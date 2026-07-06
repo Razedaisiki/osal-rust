@@ -120,22 +120,7 @@ unsafe impl Send for PosixCondvar {}
 unsafe impl Sync for PosixCondvar {}
 
 // ---------------------------------------------------------------------------
-// Deadline helper
+// Deadline helper — re-exported from sys::time
 // ---------------------------------------------------------------------------
 
-/// Compute an absolute deadline from a relative duration.
-///
-/// Returns a `timespec` representing `now + timeout` using
-/// `CLOCK_MONOTONIC`, consistent with the condvar clock.
-pub fn abs_deadline(timeout: Duration) -> libc::timespec {
-    let mut ts = crate::sys::time::monotonic_now_raw();
-    let sec = timeout.as_secs() as libc::time_t;
-    let nsec = timeout.subsec_nanos() as libc::c_long;
-    ts.tv_sec += sec;
-    ts.tv_nsec += nsec;
-    if ts.tv_nsec >= 1_000_000_000 {
-        ts.tv_sec += 1;
-        ts.tv_nsec -= 1_000_000_000;
-    }
-    ts
-}
+pub use crate::sys::time::abs_deadline;
