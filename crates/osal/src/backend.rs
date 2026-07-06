@@ -8,8 +8,22 @@
 // Queue
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Queue
+// ---------------------------------------------------------------------------
+
 #[cfg(feature = "backend-mock")]
 pub use osal_backend_mock::queue::MockQueue as Queue;
 
 #[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
 pub use osal_backend_posix::queue::PosixQueue as Queue;
+
+// ---------------------------------------------------------------------------
+// Mutex
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "backend-mock")]
+pub use osal_backend_mock::mutex::MockMutex as Mutex;
+
+#[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
+pub use osal_backend_posix::mutex::PosixMutexImpl as Mutex;
