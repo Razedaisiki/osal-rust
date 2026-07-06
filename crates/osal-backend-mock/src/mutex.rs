@@ -1,26 +1,27 @@
 //! Mock mutex implementation.
 //!
 //! Uses `Rc` for shared ownership and `UnsafeCell` + `Cell` for
-//! interior mutability. Supports recursive locking.
+//! interior mutability. Non-recursive: only one guard at a time.
 //!
 //! # Capability boundary
 //!
-//! - Core contracts: supported (creation, lock/unlock, recursive)
+//! - Core contracts: supported (creation, lock/unlock)
 //! - Blocking contracts: deferred (single execution context;
 //!   cross-task contention not simulated)
 //!
 //! # Timeout semantics
 //!
-//! - `Timeout::NoWait`: succeeds if uncontended or recursive.
-//! - `Timeout::After(_)`: same as NoWait in single-task model.
-//! - `Timeout::Forever`: always succeeds (recursive).
+//! - `Timeout::NoWait`: succeeds if unlocked; `LockFailed` if locked.
+//! - `Timeout::After(d)`: same as NoWait when `d > 0`; `Timeout` when
+//!   `d == 0` and locked.
+//! - `Timeout::Forever`: always succeeds (uncontended).
 
 use alloc::rc::Rc;
 use core::cell::{Cell, UnsafeCell};
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 
-use osal_api::error::Result;
+use osal_api::error::{Error, Result};
 use osal_api::time::Timeout;
 use osal_api::traits::mutex::Mutex;
 
@@ -31,15 +32,9 @@ use osal_api::traits::mutex::Mutex;
 struct MockMutexInner<T> {
     /// The protected data.
     data: UnsafeCell<T>,
-    /// Recursion depth. 0 = unlocked, 1 = locked once, N = N locks.
-    recursion: Cell<usize>,
+    /// `true` when the mutex is currently held.
+    locked: Cell<bool>,
 }
-
-// Safety: the outer Rc ensures single ownership of the allocation.
-// UnsafeCell access is guarded by the recursion counter — data is
-// only accessed when recursion > 0 (lock held).
-unsafe impl<T: Send> Send for MockMutexInner<T> {}
-unsafe impl<T: Send> Sync for MockMutexInner<T> {}
 
 // ---------------------------------------------------------------------------
 // Public type
@@ -66,7 +61,7 @@ impl<T> MockMutex<T> {
         Ok(Self {
             inner: Rc::new(MockMutexInner {
                 data: UnsafeCell::new(value),
-                recursion: Cell::new(0),
+                locked: Cell::new(false),
             }),
         })
     }
@@ -79,14 +74,11 @@ impl<T> MockMutex<T> {
 /// RAII guard for [`MockMutex`].
 ///
 /// Provides `&T` / `&mut T` access via [`Deref`] / [`DerefMut`].
-/// Decrements the recursion count on drop; releases the lock
-/// when the count reaches zero.
+/// Sets the lock to released on drop.
 ///
-/// `!Send`: the guard represents ownership of a lock held by the
-/// current task. It must not be sent to another thread.
+/// `!Send`: the guard must not be sent to another thread.
 pub struct MockMutexGuard<'a, T> {
     inner: &'a MockMutexInner<T>,
-    // Make the guard `!Send`.
     _not_send: PhantomData<*const ()>,
 }
 
@@ -94,26 +86,22 @@ impl<T> Deref for MockMutexGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
-        // Safety: the guard only exists when recursion > 0,
-        // meaning the lock is held. Data access is safe.
+        // Safety: the guard only exists when locked is true.
         unsafe { &*self.inner.data.get() }
     }
 }
 
 impl<T> DerefMut for MockMutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        // Safety: the guard provides exclusive &mut access.
-        // In the mock single-context model, no other task can
-        // concurrently access the data.
+        // Safety: only one guard exists at a time (non-recursive).
         unsafe { &mut *self.inner.data.get() }
     }
 }
 
 impl<T> Drop for MockMutexGuard<'_, T> {
     fn drop(&mut self) {
-        let n = self.inner.recursion.get();
-        debug_assert!(n > 0, "guard dropped on unlocked mutex");
-        self.inner.recursion.set(n - 1);
+        debug_assert!(self.inner.locked.get(), "guard dropped on unlocked mutex");
+        self.inner.locked.set(false);
     }
 }
 
@@ -133,53 +121,28 @@ impl<T: 'static> Mutex<T> for MockMutex<T> {
     }
 
     fn lock(&self, timeout: Timeout) -> Result<Self::Guard<'_>> {
-        let n = self.inner.recursion.get();
-
-        if n > 0 {
-            // Already locked by this context — recursive lock.
-            self.inner.recursion.set(n + 1);
-            return Ok(MockMutexGuard {
-    inner: &self.inner,
-    _not_send: PhantomData,
-});
-        }
-
-        match timeout {
-            Timeout::NoWait => {
-                // Uncontended — acquire.
-                self.inner.recursion.set(1);
-                Ok(MockMutexGuard {
-    inner: &self.inner,
-    _not_send: PhantomData,
-})
-            }
-            Timeout::After(d) => {
-                if d == core::time::Duration::ZERO {
-                    // After(ZERO) on unlocked mutex succeeds immediately.
-                    // After(ZERO) on locked mutex would return Timeout,
-                    // but in single-task model the lock is always ours.
-                    self.inner.recursion.set(1);
-                    Ok(MockMutexGuard {
-    inner: &self.inner,
-    _not_send: PhantomData,
-})
-                } else {
-                    // Non-zero After — succeed immediately in mock.
-                    self.inner.recursion.set(1);
-                    Ok(MockMutexGuard {
-    inner: &self.inner,
-    _not_send: PhantomData,
-})
+        if self.inner.locked.get() {
+            match timeout {
+                Timeout::NoWait => return Err(Error::LockFailed),
+                Timeout::After(d) => {
+                    if d == core::time::Duration::ZERO {
+                        return Err(Error::Timeout);
+                    }
+                    // Non-zero After on locked mutex — succeed immediately
+                    // in mock (single-context, no real contention).
+                }
+                Timeout::Forever => {
+                    // Forever on locked mutex — would block forever in
+                    // real system but mock has no contention.
                 }
             }
-            Timeout::Forever => {
-                self.inner.recursion.set(1);
-                Ok(MockMutexGuard {
-    inner: &self.inner,
-    _not_send: PhantomData,
-})
-            }
         }
+
+        self.inner.locked.set(true);
+        Ok(MockMutexGuard {
+            inner: &self.inner,
+            _not_send: PhantomData,
+        })
     }
 }
 
