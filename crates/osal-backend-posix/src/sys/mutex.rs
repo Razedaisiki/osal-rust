@@ -43,7 +43,11 @@ impl Drop for MutexAttr {
 
 /// Wrapper around `pthread_mutex_t`.
 ///
-/// Uses `PTHREAD_MUTEX_ERRORCHECK` for deadlock detection.
+/// Uses `PTHREAD_MUTEX_RECURSIVE` to support recursive locking for
+/// `Mutex<T>`. For non-recursive use cases, use the higher-level
+/// `Mutex<T>` trait, which guarantees correct nesting via guard
+/// ownership.
+///
 /// The inner FFI object is wrapped in [`UnsafeCell`] because
 /// pthread operations mutate it through `&self`.
 pub struct PosixMutex {
@@ -51,14 +55,14 @@ pub struct PosixMutex {
 }
 
 impl PosixMutex {
-    /// Create and initialize a new mutex.
+    /// Create and initialize a new recursive mutex.
     pub fn new() -> Result<Self> {
         let attr = MutexAttr::new()?;
 
         errno::check_ret(unsafe {
             libc::pthread_mutexattr_settype(
                 &raw const attr.inner as *mut _,
-                libc::PTHREAD_MUTEX_ERRORCHECK,
+                libc::PTHREAD_MUTEX_RECURSIVE,
             )
         })?;
 
@@ -76,13 +80,37 @@ impl PosixMutex {
         errno::check_ret(unsafe { libc::pthread_mutex_lock(self.raw_ptr()) })
     }
 
+    /// Non-blocking try-lock.
+    ///
+    /// Returns `Ok(())` if acquired, or an error (typically
+    /// `Error::LockFailed` via `EBUSY`) if the mutex is held
+    /// by another thread.
+    pub fn try_lock(&self) -> Result<()> {
+        errno::check_ret(unsafe { libc::pthread_mutex_trylock(self.raw_ptr()) })
+    }
+
+    /// Timed lock with absolute deadline.
+    ///
+    /// Uses `CLOCK_MONOTONIC`. The mutex must have been initialized
+    /// with a monotonic-clock-compatible attribute (which the
+    /// `PTHREAD_MUTEX_RECURSIVE` path satisfies on Linux).
+    ///
+    /// Returns `Error::Timeout` if the deadline expires before
+    /// the lock is acquired.
+    pub fn timed_lock(&self, abs_time: &libc::timespec) -> Result<()> {
+        errno::check_ret(unsafe {
+            libc::pthread_mutex_timedlock(self.raw_ptr(), abs_time)
+        })
+    }
+
     /// Unlock the mutex.
     pub fn unlock(&self) -> Result<()> {
         errno::check_ret(unsafe { libc::pthread_mutex_unlock(self.raw_ptr()) })
     }
 
     /// Lock and return a RAII guard that unlocks on drop.
-    pub fn lock_guard(&self) -> Result<PosixMutexGuard<'_>> {
+    #[allow(dead_code)]
+    pub(crate) fn lock_guard(&self) -> Result<PosixMutexGuard<'_>> {
         self.lock()?;
         Ok(PosixMutexGuard {
             mutex: self,

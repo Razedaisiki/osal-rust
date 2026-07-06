@@ -9,5 +9,6 @@
 
 extern crate alloc;
 
+pub mod mutex;
 pub mod queue;
 pub(crate) mod sys;
