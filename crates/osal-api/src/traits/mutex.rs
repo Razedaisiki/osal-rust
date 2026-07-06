@@ -1,4 +1,4 @@
-//! Mutex trait — recursive mutual exclusion lock.
+//! Mutex trait — mutual exclusion lock.
 //!
 //! See [the behavior contract](../../../../docs/behavior-contract.md#9-mutex-contract)
 //! for the full behavioral specification.
@@ -8,19 +8,19 @@ use core::ops::{Deref, DerefMut};
 use crate::error::Result;
 use crate::time::Timeout;
 
-/// A recursive mutual exclusion lock protecting a value of type `T`.
+/// A mutual exclusion lock protecting a value of type `T`.
 ///
-/// # Recursive semantics
+/// # Non-recursive
 ///
-/// The owning task may lock the same mutex multiple times without
-/// deadlocking. Each call to [`lock`](Mutex::lock) must be paired with
-/// exactly one drop of the returned guard. The mutex is fully released
-/// only when the last guard is dropped.
+/// The mutex is **non-recursive**. The owning task cannot lock the same
+/// mutex again while a guard is still alive. Attempting to do so returns
+/// `Error::LockFailed` (for `NoWait`) or `Error::Timeout` (for `After`).
+/// Recursive locking is deferred to a future `RecursiveMutex` type.
 ///
 /// # ISR safety
 ///
-/// Mutex operations are **not** ISR-safe. Use [`Semaphore`] or
-/// [`Queue::isr_send`] for interrupt-context signaling.
+/// Mutex operations are **not** ISR-safe. Use [`Semaphore`] or future
+/// ISR extension traits for interrupt-context signaling.
 ///
 /// # Examples
 ///
@@ -36,8 +36,8 @@ use crate::time::Timeout;
 pub trait Mutex<T>: Sized {
     /// The guard type returned by a successful lock.
     ///
-    /// Provides `&mut T` access via [`DerefMut`]. Releases one level of
-    /// the lock when dropped.
+    /// Provides `&mut T` access via [`DerefMut`]. Releases the lock
+    /// when dropped.
     type Guard<'a>: Deref<Target = T> + DerefMut<Target = T>
     where
         Self: 'a,
@@ -53,12 +53,11 @@ pub trait Mutex<T>: Sized {
     ///
     /// | `timeout` | Behavior |
     /// |-----------|----------|
-    /// | `NoWait`  | Return immediately; `Error::LockFailed` if the mutex is held by another task. |
-    /// | `After(d)`| Block for at most `d`; `Error::Timeout` if the mutex is not acquired in time. |
+    /// | `NoWait`  | Return immediately; `Error::LockFailed` if the mutex is held. |
+    /// | `After(d)`| Block for at most `d`; `Error::Timeout` if not acquired in time. |
     /// | `Forever` | Block until the mutex is acquired. |
     ///
-    /// The owning task may call `lock` again without blocking
-    /// (recursive lock). Each `lock` call produces a new guard;
-    /// dropping that guard releases one recursion level.
+    /// Only one guard may exist at a time. Attempting to lock while
+    /// already holding a guard returns `Error::LockFailed`.
     fn lock(&self, timeout: Timeout) -> Result<Self::Guard<'_>>;
 }

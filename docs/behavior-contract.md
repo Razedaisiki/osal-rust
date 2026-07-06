@@ -351,7 +351,7 @@ impl ExitCode {
 
 ### Type: `Mutex<T>`
 
-A recursive mutual exclusion lock protecting a value of type `T`.
+A **non-recursive** mutual exclusion lock protecting a value of type `T`.
 
 ### Creation
 
@@ -376,17 +376,18 @@ impl<T> Mutex<T> {
   - Acquires the mutex, blocking up to `timeout`.
   - On success, returns a `MutexGuard` that provides `&mut T` access
     via `DerefMut`.
-  - Dropping the `MutexGuard` releases one level of the lock.
-  - Recursive: the owning task may call `lock` again without blocking.
-    Each `lock` must be matched by a corresponding guard drop.
+  - Dropping the `MutexGuard` releases the lock.
+  - **Non-recursive**: the owning task must not call `lock` again while
+    a guard is alive. Attempting to do so returns `Error::LockFailed`
+    (for `NoWait`).
   - Returns `Error::Timeout` if the timeout expires.
   - Returns `Error::LockFailed` if `Timeout::NoWait` and the mutex
-    is held by another task.
+    is held.
+- Recursive locking is deferred to a future `RecursiveMutex` type.
 
 > **ISR note:** Mutex operations are **not** ISR-safe. Use
 > [`Semaphore`] or future ISR extension traits for interrupt-context
-> signaling. ISR mutex support is deferred to a future `IsrMutex`
-> extension trait for the FreeRTOS backend.
+> signaling.
 
 ### MutexGuard
 
@@ -395,7 +396,7 @@ pub struct MutexGuard<'a, T> { ... }
 
 impl<T> Deref for MutexGuard<'_, T> { type Target = T; ... }
 impl<T> DerefMut for MutexGuard<'_, T> { ... }
-impl<T> Drop for MutexGuard<'_, T> { /* releases one lock level */ }
+impl<T> Drop for MutexGuard<'_, T> { /* releases the lock */ }
 ```
 
 - `MutexGuard` is `!Send` (it represents ownership of a task-local
