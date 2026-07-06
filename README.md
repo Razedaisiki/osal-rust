@@ -89,7 +89,7 @@ Proprietary. See [LICENSE](LICENSE) for details.
 
 ## Status
 
-**P0-P3 complete: Queue, Mutex, Semaphore, Clock, and Timer stabilized.**
+**P0-P2 complete. P3 functional; P3.1 timer runtime stabilization in progress.**
 
 Queue, Mutex, CountingSemaphore, and BinarySemaphore are implemented
 across API, Portable, Mock, POSIX, contract tests, and facade.
