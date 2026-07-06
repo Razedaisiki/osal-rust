@@ -7,8 +7,20 @@ use osal_api::error::{Error, Result};
 use osal_api::traits::timer::{Timer, TimerCallback};
 use osal_api::types::TimerMode;
 
-use crate::clock::with_runtime;
+use crate::clock::advance_and_dispatch;
 use crate::time_runtime::MockTimerKey;
+
+static RUNTIME: spin::Mutex<Option<crate::time_runtime::MockTimeRuntime>> =
+    spin::Mutex::new(None);
+
+fn with_runtime<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut crate::time_runtime::MockTimeRuntime) -> R,
+{
+    let mut guard = RUNTIME.lock();
+    let rt = guard.get_or_insert_with(crate::time_runtime::MockTimeRuntime::new);
+    f(rt)
+}
 
 // ---------------------------------------------------------------------------
 // Handle inner — Drop deregisters from runtime
@@ -20,7 +32,9 @@ struct MockTimerHandleInner {
 
 impl Drop for MockTimerHandleInner {
     fn drop(&mut self) {
-        with_runtime(|rt| rt.deregister_timer(self.key));
+        if let Some(rt) = RUNTIME.lock().as_mut() {
+            rt.deregister_timer(self.key);
+        }
     }
 }
 
@@ -103,13 +117,6 @@ impl osal_testkit::factory::ClockFactory for MockTimerFactory {
 #[cfg(feature = "testkit")]
 impl osal_testkit::factory::ClockControl for MockTimerFactory {
     fn advance_clock(&self, d: Duration) {
-        let actions = with_runtime(|rt| {
-            rt.advance_time(d);
-            rt.collect_expired_actions()
-        });
-        for (key, mut cb) in actions {
-            cb();
-            with_runtime(|rt| rt.restore_callback(key, cb));
-        }
+        advance_and_dispatch(d);
     }
 }

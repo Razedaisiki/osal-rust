@@ -70,8 +70,10 @@ extern "C" fn init_service() {
                 initialized: false,
             }),
         });
-        SERVICE_OK = true;
-        spawn_service_thread();
+        // Only mark OK after thread creation succeeds
+        if spawn_service_thread() {
+            SERVICE_OK = true;
+        }
     }
 }
 
@@ -89,18 +91,21 @@ fn with_service<R>(f: impl FnOnce(&TimerService) -> R) -> Option<R> {
     unsafe { Some(f(&*SERVICE.as_ptr())) }
 }
 
-fn with_service_state<R>(f: impl FnOnce(&mut TimerServiceState) -> R) -> Option<R> {
+fn with_service_locked<R>(f: impl FnOnce(&TimerService, &mut TimerServiceState) -> R) -> Option<R> {
     with_service(|svc| {
+        let guard = svc.mutex.lock_guard().ok()?;
         let state = unsafe { &mut *svc.state.get() };
-        f(state)
-    })
+        let result = f(svc, state);
+        drop(guard);
+        Some(result)
+    })?
 }
 
 // ---------------------------------------------------------------------------
 // Service thread
 // ---------------------------------------------------------------------------
 
-fn spawn_service_thread() {
+fn spawn_service_thread() -> bool {
     unsafe {
         let mut attr: libc::pthread_attr_t = core::mem::zeroed();
         libc::pthread_attr_init(&mut attr);
@@ -108,9 +113,7 @@ fn spawn_service_thread() {
         let mut thread: libc::pthread_t = core::mem::zeroed();
         let ret = libc::pthread_create(&mut thread, &attr, service_loop, core::ptr::null_mut());
         libc::pthread_attr_destroy(&mut attr);
-        if ret != 0 {
-            // Thread creation failed after init succeeded — mark as broken
-        }
+        ret == 0
     }
 }
 
@@ -208,7 +211,7 @@ fn dispatch_one(svc: &TimerService) {
 // ---------------------------------------------------------------------------
 
 pub fn register(period: Duration, mode: osal_api::types::TimerMode, callback: TimerCallback) -> Option<u64> {
-    with_service_state(|state| {
+    with_service_locked(|svc, state| {
         let id = state.next_id;
         state.next_id += 1;
         state.timers.push(TimerEntry {
@@ -217,14 +220,13 @@ pub fn register(period: Duration, mode: osal_api::types::TimerMode, callback: Ti
             callback: Some(callback),
             deleted: false,
         });
+        let _ = svc.condvar.signal();
         id
     })
 }
 
 pub fn start(id: u64) {
-    with_service(|svc| {
-        let guard = svc.mutex.lock_guard().unwrap();
-        let state = unsafe { &mut *svc.state.get() };
+    with_service_locked(|svc, state| {
         let now = time::monotonic_now();
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
             let _ = e.state.start(now);
@@ -234,9 +236,7 @@ pub fn start(id: u64) {
 }
 
 pub fn stop(id: u64) {
-    with_service(|svc| {
-        let guard = svc.mutex.lock_guard().unwrap();
-        let state = unsafe { &mut *svc.state.get() };
+    with_service_locked(|svc, state| {
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
             e.state.stop();
             let _ = svc.condvar.signal();
@@ -245,9 +245,7 @@ pub fn stop(id: u64) {
 }
 
 pub fn reset(id: u64) {
-    with_service(|svc| {
-        let guard = svc.mutex.lock_guard().unwrap();
-        let state = unsafe { &mut *svc.state.get() };
+    with_service_locked(|svc, state| {
         let now = time::monotonic_now();
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
             let _ = e.state.reset(now);
@@ -257,9 +255,7 @@ pub fn reset(id: u64) {
 }
 
 pub fn change_period(id: u64, new_period: Duration) {
-    with_service(|svc| {
-        let guard = svc.mutex.lock_guard().unwrap();
-        let state = unsafe { &mut *svc.state.get() };
+    with_service_locked(|svc, state| {
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
             let _ = e.state.change_period(new_period);
             let _ = svc.condvar.signal();
@@ -268,9 +264,7 @@ pub fn change_period(id: u64, new_period: Duration) {
 }
 
 pub fn deregister(id: u64) {
-    with_service(|svc| {
-        let guard = svc.mutex.lock_guard().unwrap();
-        let state = unsafe { &mut *svc.state.get() };
+    with_service_locked(|svc, state| {
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
             e.deleted = true;
             e.state.stop();

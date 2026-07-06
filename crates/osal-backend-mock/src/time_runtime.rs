@@ -130,45 +130,40 @@ impl MockTimeRuntime {
         }
     }
 
-    /// Collect all expired callbacks in deadline order. Each timer
-    /// contributes at most one callback. Caller must execute the returned
-    /// callbacks outside the RefCell borrow.
-    pub fn collect_expired_actions(&mut self) -> Vec<(MockTimerKey, TimerCallback)> {
-        let mut actions: Vec<(MockTimerKey, TimerCallback)> = Vec::new();
+    /// Take ONE expired callback. Returns (key, callback) for the
+    /// earliest expired timer. Caller must execute the callback outside
+    /// the RefCell borrow, then call `restore_callback`.
+    ///
+    /// Only one callback is taken at a time so that callbacks can
+    /// stop/reset other timers before their callbacks are taken.
+    pub fn take_next_expired(&mut self) -> Option<(MockTimerKey, TimerCallback)> {
         let now = self.now;
+        let mut best: Option<(usize, Duration, u64)> = None;
 
-        loop {
-            // Find the earliest non-deleted timer with callback and deadline <= now
-            let mut best: Option<(usize, Duration, u64)> = None;
-            for (i, e) in self.timers.iter().enumerate() {
-                if e.deleted || e.callback.is_none() {
-                    continue;
-                }
-                if let Some(d) = e.state.deadline() {
-                    if d <= now {
-                        match best {
-                            None => best = Some((i, d, e.creation_order)),
-                            Some((_, bd, bo)) if d < bd || (d == bd && e.creation_order < bo) => {
-                                best = Some((i, d, e.creation_order));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+        for (i, e) in self.timers.iter().enumerate() {
+            if e.deleted || e.callback.is_none() {
+                continue;
             }
-            match best {
-                Some((idx, _, _)) => {
-                    let entry = &mut self.timers[idx];
-                    if !entry.state.advance_on_expiry(now) {
-                        break;
+            if let Some(d) = e.state.deadline() {
+                if d <= now {
+                    match best {
+                        None => best = Some((i, d, e.creation_order)),
+                        Some((_, bd, bo)) if d < bd || (d == bd && e.creation_order < bo) => {
+                            best = Some((i, d, e.creation_order));
+                        }
+                        _ => {}
                     }
-                    let cb = entry.callback.take().unwrap();
-                    actions.push((entry.key, cb));
                 }
-                None => break,
             }
         }
-        actions
+
+        let (idx, _, _) = best?;
+        let entry = &mut self.timers[idx];
+        if !entry.state.advance_on_expiry(now) {
+            return None;
+        }
+        let cb = entry.callback.take().unwrap();
+        Some((entry.key, cb))
     }
 
     /// Restore a callback after execution.

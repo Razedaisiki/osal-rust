@@ -20,3 +20,4 @@ osal-api = { path = "../osal-api" }
 osal-shared = { path = "../osal-shared" }
 osal-portable = { path = "../osal-portable" }
 osal-testkit = { path = "../osal-testkit", optional = true }
+spin = "0.9"
