@@ -22,10 +22,11 @@ across different platforms by switching the backend.
 | CountingSemaphore | ✓      | ✓        | ✓        | ✓        | ✓        | ✓        |
 | BinarySemaphore | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        |
 | Semaphore ISR   | Deferred | —        | —        | —        | —        | —        |
+| Clock           | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        |
+| Timer           | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        |
+| Timer ISR       | Deferred | —        | —        | —        | —        | —        |
 | System          | API only | —        | —        | —        | skeleton | —        |
 | Task            | API only | —        | —        | —        | skeleton | —        |
-| Timer           | API only | —        | —        | —        | skeleton | —        |
-| Clock           | ✓        | —        | ✓        | —        | ✓        | —        |
 
 **Legend:**
 - ✓ — Implemented and tested
@@ -88,7 +89,7 @@ Proprietary. See [LICENSE](LICENSE) for details.
 
 ## Status
 
-**P0 complete: Queue stabilized. P1/P1.1 complete: Mutex stabilized. P2 complete: Semaphore stabilized.**
+**P0-P3 complete: Queue, Mutex, Semaphore, Clock, and Timer stabilized.**
 
 Queue, Mutex, CountingSemaphore, and BinarySemaphore are implemented
 across API, Portable, Mock, POSIX, contract tests, and facade.
