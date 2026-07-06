@@ -73,6 +73,14 @@ pub fn advance_clock_increases_now<F: ControlledClockFactory>(factory: &F) {
     assert!(b >= a + Duration::from_millis(1));
 }
 
+/// Realtime clock tests (require a real clock, e.g. POSIX).
+///
+/// Uses `std::time::Instant` for independent timing verification.
+#[cfg(feature = "std")]
+pub fn run_realtime_contracts<F: ClockFactory>(_factory: &F) {
+    delay_waits_at_least_duration::<F>(_factory);
+}
+
 // ---------------------------------------------------------------------------
 // Grouped entry points
 // ---------------------------------------------------------------------------

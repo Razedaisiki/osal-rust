@@ -31,3 +31,9 @@ pub trait TimerFactory {
         Box::new(|| {})
     }
 }
+
+/// Factory for creating timer instances in a controlled (deterministic)
+/// time environment. Implemented by Mock; not by POSIX.
+pub trait ControlledTimerFactory: TimerFactory + crate::factory::ControlledClockFactory {}
+
+impl<T> ControlledTimerFactory for T where T: TimerFactory + crate::factory::ControlledClockFactory {}

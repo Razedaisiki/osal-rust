@@ -27,7 +27,7 @@ pub use queue::QueueFactory;
 pub use semaphore::SemaphoreFactory;
 pub use system::SystemFactory;
 pub use task::TaskFactory;
-pub use timer::TimerFactory;
+pub use timer::{ControlledTimerFactory, TimerFactory};
 
 /// Combined Phase A factory for backward compatibility.
 ///

@@ -13,11 +13,11 @@ pub trait ClockFactory {
 /// Control interface for deterministic (fake) clocks.
 ///
 /// Used by contract tests that need to advance time without
-/// waiting for real time to pass. Real-time backends leave
-/// this as a no-op.
+/// waiting for real time to pass. Only Mock implements this;
+/// POSIX backends do not.
 pub trait ClockControl {
     /// Advance the clock by `duration`.
-    fn advance_clock(&self, _duration: Duration) {}
+    fn advance_clock(&self, duration: Duration);
 }
 
 /// Convenience bound: a clock that is both accessible and controllable.
