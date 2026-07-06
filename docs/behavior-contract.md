@@ -195,17 +195,37 @@ universal time representation across the OSAL API.
 - The clock must never jump backward.
 - Resolution is backend-dependent; portable code must not assume
   sub-millisecond precision.
-- `Clock::elapsed(since: Duration) -> Duration` is equivalent to
-  `now() - since`, saturating at zero.
+- `Clock::elapsed(since: Duration) -> Duration` has a default
+  implementation: `Self::now().saturating_sub(since)`. Backends only
+  need to implement `now()` and `delay()`.
+- All OSAL primitives (Queue, Mutex, Semaphore, Timer) use the same
+  monotonic time domain provided by the active backend.
+- **POSIX**: `clock_gettime(CLOCK_MONOTONIC)`. Wall-clock changes
+  must not affect OSAL timing.
+- **Mock**: virtual `Duration` counter in `MockTimeRuntime`.
+  `delay()` advances the clock AND dispatches any timers that expire
+  during the advance. `reset_clock()` is test-only, not part of the
+  public `Clock` trait.
 
 ### Delay contract
 
 - `Clock::delay(d: Duration)` blocks the calling task for **at least**
   `d`. It may block longer due to scheduling.
 - `delay(Duration::ZERO)` must return immediately.
-- Implementations should use the most efficient blocking primitive
-  available (e.g. `nanosleep`, `pthread_cond_timedwait`, RTOS tick
-  delay).
+- POSIX uses `nanosleep` with `EINTR` restart (remaining time preserved).
+- Deadline arithmetic uses checked operations; overflow must not cause
+  silent wraparound or premature timeout.
+
+### Mock time contract
+
+- `MockClockControl::advance_clock(d)` advances virtual time by `d` and
+  synchronously dispatches all timers that expire at or before the new
+  time.
+- `MockClockControl::reset_clock()` resets time to zero and clears the
+  timer registry. Only for test initialization; must not be called
+  while timers from a previous test are still alive.
+- Mock `delay(d)` is equivalent to `advance_clock(d)` — it is
+  deterministic and does not sleep.
 
 ---
 
@@ -629,6 +649,8 @@ then M2, and task B receives twice, B receives M1 then M2.
 ### Type: `Timer`
 
 A software timer that invokes a callback after a specified period.
+`Timer` requires `Clone` (per ADR 0006); all clones share the same
+underlying timer.
 
 ### Creation
 
@@ -638,7 +660,7 @@ pub enum TimerMode {
     Periodic,
 }
 
-pub type TimerCallback = Box<dyn Fn() + Send + 'static>;
+pub type TimerCallback = Box<dyn FnMut() + Send + 'static>;
 
 impl Timer {
     pub fn new(
@@ -654,8 +676,7 @@ impl Timer {
   - Returns `Error::InvalidParameter` if `period` is zero.
   - Returns `Error::OutOfMemory` on allocation failure.
   - The timer is created in the **stopped** state.
-  - The callback is invoked when the timer expires. It must not panic
-    (panic in callback aborts the process on `panic=abort`).
+  - The callback is invoked when the timer expires.
 
 ### Operations
 
@@ -669,31 +690,56 @@ impl Timer {
 ```
 
 - `start()`:
-  - Begins the countdown. If already running, behaves like `reset()`.
-  - The callback fires after `period` has elapsed.
+  - Stopped → deadline = now + period, running = true.
+  - Already running → equivalent to `reset()`.
 - `stop()`:
-  - Prevents future callbacks. In-flight callbacks are not interrupted.
-  - If already stopped, this is a no-op.
+  - Idempotent. Prevents future callbacks.
+  - In-flight callbacks are not interrupted.
 - `reset()`:
-  - Restarts the countdown from now. If stopped, also starts the timer.
+  - deadline = now + period, running = true.
+  - Stopped → starts. Running → discards old deadline.
 - `change_period(new_period)`:
-  - Updates the period. Takes effect on the next expiration.
   - Returns `Error::InvalidParameter` if `new_period` is zero.
+  - Stopped → updates period; next start uses new period.
+  - Running → updates period; current deadline unchanged; new period
+    takes effect on the **next** expiration.
 
 ### Callback execution
 
-- **OneShot**: the callback fires once, then the timer stops.
-- **Periodic**: the callback fires, then the timer automatically
-  reloads. The next countdown begins from the scheduled expiration
-  time (not from callback completion) where practical.
-- Callbacks execute outside the timer management lock.
-- Callbacks execute in a timer service context (not ISR).
-- Callbacks should be short and non-blocking.
+- Callbacks execute in a **timer service context** (Mock: synchronously
+  in `advance_clock`; POSIX: single background pthread). Callbacks are
+  **not** invoked from ISR context.
+- Callbacks execute **outside** the timer management lock; they may
+  call other OSAL APIs including timer control operations.
+- A single timer's callback is **never** called concurrently with
+  itself (serial execution).
+- **OneShot**: fires once, then transitions to stopped. If
+  `start()`/`reset()` is called during callback execution, the new
+  state takes precedence.
+- **Periodic**: fires, then auto-reloads. The next deadline is computed
+  as `previous_deadline + period` (fixed-rate), not from callback
+  completion time. If one or more periods were missed, only one
+  callback fires; the next deadline advances to the first multiple of
+  `period` strictly after `now`.
 
-### Deletion
+### Generation and stale expiration
 
-- Dropping a `Timer` stops it and frees resources. In-flight callbacks
-  are not interrupted.
+Every state change (`start`, `stop`, `reset`, `change_period`,
+last-handle `drop`) increments a generation counter. When a callback
+completes, if the generation has changed, the timer's state was
+modified during callback execution and the old expiration logic
+(auto-reload for Periodic) is skipped.
+
+### Handle Clone and Drop
+
+- `Clone` creates another handle to the same timer. All handles are
+  equal; any handle can start, stop, reset, or change_period.
+- Dropping one handle does not affect the timer. The timer is cancelled
+  only when the **last** handle is dropped.
+- Last-handle drop prevents future callbacks. In-flight callbacks are
+  not waited for; they complete independently.
+- The timer service registry must not hold strong references to timer
+  handles (prevents leaks).
 
 ---
 
