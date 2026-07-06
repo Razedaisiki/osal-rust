@@ -1,6 +1,6 @@
 //! Mock timer — deterministic software timer with epoch isolation.
 
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use core::time::Duration;
 
 use osal_api::error::{Error, Result};
@@ -8,18 +8,7 @@ use osal_api::traits::timer::{Timer, TimerCallback};
 use osal_api::types::TimerMode;
 
 use crate::clock::advance_and_dispatch;
-use crate::time_runtime::MockTimerKey;
-
-static RUNTIME: spin::Mutex<Option<crate::time_runtime::MockTimeRuntime>> = spin::Mutex::new(None);
-
-fn with_runtime<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut crate::time_runtime::MockTimeRuntime) -> R,
-{
-    let mut guard = RUNTIME.lock();
-    let rt = guard.get_or_insert_with(crate::time_runtime::MockTimeRuntime::new);
-    f(rt)
-}
+use crate::time_runtime::{with_runtime, MockTimerKey};
 
 // ---------------------------------------------------------------------------
 // Handle inner — Drop deregisters from runtime
@@ -31,9 +20,7 @@ struct MockTimerHandleInner {
 
 impl Drop for MockTimerHandleInner {
     fn drop(&mut self) {
-        if let Some(rt) = RUNTIME.lock().as_mut() {
-            rt.deregister_timer(self.key);
-        }
+        with_runtime(|rt| rt.deregister_timer(self.key));
     }
 }
 
@@ -43,22 +30,17 @@ impl Drop for MockTimerHandleInner {
 
 #[derive(Clone)]
 pub struct MockTimer {
-    inner: Rc<MockTimerHandleInner>,
+    inner: Arc<MockTimerHandleInner>,
 }
 
 impl MockTimer {
-    pub fn new(
-        _name: &str,
-        period: Duration,
-        mode: TimerMode,
-        callback: TimerCallback,
-    ) -> Result<Self> {
+    pub fn new(_name: &str, period: Duration, mode: TimerMode, callback: TimerCallback) -> Result<Self> {
         if period == Duration::ZERO {
             return Err(Error::InvalidParameter);
         }
         let key = with_runtime(|rt| rt.register_timer(period, mode, callback));
         Ok(Self {
-            inner: Rc::new(MockTimerHandleInner { key }),
+            inner: Arc::new(MockTimerHandleInner { key }),
         })
     }
 }

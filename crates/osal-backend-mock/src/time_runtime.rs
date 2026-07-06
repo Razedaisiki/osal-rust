@@ -175,3 +175,34 @@ impl MockTimeRuntime {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Global runtime singleton (one per process)
+// ---------------------------------------------------------------------------
+
+static RUNTIME: spin::Mutex<Option<MockTimeRuntime>> = spin::Mutex::new(None);
+
+pub(crate) fn with_runtime<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut MockTimeRuntime) -> R,
+{
+    let mut guard = RUNTIME.lock();
+    let rt = guard.get_or_insert_with(MockTimeRuntime::new);
+    f(rt)
+}
+
+pub(crate) fn take_next_expired() -> Option<(MockTimerKey, TimerCallback)> {
+    RUNTIME.lock().as_mut().and_then(|rt| rt.take_next_expired())
+}
+
+pub(crate) fn restore_callback(key: MockTimerKey, callback: TimerCallback) {
+    if let Some(rt) = RUNTIME.lock().as_mut() {
+        rt.restore_callback(key, callback);
+    }
+}
+
+pub(crate) fn reset_runtime() {
+    if let Some(rt) = RUNTIME.lock().as_mut() {
+        rt.reset();
+    }
+}

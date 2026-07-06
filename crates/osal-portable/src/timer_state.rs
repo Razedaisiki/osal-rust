@@ -14,6 +14,7 @@ use osal_api::types::TimerMode;
 use crate::time_convert;
 
 /// Portable timer state: mode, period, deadline.
+#[derive(Debug)]
 pub struct TimerState {
     mode: TimerMode,
     period: Duration,

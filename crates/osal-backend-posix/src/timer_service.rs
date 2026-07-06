@@ -3,7 +3,6 @@
 //! Lazy-initialized via `pthread_once`. State is protected by `PosixMutex`.
 //! Callbacks execute outside the mutex lock.
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
@@ -30,7 +29,6 @@ struct TimerEntry {
 struct TimerServiceState {
     timers: Vec<TimerEntry>,
     next_id: u64,
-    initialized: bool,
 }
 
 struct TimerService {
@@ -39,17 +37,42 @@ struct TimerService {
     state: UnsafeCell<TimerServiceState>,
 }
 
+impl TimerService {
+    fn state_locked<'a>(
+        &'a self,
+        _guard: &'a crate::sys::mutex::PosixMutexGuard<'_>,
+    ) -> &'a mut TimerServiceState {
+        // Safety: state is only accessed while the mutex is held.
+        unsafe { &mut *self.state.get() }
+    }
+}
+
 // Safety: all state access is guarded by the mutex.
 unsafe impl Send for TimerService {}
 unsafe impl Sync for TimerService {}
 
 // ---------------------------------------------------------------------------
-// Singleton via pthread_once
+// Storage — UnsafeCell wrapper for Rust 2024 compliance
 // ---------------------------------------------------------------------------
 
+struct TimerServiceStorage {
+    value: UnsafeCell<MaybeUninit<TimerService>>,
+}
+
+// Safety: SERVICE is initialized once by pthread_once;
+// after init, internal mutable state is protected by PosixMutex.
+unsafe impl Sync for TimerServiceStorage {}
+
+static SERVICE: TimerServiceStorage = TimerServiceStorage {
+    value: UnsafeCell::new(MaybeUninit::uninit()),
+};
+
 static mut SERVICE_ONCE: libc::pthread_once_t = libc::PTHREAD_ONCE_INIT;
-static mut SERVICE: MaybeUninit<TimerService> = MaybeUninit::uninit();
 static mut SERVICE_OK: bool = false;
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
 
 extern "C" fn init_service() {
     unsafe {
@@ -61,16 +84,14 @@ extern "C" fn init_service() {
             Ok(c) => c,
             Err(_) => return,
         };
-        SERVICE.write(TimerService {
+        (*SERVICE.value.get()).write(TimerService {
             mutex,
             condvar,
             state: UnsafeCell::new(TimerServiceState {
                 timers: Vec::new(),
                 next_id: 1,
-                initialized: false,
             }),
         });
-        // Only mark OK after thread creation succeeds
         if spawn_service_thread() {
             SERVICE_OK = true;
         }
@@ -79,22 +100,28 @@ extern "C" fn init_service() {
 
 fn ensure_init() -> bool {
     unsafe {
-        libc::pthread_once(&raw mut SERVICE_ONCE, Some(init_service));
+        libc::pthread_once(&raw mut SERVICE_ONCE, init_service);
         SERVICE_OK
     }
 }
 
-fn with_service<R>(f: impl FnOnce(&TimerService) -> R) -> Option<R> {
+fn get_service() -> Option<&'static TimerService> {
     if !ensure_init() {
         return None;
     }
-    unsafe { Some(f(&*SERVICE.as_ptr())) }
+    unsafe { Some(&*(*SERVICE.value.get()).as_ptr()) }
 }
 
-fn with_service_locked<R>(f: impl FnOnce(&TimerService, &mut TimerServiceState) -> R) -> Option<R> {
+fn with_service<R>(f: impl FnOnce(&TimerService) -> R) -> Option<R> {
+    Some(f(get_service()?))
+}
+
+fn with_service_locked<R>(
+    f: impl FnOnce(&TimerService, &mut TimerServiceState) -> R,
+) -> Option<R> {
     with_service(|svc| {
         let guard = svc.mutex.lock_guard().ok()?;
-        let state = unsafe { &mut *svc.state.get() };
+        let state = svc.state_locked(&guard);
         let result = f(svc, state);
         drop(guard);
         Some(result)
@@ -111,7 +138,8 @@ fn spawn_service_thread() -> bool {
         libc::pthread_attr_init(&mut attr);
         libc::pthread_attr_setdetachstate(&mut attr, libc::PTHREAD_CREATE_DETACHED);
         let mut thread: libc::pthread_t = core::mem::zeroed();
-        let ret = libc::pthread_create(&mut thread, &attr, service_loop, core::ptr::null_mut());
+        let ret =
+            libc::pthread_create(&mut thread, &attr, service_loop, core::ptr::null_mut());
         libc::pthread_attr_destroy(&mut attr);
         ret == 0
     }
@@ -119,9 +147,12 @@ fn spawn_service_thread() -> bool {
 
 extern "C" fn service_loop(_arg: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
     loop {
-        let svc = unsafe { &*SERVICE.as_ptr() };
+        let svc = match get_service() {
+            Some(s) => s,
+            None => return core::ptr::null_mut(),
+        };
         let mut guard = svc.mutex.lock_guard().unwrap();
-        let state = unsafe { &mut *svc.state.get() };
+        let state = svc.state_locked(&guard);
 
         // Clean up deleted timers
         state.timers.retain(|e| !e.deleted);
@@ -145,7 +176,6 @@ extern "C" fn service_loop(_arg: *mut core::ffi::c_void) -> *mut core::ffi::c_vo
             }
             Some(deadline) if deadline <= now => {
                 drop(guard);
-                // Dispatch one callback outside lock
                 dispatch_one(svc);
             }
             Some(deadline) => {
@@ -160,45 +190,42 @@ extern "C" fn service_loop(_arg: *mut core::ffi::c_void) -> *mut core::ffi::c_vo
 /// Dispatch ONE expired timer. Locks, finds earliest expired, takes
 /// callback, unlocks, executes, re-locks, restores callback.
 fn dispatch_one(svc: &TimerService) {
-    let mut guard = svc.mutex.lock_guard().unwrap();
-    let state = unsafe { &mut *svc.state.get() };
-    let now = time::monotonic_now();
+    let (id, mut callback) = {
+        let guard = svc.mutex.lock_guard().unwrap();
+        let state = svc.state_locked(&guard);
+        let now = time::monotonic_now();
 
-    // Find earliest expired with callback present
-    let mut best_idx: Option<usize> = None;
-    for (i, e) in state.timers.iter().enumerate() {
-        if e.deleted || e.callback.is_none() {
-            continue;
-        }
-        if let Some(d) = e.state.deadline() {
-            if d <= now {
-                best_idx = Some(i);
-                break;
+        // Find earliest expired with callback present
+        let mut best_idx: Option<usize> = None;
+        for (i, e) in state.timers.iter().enumerate() {
+            if e.deleted || e.callback.is_none() {
+                continue;
+            }
+            if let Some(d) = e.state.deadline() {
+                if d <= now {
+                    best_idx = Some(i);
+                    break;
+                }
             }
         }
-    }
 
-    let idx = match best_idx {
-        Some(i) => i,
-        None => return,
+        let idx = match best_idx {
+            Some(i) => i,
+            None => return,
+        };
+
+        let entry = &mut state.timers[idx];
+        if !entry.state.advance_on_expiry(now) {
+            return;
+        }
+        (entry.id, entry.callback.take().unwrap())
     };
-
-    let entry = &mut state.timers[idx];
-    if !entry.state.advance_on_expiry(now) {
-        return;
-    }
-    let id = entry.id;
-    let mut callback = entry.callback.take().unwrap();
-
-    // Release ALL borrows before executing callback
-    drop(state);
-    drop(guard);
-
+    // Guard and state borrow end here; callback executes outside lock
     callback();
 
     // Re-acquire and restore
-    let mut guard2 = svc.mutex.lock_guard().unwrap();
-    let state2 = unsafe { &mut *svc.state.get() };
+    let guard2 = svc.mutex.lock_guard().unwrap();
+    let state2 = svc.state_locked(&guard2);
     if let Some(entry) = state2.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
         if entry.callback.is_none() {
             entry.callback = Some(callback);

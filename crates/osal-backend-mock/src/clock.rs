@@ -1,49 +1,20 @@
-//! Mock clock — deterministic virtual time via spin::Mutex-protected runtime.
+//! Mock clock — deterministic virtual time via unified runtime.
 
 use core::time::Duration;
 
 use osal_api::traits::clock::Clock;
 
-use crate::time_runtime::MockTimeRuntime;
+use crate::time_runtime::{reset_runtime, restore_callback, take_next_expired, with_runtime};
 
-static RUNTIME: spin::Mutex<Option<MockTimeRuntime>> = spin::Mutex::new(None);
-
-fn with_runtime<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut MockTimeRuntime) -> R,
-{
-    let mut guard = RUNTIME.lock();
-    let rt = guard.get_or_insert_with(MockTimeRuntime::new);
-    f(rt)
-}
-
-/// Advance time and dispatch one callback at a time.
-/// Each callback executes outside the mutex lock.
+/// Advance time and dispatch one callback at a time outside the runtime lock.
 pub(crate) fn advance_and_dispatch(d: Duration) {
     with_runtime(|rt| rt.advance_time(d));
     loop {
-        let action = {
-            let mut guard = RUNTIME.lock();
-            guard.as_mut().and_then(|rt| rt.take_next_expired())
+        let Some((key, mut cb)) = take_next_expired() else {
+            break;
         };
-        match action {
-            Some((key, mut cb)) => {
-                cb();
-                let mut guard = RUNTIME.lock();
-                if let Some(rt) = guard.as_mut() {
-                    rt.restore_callback(key, cb);
-                }
-            }
-            None => break,
-        }
-    }
-}
-
-/// Reset the runtime between tests.
-pub fn reset_runtime() {
-    let mut guard = RUNTIME.lock();
-    if let Some(rt) = guard.as_mut() {
-        rt.reset();
+        cb();
+        restore_callback(key, cb);
     }
 }
 
