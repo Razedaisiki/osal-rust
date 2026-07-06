@@ -11,4 +11,5 @@ extern crate alloc;
 
 pub mod mutex;
 pub mod queue;
+pub mod semaphore;
 pub(crate) mod sys;
