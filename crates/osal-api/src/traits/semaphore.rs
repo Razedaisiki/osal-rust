@@ -17,11 +17,11 @@ use crate::time::Timeout;
 /// (blocking if it is zero) and [`release`](CountingSemaphore::release)
 /// to increment it (waking one blocked acquirer).
 ///
-/// # ISR semantics
+/// # ISR safety
 ///
-/// [`isr_acquire`](CountingSemaphore::isr_acquire) and
-/// [`isr_release`](CountingSemaphore::isr_release) are non-blocking
-/// variants safe to call from interrupt context.
+/// ISR-safe operations are deferred to a future `IsrSemaphore` extension
+/// trait (see ADR 0008). The core trait only provides task-context
+/// operations.
 ///
 /// # Examples
 ///
@@ -53,20 +53,21 @@ pub trait CountingSemaphore: Sized {
     /// Increment the counter, waking one blocked acquirer if any.
     ///
     /// Returns `Error::Overflow` if `count` is already at `max_count`
-    /// (the semaphore is full).
+    /// (the semaphore is full). The count is unchanged on overflow.
     fn release(&self) -> Result<()>;
 
-    /// Non-blocking acquire, safe to call from ISR context.
-    fn isr_acquire(&self) -> Result<()>;
-
-    /// Non-blocking release, safe to call from ISR context.
-    fn isr_release(&self) -> Result<()>;
-
     /// Return the maximum count configured at creation.
+    ///
+    /// This value is fixed at construction time and does not require
+    /// synchronization.
     fn max_count(&self) -> u32;
 
-    /// Return the current count (a snapshot; may be stale immediately).
-    fn count(&self) -> u32;
+    /// Return the current count.
+    ///
+    /// May fail if the backend cannot acquire the internal lock. The
+    /// returned value is a snapshot — the actual count may change
+    /// immediately after return. Do not use for "check-then-act" logic.
+    fn count(&self) -> Result<u32>;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +95,7 @@ pub trait CountingSemaphore: Sized {
 /// ready.release()?;
 /// ```
 pub trait BinarySemaphore: Sized {
-    /// Create a binary semaphore with count 0.
+    /// Create a binary semaphore with count 0 (unsignaled).
     fn new() -> Result<Self>;
 
     /// Decrement the counter (must be 1), blocking according to
@@ -106,11 +107,8 @@ pub trait BinarySemaphore: Sized {
     fn release(&self) -> Result<()>;
 
     /// Return `true` if the semaphore is currently signaled (count == 1).
-    fn is_acquired(&self) -> bool;
-
-    /// Non-blocking acquire, safe to call from ISR context.
-    fn isr_acquire(&self) -> Result<()>;
-
-    /// Non-blocking release, safe to call from ISR context.
-    fn isr_release(&self) -> Result<()>;
+    ///
+    /// May fail if the internal lock cannot be acquired. The returned
+    /// value is a snapshot.
+    fn is_signaled(&self) -> Result<bool>;
 }
