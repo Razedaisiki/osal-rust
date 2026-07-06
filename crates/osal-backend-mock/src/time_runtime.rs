@@ -1,14 +1,13 @@
 //! Mock time runtime — shared virtual clock and timer registry.
 //!
-//! Callbacks are taken out of the registry before execution and put
-//! back afterward if the timer is still alive (Periodic) or left as
-//! None (OneShot, deleted). This avoids needing to clone `FnMut`.
+//! Uses the pre-advance model: state is advanced before callback
+//! execution. Callbacks are taken out, executed outside any borrow,
+//! and restored afterward if the entry still exists.
 
 use alloc::vec::Vec;
 use core::time::Duration;
 
 use osal_api::traits::timer::TimerCallback;
-use osal_api::types::TimerMode;
 use osal_portable::timer_state::TimerState;
 
 struct MockTimerEntry {
@@ -107,22 +106,10 @@ impl MockTimeRuntime {
         }
     }
 
-    fn dispatch_expired(&mut self) {
-        loop {
-            let action = self.next_expired_action();
-            match action {
-                Some((id, generation, mut cb)) => {
-                    cb();
-                    self.finish_expired(id, generation, cb);
-                }
-                None => break,
-            }
-        }
-    }
-
-    /// Find the timer with the earliest deadline <= now, prepare its
-    /// expiration, and return its callback for out-of-lock execution.
-    fn next_expired_action(&mut self) -> Option<(u64, u64, TimerCallback)> {
+    /// Dispatch ONE callback. Takes the callback out, releases the
+    /// `&mut self` borrow (by returning), caller executes the callback,
+    /// then re-borrows to restore it.
+    pub fn take_next_expired(&mut self) -> Option<(u64, TimerCallback)> {
         let now = self.now;
         let mut best_idx: Option<usize> = None;
 
@@ -148,32 +135,34 @@ impl MockTimeRuntime {
         let idx = best_idx?;
         let entry = &mut self.timers[idx];
 
-        let token = entry.state.prepare_expiration(now)?;
-        let generation = token.generation;
+        // Pre-advance state before callback
+        if !entry.state.advance_on_expiry(now) {
+            return None;
+        }
         let callback = entry.callback.take()?;
-
-        Some((entry.id, generation, callback))
+        Some((entry.id, callback))
     }
 
-    fn finish_expired(&mut self, id: u64, gen_before: u64, callback: TimerCallback) {
+    /// Restore the callback after execution. If the entry still exists
+    /// and lacks a callback, put it back (both OneShot and Periodic).
+    pub fn restore_callback(&mut self, id: u64, callback: TimerCallback) {
         if let Some(entry) = self.find_mut(id) {
-            if entry.state.generation() == gen_before {
-                // State unchanged during callback — apply auto-reload
-                entry.state.finish_expiration(crate::time_runtime::dummy_token());
-            }
-            // Put callback back if timer is still alive and periodic
-            if !entry.deleted && entry.state.deadline().is_some() {
+            if entry.callback.is_none() {
                 entry.callback = Some(callback);
             }
         }
     }
-}
 
-// Dummy token for finish_expiration (generation check already done above)
-pub(crate) fn dummy_token() -> osal_portable::timer_state::ExpirationToken {
-    osal_portable::timer_state::ExpirationToken {
-        generation: 0,
-        scheduled_deadline: Duration::ZERO,
-        mode: TimerMode::OneShot,
+    fn dispatch_expired(&mut self) {
+        loop {
+            let action = self.take_next_expired();
+            match action {
+                Some((id, mut cb)) => {
+                    cb();
+                    self.restore_callback(id, cb);
+                }
+                None => break,
+            }
+        }
     }
 }

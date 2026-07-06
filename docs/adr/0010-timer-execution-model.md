@@ -39,14 +39,30 @@ callback completion time. If multiple periods are missed (e.g., system
 was busy), only one callback fires and the next deadline is advanced to
 the first multiple of `period` that is strictly after `now`.
 
-### Generation counter
+### Pre-advance model
 
-Every state-changing operation (`start`, `stop`, `reset`,
-`change_period`, last-handle `drop`) increments a `generation` counter.
-Before executing a callback, the current generation is recorded in an
-`ExpirationToken`. After the callback completes, if the generation has
-changed, the timer's state has been modified and the old expiration
-logic (e.g., auto-reload for Periodic) is skipped.
+The timer state machine uses a **pre-advance** model:
+
+1. When a timer expires, its scheduling state is advanced **before** the
+   callback executes:
+   - **OneShot**: `deadline = None` (stopped).
+   - **Periodic**: `deadline` advances to the next periodic deadline,
+     merging missed periods.
+2. The callback is taken out of the entry (`callback = None` during
+   execution, preventing re-entrant dispatch of the same timer).
+3. The callback executes **outside** any backend lock or borrow.
+4. After the callback returns, if the timer entry still exists, the
+   callback is restored. Whether the timer fires again depends on its
+   current `deadline`.
+5. Callback operations (`start`, `stop`, `reset`, `change_period`)
+   directly overwrite the pre-advanced state. No post-callback
+   correction or generation check is needed — the callback's own
+   operations are authoritative.
+
+This model is simpler than a two-phase generation/token approach and
+correctly handles all re-entrant cases: a callback can stop its own
+timer, reset it, change its period, or drop the last handle, and the
+new state takes effect immediately.
 
 ### Handle model
 

@@ -143,29 +143,21 @@ fn dispatch_expired(s: &mut ServiceInner) {
     };
 
     let entry = &mut s.timers[idx];
-    let token = match entry.state.prepare_expiration(now) {
-        Some(t) => t,
-        None => return,
-    };
-    let gen_before = token.generation;
+
+    // Pre-advance state before callback
+    if !entry.state.advance_on_expiry(now) {
+        return;
+    }
     let mut callback = entry.callback.take().unwrap();
 
     // Execute outside lock: we need to drop the borrow on `s`.
-    // This can't be done directly since `s` is a &mut parameter.
-    // For now, dispatch within the lock (simplification).
-    // A full implementation would use a separate callback queue.
+    // A full implementation would release the mutex here.
+    // (Will be fixed in a subsequent commit.)
     callback();
 
-    // Re-acquire: put callback back if still alive
+    // Restore callback if entry still exists (both OneShot and Periodic)
     if let Some(entry) = s.timers.get_mut(idx) {
-        if entry.state.generation() == gen_before && !entry.deleted {
-            entry.state.finish_expiration(osal_portable::timer_state::ExpirationToken {
-                generation: 0,
-                scheduled_deadline: Duration::ZERO,
-                mode: TimerMode::OneShot,
-            });
-        }
-        if !entry.deleted && entry.state.deadline().is_some() {
+        if !entry.deleted && entry.callback.is_none() {
             entry.callback = Some(callback);
         }
     }
