@@ -8,7 +8,7 @@ use osal_api::traits::timer::{Timer, TimerCallback};
 use osal_api::types::TimerMode;
 
 use crate::clock::advance_and_dispatch;
-use crate::time_runtime::{with_runtime, MockTimerKey};
+use crate::time_runtime::{deregister_timer, with_runtime, MockTimerKey};
 
 // ---------------------------------------------------------------------------
 // Handle inner — Drop deregisters from runtime
@@ -20,7 +20,7 @@ struct MockTimerHandleInner {
 
 impl Drop for MockTimerHandleInner {
     fn drop(&mut self) {
-        with_runtime(|rt| rt.deregister_timer(self.key));
+        deregister_timer(self.key);
     }
 }
 

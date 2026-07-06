@@ -58,12 +58,13 @@ impl MockTimeRuntime {
         self.now
     }
 
-    pub fn reset(&mut self) {
+    fn reset_and_detach(&mut self) -> Vec<MockTimerEntry> {
         self.now = Duration::ZERO;
-        self.epoch += 1;
+        self.epoch = self.epoch.wrapping_add(1);
         self.next_id = 1;
         self.next_creation_order = 0;
-        self.timers.clear();
+
+        core::mem::take(&mut self.timers)
     }
 
     /// Advance time without dispatching callbacks.
@@ -122,12 +123,16 @@ impl MockTimeRuntime {
             let _ = e.state.change_period(new_period);
         }
     }
-    pub fn deregister_timer(&mut self, key: MockTimerKey) {
-        if let Some(e) = self.find_mut(key) {
-            e.deleted = true;
-            e.state.stop();
-            e.callback = None;
-        }
+    fn remove_timer(
+        &mut self,
+        key: MockTimerKey,
+    ) -> Option<MockTimerEntry> {
+        let index = self
+            .timers
+            .iter()
+            .position(|entry| entry.key == key && !entry.deleted)?;
+
+        Some(self.timers.swap_remove(index))
     }
 
     /// Take ONE expired callback. Returns (key, callback) for the
@@ -202,7 +207,24 @@ pub(crate) fn restore_callback(key: MockTimerKey, callback: TimerCallback) {
 }
 
 pub(crate) fn reset_runtime() {
-    if let Some(rt) = RUNTIME.lock().as_mut() {
-        rt.reset();
-    }
+    let retired = {
+        let mut guard = RUNTIME.lock();
+        let runtime = guard.get_or_insert_with(MockTimeRuntime::new);
+
+        runtime.reset_and_detach()
+    };
+
+    drop(retired);
+}
+
+pub(crate) fn deregister_timer(key: MockTimerKey) {
+    let removed = {
+        let mut guard = RUNTIME.lock();
+
+        guard
+            .as_mut()
+            .and_then(|runtime| runtime.remove_timer(key))
+    };
+
+    drop(removed);
 }
