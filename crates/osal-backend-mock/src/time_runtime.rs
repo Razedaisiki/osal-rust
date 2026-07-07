@@ -43,6 +43,12 @@ pub struct MockTimeRuntime {
     timers: Vec<MockTimerEntry>,
 }
 
+impl Default for MockTimeRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockTimeRuntime {
     pub fn new() -> Self {
         Self {
@@ -103,30 +109,27 @@ impl MockTimeRuntime {
 
     pub fn start_timer(&mut self, key: MockTimerKey) {
         let now = self.now;
-        if let Some(e) = self.timers.iter_mut().find(|e| e.key == key && !e.deleted) {
+        if let Some(e) = self.find_mut(key) {
             let _ = e.state.start(now);
         }
     }
     pub fn stop_timer(&mut self, key: MockTimerKey) {
-        if let Some(e) = self.timers.iter_mut().find(|e| e.key == key && !e.deleted) {
+        if let Some(e) = self.find_mut(key) {
             e.state.stop();
         }
     }
     pub fn reset_timer(&mut self, key: MockTimerKey) {
         let now = self.now;
-        if let Some(e) = self.timers.iter_mut().find(|e| e.key == key && !e.deleted) {
+        if let Some(e) = self.find_mut(key) {
             let _ = e.state.reset(now);
         }
     }
     pub fn change_period(&mut self, key: MockTimerKey, new_period: Duration) {
-        if let Some(e) = self.timers.iter_mut().find(|e| e.key == key && !e.deleted) {
+        if let Some(e) = self.find_mut(key) {
             let _ = e.state.change_period(new_period);
         }
     }
-    fn remove_timer(
-        &mut self,
-        key: MockTimerKey,
-    ) -> Option<MockTimerEntry> {
+    fn remove_timer(&mut self, key: MockTimerKey) -> Option<MockTimerEntry> {
         let index = self
             .timers
             .iter()
@@ -197,7 +200,10 @@ where
 }
 
 pub(crate) fn take_next_expired() -> Option<(MockTimerKey, TimerCallback)> {
-    RUNTIME.lock().as_mut().and_then(|rt| rt.take_next_expired())
+    RUNTIME
+        .lock()
+        .as_mut()
+        .and_then(|rt| rt.take_next_expired())
 }
 
 pub(crate) fn restore_callback(key: MockTimerKey, callback: TimerCallback) {
@@ -221,9 +227,7 @@ pub(crate) fn deregister_timer(key: MockTimerKey) {
     let removed = {
         let mut guard = RUNTIME.lock();
 
-        guard
-            .as_mut()
-            .and_then(|runtime| runtime.remove_timer(key))
+        guard.as_mut().and_then(|runtime| runtime.remove_timer(key))
     };
 
     drop(removed);

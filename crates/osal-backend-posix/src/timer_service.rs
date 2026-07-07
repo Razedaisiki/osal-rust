@@ -38,12 +38,20 @@ struct TimerService {
 }
 
 impl TimerService {
-    fn state_locked<'a>(
-        &'a self,
-        _guard: &'a crate::sys::mutex::PosixMutexGuard<'_>,
-    ) -> &'a mut TimerServiceState {
+    /// Run `f` with mutable access to the timer state, guarded by the
+    /// caller's lock.
+    ///
+    /// # Safety
+    ///
+    /// The caller must hold `self.mutex`. The `_guard` parameter ties
+    /// this access to the locked critical section.
+    fn with_state_locked<R>(
+        &self,
+        _guard: &crate::sys::mutex::PosixMutexGuard<'_>,
+        f: impl FnOnce(&mut TimerServiceState) -> R,
+    ) -> R {
         // Safety: state is only accessed while the mutex is held.
-        unsafe { &mut *self.state.get() }
+        unsafe { f(&mut *self.state.get()) }
     }
 }
 
@@ -116,13 +124,10 @@ fn with_service<R>(f: impl FnOnce(&TimerService) -> R) -> Option<R> {
     Some(f(get_service()?))
 }
 
-fn with_service_locked<R>(
-    f: impl FnOnce(&TimerService, &mut TimerServiceState) -> R,
-) -> Option<R> {
+fn with_service_locked<R>(f: impl FnOnce(&TimerService, &mut TimerServiceState) -> R) -> Option<R> {
     with_service(|svc| {
         let guard = svc.mutex.lock_guard().ok()?;
-        let state = svc.state_locked(&guard);
-        let result = f(svc, state);
+        let result = svc.with_state_locked(&guard, |state| f(svc, state));
         drop(guard);
         Some(result)
     })?
@@ -138,8 +143,7 @@ fn spawn_service_thread() -> bool {
         libc::pthread_attr_init(&mut attr);
         libc::pthread_attr_setdetachstate(&mut attr, libc::PTHREAD_CREATE_DETACHED);
         let mut thread: libc::pthread_t = core::mem::zeroed();
-        let ret =
-            libc::pthread_create(&mut thread, &attr, service_loop, core::ptr::null_mut());
+        let ret = libc::pthread_create(&mut thread, &attr, service_loop, core::ptr::null_mut());
         libc::pthread_attr_destroy(&mut attr);
         ret == 0
     }
@@ -152,29 +156,29 @@ extern "C" fn service_loop(_arg: *mut core::ffi::c_void) -> *mut core::ffi::c_vo
             None => return core::ptr::null_mut(),
         };
         let mut guard = svc.mutex.lock_guard().unwrap();
-        let state = svc.state_locked(&guard);
 
-        // Clean up deleted timers
-        state.timers.retain(|e| !e.deleted);
-
-        // Find earliest deadline
+        // Clean up deleted timers and find earliest deadline.
         let now = time::monotonic_now();
-        let mut earliest: Option<Duration> = None;
-        for e in &state.timers {
-            if let Some(d) = e.state.deadline() {
-                match earliest {
-                    None => earliest = Some(d),
-                    Some(cur) if d < cur => earliest = Some(d),
-                    _ => {}
+        let (earliest, should_dispatch) = svc.with_state_locked(&guard, |state| {
+            state.timers.retain(|e| !e.deleted);
+            let mut earliest: Option<Duration> = None;
+            for e in &state.timers {
+                if let Some(d) = e.state.deadline() {
+                    match earliest {
+                        None => earliest = Some(d),
+                        Some(cur) if d < cur => earliest = Some(d),
+                        _ => {}
+                    }
                 }
             }
-        }
+            (earliest, earliest.is_some() && earliest.unwrap() <= now)
+        });
 
         match earliest {
             None => {
                 let _ = svc.condvar.wait(&mut guard);
             }
-            Some(deadline) if deadline <= now => {
+            Some(_deadline) if should_dispatch => {
                 drop(guard);
                 dispatch_one(svc);
             }
@@ -192,45 +196,52 @@ extern "C" fn service_loop(_arg: *mut core::ffi::c_void) -> *mut core::ffi::c_vo
 fn dispatch_one(svc: &TimerService) {
     let (id, mut callback) = {
         let guard = svc.mutex.lock_guard().unwrap();
-        let state = svc.state_locked(&guard);
         let now = time::monotonic_now();
 
-        // Find earliest expired with callback present
-        let mut best_idx: Option<usize> = None;
-        for (i, e) in state.timers.iter().enumerate() {
-            if e.deleted || e.callback.is_none() {
-                continue;
-            }
-            if let Some(d) = e.state.deadline() {
-                if d <= now {
-                    best_idx = Some(i);
-                    break;
+        let opt = svc.with_state_locked(&guard, |state| {
+            // Find earliest expired with callback present
+            let mut best_idx: Option<usize> = None;
+            for (i, e) in state.timers.iter().enumerate() {
+                if e.deleted || e.callback.is_none() {
+                    continue;
+                }
+                if let Some(d) = e.state.deadline() {
+                    if d <= now {
+                        best_idx = Some(i);
+                        break;
+                    }
                 }
             }
-        }
 
-        let idx = match best_idx {
-            Some(i) => i,
+            let idx = match best_idx {
+                Some(i) => i,
+                None => return None,
+            };
+
+            let entry = &mut state.timers[idx];
+            if !entry.state.advance_on_expiry(now) {
+                return None;
+            }
+            Some((entry.id, entry.callback.take().unwrap()))
+        });
+
+        match opt {
+            Some(pair) => pair,
             None => return,
-        };
-
-        let entry = &mut state.timers[idx];
-        if !entry.state.advance_on_expiry(now) {
-            return;
         }
-        (entry.id, entry.callback.take().unwrap())
     };
     // Guard and state borrow end here; callback executes outside lock
     callback();
 
     // Re-acquire and restore
     let guard2 = svc.mutex.lock_guard().unwrap();
-    let state2 = svc.state_locked(&guard2);
-    if let Some(entry) = state2.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
-        if entry.callback.is_none() {
-            entry.callback = Some(callback);
+    svc.with_state_locked(&guard2, |state| {
+        if let Some(entry) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
+            if entry.callback.is_none() {
+                entry.callback = Some(callback);
+            }
         }
-    }
+    });
 }
 
 // ---------------------------------------------------------------------------

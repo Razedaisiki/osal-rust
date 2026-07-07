@@ -15,3 +15,6 @@ pub mod semaphore;
 pub mod time_runtime;
 pub mod timer;
 pub mod wait;
+
+#[cfg(feature = "testkit")]
+pub mod test_support;

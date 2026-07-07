@@ -8,7 +8,7 @@ use osal_api::traits::timer::{Timer, TimerCallback};
 use osal_api::types::TimerMode;
 
 use crate::clock::advance_and_dispatch;
-use crate::time_runtime::{deregister_timer, with_runtime, MockTimerKey};
+use crate::time_runtime::{MockTimerKey, deregister_timer, with_runtime};
 
 // ---------------------------------------------------------------------------
 // Handle inner — Drop deregisters from runtime
@@ -34,7 +34,12 @@ pub struct MockTimer {
 }
 
 impl MockTimer {
-    pub fn new(_name: &str, period: Duration, mode: TimerMode, callback: TimerCallback) -> Result<Self> {
+    pub fn new(
+        _name: &str,
+        period: Duration,
+        mode: TimerMode,
+        callback: TimerCallback,
+    ) -> Result<Self> {
         if period == Duration::ZERO {
             return Err(Error::InvalidParameter);
         }

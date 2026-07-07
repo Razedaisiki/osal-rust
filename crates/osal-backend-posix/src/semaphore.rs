@@ -55,11 +55,21 @@ impl PosixCountingSemaphore {
         })
     }
 
-    fn state_locked(
+    /// Run `f` with mutable access to the state, guarded by the caller's lock.
+    ///
+    /// # Safety
+    ///
+    /// The caller must hold `self.inner.mutex`. The `_guard` parameter ties
+    /// this access to the locked critical section — it exists only to prove
+    /// the lock is held; its value is ignored.
+    fn with_state_locked<R>(
         &self,
         _guard: &crate::sys::mutex::PosixMutexGuard<'_>,
-    ) -> &mut CountingSemaphoreState {
-        unsafe { &mut *self.inner.state.get() }
+        f: impl FnOnce(&mut CountingSemaphoreState) -> R,
+    ) -> R {
+        // Safety: the caller holds self.inner.mutex, which guarantees
+        // exclusive access to the UnsafeCell.
+        unsafe { f(&mut *self.inner.state.get()) }
     }
 }
 
@@ -71,7 +81,7 @@ impl CountingSemaphore for PosixCountingSemaphore {
     fn acquire(&self, timeout: Timeout) -> Result<()> {
         let mut guard = self.inner.mutex.lock_guard()?;
 
-        if self.state_locked(&guard).try_acquire() {
+        if self.with_state_locked(&guard, |state| state.try_acquire()) {
             return Ok(());
         }
 
@@ -82,7 +92,7 @@ impl CountingSemaphore for PosixCountingSemaphore {
             Timeout::After(d) => {
                 let deadline = condvar::abs_deadline(d);
                 loop {
-                    if self.state_locked(&guard).try_acquire() {
+                    if self.with_state_locked(&guard, |state| state.try_acquire()) {
                         return Ok(());
                     }
                     match self.inner.condvar.timed_wait(&mut guard, &deadline) {
@@ -93,7 +103,7 @@ impl CountingSemaphore for PosixCountingSemaphore {
                 }
             }
             Timeout::Forever => loop {
-                if self.state_locked(&guard).try_acquire() {
+                if self.with_state_locked(&guard, |state| state.try_acquire()) {
                     return Ok(());
                 }
                 self.inner.condvar.wait(&mut guard)?;
@@ -103,8 +113,7 @@ impl CountingSemaphore for PosixCountingSemaphore {
 
     fn release(&self) -> Result<()> {
         let guard = self.inner.mutex.lock_guard()?;
-        let state = self.state_locked(&guard);
-        match state.release() {
+        match self.with_state_locked(&guard, |state| state.release()) {
             Ok(()) => {
                 // Wake ONE waiter
                 self.inner.condvar.signal()?;
@@ -121,7 +130,7 @@ impl CountingSemaphore for PosixCountingSemaphore {
 
     fn count(&self) -> Result<u32> {
         let guard = self.inner.mutex.lock_guard()?;
-        Ok(self.state_locked(&guard).count())
+        Ok(self.with_state_locked(&guard, |state| state.count()))
     }
 }
 
