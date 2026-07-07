@@ -122,6 +122,33 @@ fn main() {
 }
 ```
 
+## Examples
+
+Facade examples live under `crates/osal/examples/`. Each example is
+capability-oriented and backend-agnostic — the same code runs on any
+selected backend.
+
+```bash
+# POSIX backend (default)
+cargo run -p osal --example queue
+cargo run -p osal --example mutex
+cargo run -p osal --example semaphore
+cargo run -p osal --example timer
+cargo run -p osal --example system
+cargo run -p osal --example task
+
+# Mock backend
+cargo run -p osal --example queue --no-default-features --features backend-mock
+cargo run -p osal --example timer --no-default-features --features backend-mock
+cargo run -p osal --example task --no-default-features --features backend-mock
+```
+
+Backend-specific examples (cross-thread blocking, fault injection,
+controlled clock) live under the respective backend crate:
+
+- `crates/osal-backend-mock/examples/`
+- `crates/osal-backend-posix/examples/`
+
 ## License
 
 Proprietary. See [LICENSE](LICENSE) for details.

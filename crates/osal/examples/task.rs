@@ -10,12 +10,9 @@
 use osal::prelude::*;
 
 fn main() -> Result<()> {
-    let task = TaskBuilder::new()
-        .name("worker")
-        .priority(1)
-        .spawn(|| {
-            // worker body
-        })?;
+    let task = TaskBuilder::new().name("worker").priority(1).spawn(|| {
+        // worker body
+    })?;
 
     let exit = task.join(Timeout::Forever)?;
     assert_eq!(exit, ExitCode::SUCCESS);
