@@ -7,6 +7,7 @@ use osal_api::error::{Error, Result};
 use osal_api::traits::timer::{Timer, TimerCallback};
 use osal_api::types::TimerMode;
 
+#[cfg(feature = "testkit")]
 use crate::clock::advance_and_dispatch;
 use crate::time_runtime::{MockTimerKey, deregister_timer, with_runtime};
 
