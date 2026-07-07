@@ -1,5 +1,29 @@
 # Changelog
 
+## P4 — System Foundation Slice (2026-07-07)
+
+### Added
+
+- `MockSystem` with atomic nesting counter for critical sections.
+- `PosixSystem` with process-local recursive `pthread_mutex_t`.
+- `sys::recursive_mutex` wrapper (`PTHREAD_MUTEX_RECURSIVE`).
+- `SystemFactory` in testkit; 5 system contract tests (heap_free,
+  enter_critical, guard-drop re-entry, nesting, reverse drop order).
+- `System` facade alias and `System` trait in `osal::prelude`.
+- Backend-agnostic `system` facade example.
+- `critical_depth_for_test()` helper exposed on Mock for stabilisation tests.
+
+### Notes
+
+- `heap_free()` returns `usize::MAX` for both Mock and POSIX backends.
+  Real heap introspection is deferred to the BSP/resource phase.
+- POSIX critical sections use a process-local recursive mutex
+  (separate from the non-recursive `PosixMutex` used by `Mutex<T>`).
+- Mock critical sections model nested entry/exit as an atomic counter
+  for deterministic single-context tests.
+- Critical sections support nesting; the outermost guard drop fully
+  exits.
+
 ## P2 — Semaphore Foundation Slice (2026-07-06)
 
 ### Added

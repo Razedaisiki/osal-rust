@@ -23,10 +23,7 @@ extern "C" fn init_critical_mutex() {
 
 fn ensure_init() {
     unsafe {
-        libc::pthread_once(
-            core::ptr::addr_of_mut!(CRITICAL_ONCE),
-            init_critical_mutex,
-        );
+        libc::pthread_once(core::ptr::addr_of_mut!(CRITICAL_ONCE), init_critical_mutex);
     }
 }
 

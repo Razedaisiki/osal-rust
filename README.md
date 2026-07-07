@@ -25,7 +25,7 @@ across different platforms by switching the backend.
 | Clock           | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        |
 | Timer           | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        |
 | Timer ISR       | Deferred | —        | —        | —        | —        | —        |
-| System          | API only | —        | —        | —        | skeleton | —        |
+| System          | ✓        | —        | ✓        | ✓        | ✓        | ✓        |
 | Task            | API only | —        | —        | —        | skeleton | —        |
 
 **Legend:**
@@ -89,13 +89,15 @@ Proprietary. See [LICENSE](LICENSE) for details.
 
 ## Status
 
-**P0-P2 complete. P3 functional; P3.1 timer runtime stabilization in progress.**
+**P0-P4 complete. P3.1 timer runtime stabilization complete.**
 
-Queue, Mutex, CountingSemaphore, and BinarySemaphore are implemented
-across API, Portable, Mock, POSIX, contract tests, and facade.
-Mutex is non-recursive (ADR 0007). ISR operations deferred to
-FreeRTOS phase. Contract tests split into Core (all backends) and
-Blocking (POSIX only).
+Queue, Mutex, CountingSemaphore, BinarySemaphore, Clock, Timer, and
+System are implemented across API, Portable, Mock, POSIX, contract
+tests, and facade. Mutex is non-recursive (ADR 0007). System
+critical sections use recursive mutex on POSIX and atomic nesting
+counter on Mock; heap_free() returns conservative `usize::MAX`.
+ISR operations deferred to FreeRTOS phase. Contract tests split
+into Core (all backends) and Blocking (POSIX only).
 
 CI enforces format, clippy, tests, docs, and feature matrix checks.
 

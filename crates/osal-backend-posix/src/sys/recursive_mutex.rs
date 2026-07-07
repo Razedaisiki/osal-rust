@@ -48,10 +48,7 @@ impl PosixRecursiveMutex {
 
             libc::pthread_mutexattr_init(&raw mut attr);
             libc::pthread_mutexattr_settype(&raw mut attr, libc::PTHREAD_MUTEX_RECURSIVE);
-            libc::pthread_mutex_init(
-                (*self.inner.get()).as_mut_ptr(),
-                &raw const attr,
-            );
+            libc::pthread_mutex_init((*self.inner.get()).as_mut_ptr(), &raw const attr);
             libc::pthread_mutexattr_destroy(&raw mut attr);
         }
     }
