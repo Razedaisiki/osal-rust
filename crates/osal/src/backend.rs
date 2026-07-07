@@ -69,3 +69,19 @@ pub use osal_backend_mock::system::MockSystem as System;
 
 #[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
 pub use osal_backend_posix::system::PosixSystem as System;
+
+// ---------------------------------------------------------------------------
+// Task
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "backend-mock")]
+pub use osal_backend_mock::task::MockTask as Task;
+
+#[cfg(feature = "backend-mock")]
+pub use osal_backend_mock::task::MockTaskBuilder as TaskBuilder;
+
+#[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
+pub use osal_backend_posix::task::PosixTask as Task;
+
+#[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
+pub use osal_backend_posix::task::PosixTaskBuilder as TaskBuilder;

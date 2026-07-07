@@ -82,10 +82,7 @@ fn join_forever_returns_after_completion() {
 
 #[test]
 fn repeated_join_returns_cached_exit_code() {
-    let task = PosixTaskBuilder::new()
-        .name("repeat")
-        .spawn(|| {})
-        .unwrap();
+    let task = PosixTaskBuilder::new().name("repeat").spawn(|| {}).unwrap();
 
     let r1 = task.join(Timeout::Forever).unwrap();
     let r2 = task.join(Timeout::NoWait).unwrap();
@@ -116,10 +113,7 @@ fn priority_is_preserved() {
 
 #[test]
 fn handle_is_nonzero() {
-    let task = PosixTaskBuilder::new()
-        .name("handle")
-        .spawn(|| {})
-        .unwrap();
+    let task = PosixTaskBuilder::new().name("handle").spawn(|| {}).unwrap();
 
     assert_ne!(task.handle(), 0);
     task.join(Timeout::Forever).unwrap();
@@ -127,9 +121,7 @@ fn handle_is_nonzero() {
 
 #[test]
 fn invalid_name_rejected() {
-    let result = PosixTaskBuilder::new()
-        .name("bad\0name")
-        .spawn(|| {});
+    let result = PosixTaskBuilder::new().name("bad\0name").spawn(|| {});
 
     assert!(matches!(result, Err(Error::InvalidParameter)));
 }

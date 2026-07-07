@@ -26,13 +26,17 @@ across different platforms by switching the backend.
 | Timer           | ✓        | ✓        | ✓        | ✓        | ✓        | ✓        |
 | Timer ISR       | Deferred | —        | —        | —        | —        | —        |
 | System          | ✓        | —        | ✓        | ✓        | ✓        | ✓        |
-| Task            | API only | —        | —        | —        | skeleton | —        |
+| Task            | ✓        | —        | Foundation | Foundation | Smoke    | ✓        |
 
 **Legend:**
 - ✓ — Implemented and tested
 - API only — Trait defined, no backend implementation
 - sys only — Low-level sys wrapper exists, no trait impl yet
 - Partial — Core semantics implemented, blocking deferred
+- Foundation — Foundation semantic complete (some advanced
+  features deferred)
+- Smoke — Smoke contract tests exist; advanced concurrency/load
+  tests deferred
 - Deferred — Planned for future phase
 - skeleton — Contract test skeleton exists, not enabled
 - — — Not applicable to this layer
@@ -124,7 +128,12 @@ Proprietary. See [LICENSE](LICENSE) for details.
 
 ## Status
 
-**P0-P4 complete. P3.1 timer runtime stabilization complete.**
+**P0-P5 complete. All MVP primitives are implemented.**
+
+Task foundation supports spawn, join (NoWait / After / Forever),
+repeated join with cached exit code, handle, priority, current, and
+count. Cancellation, suspend/resume, real priority scheduling, stack
+watermark, and deterministic mock scheduling are deferred.
 
 Queue, Mutex, CountingSemaphore, BinarySemaphore, Clock, Timer, and
 System are implemented across API, Portable, Mock, POSIX, contract

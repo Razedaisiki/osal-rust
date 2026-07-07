@@ -2,8 +2,8 @@
 
 ## Status
 
-In progress — Task is being implemented across API, Mock, POSIX,
-contract tests, and facade.
+Complete — Task is implemented across API, Mock, POSIX, contract
+tests, and facade.
 
 ## Scope
 

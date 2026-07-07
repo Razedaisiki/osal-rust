@@ -197,13 +197,11 @@ impl PosixTask {
                                 _ => Ok(ExitCode::SUCCESS),
                             });
                         }
-                        None => {
-                            match self.inner.condvar.timed_wait(&mut guard, &deadline) {
-                                Err(Error::Timeout) => return Err(Error::Timeout),
-                                Err(e) => return Err(e),
-                                Ok(()) => {}
-                            }
-                        }
+                        None => match self.inner.condvar.timed_wait(&mut guard, &deadline) {
+                            Err(Error::Timeout) => return Err(Error::Timeout),
+                            Err(e) => return Err(e),
+                            Ok(()) => {}
+                        },
                     }
                 }
             }
@@ -349,10 +347,7 @@ impl TaskBuilder for PosixTaskBuilder {
             entry: Some(Box::new(entry)),
         });
 
-        let thread = PosixThread::spawn(
-            task_trampoline,
-            Box::into_raw(start).cast::<c_void>(),
-        )?;
+        let thread = PosixThread::spawn(task_trampoline, Box::into_raw(start).cast::<c_void>())?;
 
         // Store the thread handle so join() can pick it up.
         unsafe {
