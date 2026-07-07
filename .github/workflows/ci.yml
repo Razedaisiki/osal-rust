@@ -20,54 +20,6 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  clippy-core:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.85.0"
-          components: clippy
-      - run: >
-          cargo clippy
-          --workspace
-          --all-targets
-          --features testkit
-          --exclude osal
-          -- -D warnings
-
-  clippy-posix:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.85.0"
-          components: clippy
-      - run: >
-          cargo clippy
-          -p osal
-          --all-targets
-          --no-default-features
-          --features backend-posix
-          -- -D warnings
-
-  clippy-mock:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.85.0"
-          components: clippy
-      - run: >
-          cargo clippy
-          -p osal
-          --all-targets
-          --no-default-features
-          --features backend-mock
-          -- -D warnings
-
   test:
     runs-on: ubuntu-latest
     steps:
@@ -77,14 +29,15 @@ jobs:
           toolchain: "1.85.0"
       - run: cargo test --workspace --features testkit
 
-  docs:
+  clippy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.85.0"
-      - run: cargo doc --workspace --no-deps
+          components: clippy
+      - run: cargo clippy --workspace --all-targets --features testkit -- -D warnings
 
   feature-guards:
     runs-on: ubuntu-latest
@@ -95,16 +48,10 @@ jobs:
           toolchain: "1.85.0"
 
       - name: POSIX backend compiles
-        run: >
-          cargo check -p osal
-          --no-default-features
-          --features backend-posix
+        run: cargo check -p osal --no-default-features --features backend-posix
 
       - name: Mock backend compiles
-        run: >
-          cargo check -p osal
-          --no-default-features
-          --features backend-mock
+        run: cargo check -p osal --no-default-features --features backend-mock
 
       - name: No backend must fail
         run: |
@@ -115,9 +62,7 @@ jobs:
 
       - name: Multiple backends must fail
         run: |
-          if cargo check -p osal \
-            --no-default-features \
-            --features backend-posix,backend-mock 2>/dev/null; then
+          if cargo check -p osal --no-default-features --features backend-posix,backend-mock 2>/dev/null; then
             echo "Expected multi-backend build to fail"
             exit 1
           fi
