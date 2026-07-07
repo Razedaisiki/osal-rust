@@ -1,5 +1,9 @@
 # OSAL 架构设计文档
 
+> **注意：** 本文档为辅助中文说明。MVP 快速迭代期间，英文
+> [`docs/architecture.md`](architecture.md) 和代码 rustdoc
+> 为权威来源。若中英文存在不一致，以英文文档为准。
+
 ## 1. 概述
 
 OSAL（Operating System Abstraction Layer，操作系统抽象层）是一个分层式的 Rust 框架，用于构建可移植的嵌入式和实时应用。它允许你编写一次应用逻辑，通过切换 Cargo feature flag 即可在不同平台（POSIX 主机、实时内核、Mock 环境）上运行。

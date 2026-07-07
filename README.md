@@ -57,6 +57,41 @@ osal-bsp + osal-bsp-*  ← board support packages
 
 See [docs/architecture.md](docs/architecture.md) for details.
 
+## Documentation
+
+### Core design documents
+
+- [Architecture](docs/architecture.md)
+- [Behavior Contract](docs/behavior-contract.md) — **source of truth** for backend conformance
+- [Object Lifetime](docs/object-lifetime.md)
+
+### Foundation slices
+
+- [Queue Foundation Slice](docs/queue-foundation-slice.md)
+- [Mutex Foundation Slice](docs/mutex-foundation-slice.md)
+- [Semaphore Foundation Slice](docs/semaphore-foundation-slice.md)
+- [Clock and Timer Foundation Slice](docs/clock-timer-foundation-slice.md)
+- [System Foundation Slice](docs/system-foundation-slice.md)
+
+### Architecture decisions (ADRs)
+
+- [ADR 0001: Error Precedence](docs/adr/0001-error-precedence.md)
+- [ADR 0002: Queue Close-Drain Semantics](docs/adr/0002-queue-close-semantics.md)
+- [ADR 0003: ISR API Policy](docs/adr/0003-isr-api-policy.md)
+- [ADR 0004: Query Method Policy](docs/adr/0004-query-method-policy.md)
+- [ADR 0005: Mock Runtime Model](docs/adr/0005-mock-runtime-model.md)
+- [ADR 0006: Object Handle Model](docs/adr/0006-object-handle-model.md)
+- [ADR 0007: Mutex Access Model](docs/adr/0007-mutex-access-model.md)
+- [ADR 0008: ISR Extension Model](docs/adr/0008-isr-extension-model.md)
+- [ADR 0009: Clock Time Domain Model](docs/adr/0009-clock-time-domain-model.md)
+- [ADR 0010: Timer Execution Model](docs/adr/0010-timer-execution-model.md)
+- [ADR 0011: System Critical Section Model](docs/adr/0011-system-critical-section-model.md)
+- [ADR 0012: CI Validation Gates](docs/adr/0012-ci-validation-gates.md)
+
+> The English behavior contract (`docs/behavior-contract.md`) is the
+> source of truth for backend conformance. Chinese translations are
+> supplementary and may lag behind during active MVP development.
+
 ## Quick Start
 
 ```toml

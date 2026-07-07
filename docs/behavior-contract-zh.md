@@ -1,5 +1,9 @@
 # OSAL 后端行为契约
 
+> **注意：** 本文档为辅助中文说明。MVP 快速迭代期间，英文
+> [`docs/behavior-contract.md`](behavior-contract.md) 和代码 rustdoc
+> 为权威来源。若中英文存在不一致，以英文文档为准。
+
 ## 1. 目的
 
 本文档定义了每个 OSAL 后端必须满足的精确行为契约。它面向三类读者：
