@@ -350,7 +350,6 @@ impl TaskBuilder for PosixTaskBuilder {
                 unsafe {
                     drop(Box::from_raw(raw_start.cast::<TaskStart>()));
                 }
-                TASK_COUNT.fetch_sub(1, Ordering::SeqCst);
                 return Err(e);
             }
         };
