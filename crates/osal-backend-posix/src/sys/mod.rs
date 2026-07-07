@@ -7,4 +7,5 @@ pub mod condvar;
 pub mod errno;
 pub mod mutex;
 pub mod recursive_mutex;
+pub mod task;
 pub mod time;

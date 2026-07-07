@@ -15,5 +15,6 @@ pub mod queue;
 pub mod semaphore;
 pub(crate) mod sys;
 pub mod system;
+pub mod task;
 pub mod timer;
 pub(crate) mod timer_service;
