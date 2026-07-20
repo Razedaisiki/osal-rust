@@ -243,8 +243,8 @@ fn three_tasks_run_concurrently() {
 
 #[test]
 fn count_decremented_before_join_returns() {
-    let _lock = count_lock();
     use osal_api::traits::task::Task as _;
+    let _lock = count_lock();
 
     let baseline = PosixTask::count();
 
