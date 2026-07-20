@@ -1,16 +1,38 @@
 //! POSIX-specific task tests: timeout join, concurrency, drop-without-join.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::sync::Arc;
 
 use osal_api::error::Error;
 use osal_api::time::Timeout;
+use osal_api::types::ExitCode;
 use osal_api::traits::clock::Clock as _;
 use osal_api::traits::task::{Task as _, TaskBuilder as _};
 
 use osal_backend_posix::clock::PosixClock;
 use osal_backend_posix::task::{PosixTask, PosixTaskBuilder};
+
+// ---------------------------------------------------------------------------
+// Count-test spinlock — prevents parallel count-dependent tests from
+// interfering with each other's baseline assertions.
+// ---------------------------------------------------------------------------
+
+static COUNT_LOCK: AtomicUsize = AtomicUsize::new(0);
+
+struct CountTestLock;
+
+fn count_lock() -> CountTestLock {
+    while COUNT_LOCK.swap(1, Ordering::Acquire) != 0 {
+        std::hint::spin_loop();
+    }
+    CountTestLock
+}
+impl Drop for CountTestLock {
+    fn drop(&mut self) {
+        COUNT_LOCK.store(0, Ordering::Release);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Timeout join
@@ -221,6 +243,7 @@ fn three_tasks_run_concurrently() {
 
 #[test]
 fn count_decremented_before_join_returns() {
+    let _lock = count_lock();
     use osal_api::traits::task::Task as _;
 
     let baseline = PosixTask::count();
@@ -237,4 +260,55 @@ fn count_decremented_before_join_returns() {
 
     // NoWait on an already-completed task succeeds immediately.
     assert!(task.join(Timeout::NoWait).is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// Regression: concurrent join
+// ---------------------------------------------------------------------------
+
+#[test]
+fn two_threads_can_join_same_task() {
+    use std::thread;
+
+    let task = PosixTaskBuilder::new()
+        .name("concurrent-join")
+        .spawn(|| {})
+        .unwrap();
+
+    let t1_handle = task.clone();
+    let t2_handle = task.clone();
+
+    let j1 = thread::spawn(move || t1_handle.join(Timeout::Forever).unwrap());
+    let j2 = thread::spawn(move || t2_handle.join(Timeout::Forever).unwrap());
+
+    let r1 = j1.join().unwrap();
+    let r2 = j2.join().unwrap();
+
+    // Both joiners get the same cached exit code.
+    assert_eq!(r1, r2);
+    assert_eq!(r1, ExitCode::SUCCESS);
+}
+
+// ---------------------------------------------------------------------------
+// Regression: spawn failure does not affect count
+// ---------------------------------------------------------------------------
+
+#[test]
+fn spawn_failure_does_not_pollute_count() {
+    let _lock = count_lock();
+
+    let baseline = PosixTask::count();
+
+    // Overlong name causes spawn failure.
+    let long = "a".repeat(32);
+    let result = PosixTaskBuilder::new().name(&long).spawn(|| {});
+    assert!(result.is_err());
+
+    // Count must be unchanged.
+    assert_eq!(PosixTask::count(), baseline);
+
+    // Zero stack also fails without affecting count.
+    let result = PosixTaskBuilder::new().stack_size(0).spawn(|| {});
+    assert!(result.is_err());
+    assert_eq!(PosixTask::count(), baseline);
 }

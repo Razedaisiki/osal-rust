@@ -17,6 +17,32 @@ use osal_api::traits::task::{Task as _, TaskBuilder as _};
 use crate::factory::TaskFactory;
 
 // ---------------------------------------------------------------------------
+// Simple spinlock for tests that assert exact global count() values.
+// Gate only count-dependent tests, not the full suite.
+// ---------------------------------------------------------------------------
+
+static COUNT_LOCK: AtomicUsize = AtomicUsize::new(0);
+
+fn count_guard() {
+    while COUNT_LOCK.swap(1, Ordering::Acquire) != 0 {
+        core::hint::spin_loop();
+    }
+}
+
+impl Drop for CountGuard {
+    fn drop(&mut self) {
+        COUNT_LOCK.store(0, Ordering::Release);
+    }
+}
+
+struct CountGuard;
+
+fn acquire_count_lock() -> CountGuard {
+    count_guard();
+    CountGuard
+}
+
+// ---------------------------------------------------------------------------
 // TaskCoreContract — both backends
 // ---------------------------------------------------------------------------
 
@@ -146,6 +172,8 @@ pub fn priority_is_preserved<F: TaskFactory>(factory: &F) {
 
 /// count() reflects a running entry and returns to baseline after.
 pub fn count_reflects_live_tasks<F: TaskFactory>(factory: &F) {
+    let _lock = acquire_count_lock();
+
     static INSIDE_COUNT: AtomicUsize = AtomicUsize::new(0);
     INSIDE_COUNT.store(0, Ordering::SeqCst);
 
@@ -171,6 +199,8 @@ pub fn count_reflects_live_tasks<F: TaskFactory>(factory: &F) {
 
 /// Task finished but handle still alive → count() already back to baseline.
 pub fn finished_task_not_in_count<F: TaskFactory>(factory: &F) {
+    let _lock = acquire_count_lock();
+
     let baseline = F::Task::count();
 
     let task = factory.task_builder().name("fin").spawn(|| {}).unwrap();

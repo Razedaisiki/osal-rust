@@ -66,3 +66,26 @@ jobs:
             echo "Expected multi-backend build to fail"
             exit 1
           fi
+
+  rustdoc:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+      - run: cargo doc --workspace --no-deps --features testkit
+
+  task-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+      - name: POSIX task contracts
+        run: cargo test -p osal-backend-posix --features testkit task -- --test-threads=1
+      - name: Mock task contracts
+        run: cargo test -p osal-backend-mock --features testkit task -- --test-threads=1

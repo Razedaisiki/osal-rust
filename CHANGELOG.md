@@ -1,5 +1,49 @@
 # Changelog
 
+## P6A — Task Semantic Alignment (2026-07-20)
+
+### Breaking changes
+
+- **`Task::current()` returns `Option<TaskHandle>`** instead of `Handle`.
+  `None` outside an OSAL-created task context (no more magic-zero sentinel).
+- **`Task::handle()` returns `TaskHandle`** (`NonZeroUsize` wrapper) instead
+  of bare `Handle`.
+- **`count()` semantics changed**: counts live entry executions, not handle
+  references. Completed tasks whose handle still exists are not counted.
+- **Builder validation unified**: `validate_task_config()` in `osal-shared`.
+  Empty name is valid; embedded NUL, >31 bytes, zero stack → `InvalidParameter`.
+  Setters no longer silently clamp invalid values.
+- **`Error::NotInitialized` removed from `join()`** documentation (API cannot
+  produce an unstarted `Task`).
+
+### Added
+
+- `TaskHandle` type (`NonZeroUsize`, `Debug`, `Clone`, `Copy`, `Eq`, `Hash`).
+- `LiveTaskToken` RAII guard: increments on entry start, decrements on return.
+  Correctly rolls back on `pthread_create` failure or Mock entry panic.
+- Backend-local `current()` identity via `thread_local!` (POSIX and Mock).
+- 17 `TaskCoreContract` tests shared by both backends.
+- POSIX concurrency tests: barrier-based three-task concurrency, concurrent join.
+- POSIX `pthread_attr_setstacksize` with explicit error handling.
+- Mock panic rollback tests (TLS and count restoration on unwind).
+- Count-test serialisation lock in testkit.
+
+### Fixed
+
+- Trampoline order: `drop(live_token)` *before* `set_finished()` so NoWait
+  pollers see the correct count immediately.
+- POSIX `do_pthread_join`: non-consuming `&self` join preserves the pthread
+  handle on failure for retry.
+- NoWait no longer calls `pthread_join` (blocking); it returns cached code
+  directly from `Finished` or `Joined` state.
+
+### Changed
+
+- Behavior contract §8 Task and test matrix fully rewritten.
+- Mock no longer claims concurrent scheduling or suspend/resume.
+- Architecture public types list includes `TaskHandle`.
+- ADR 0013 records all design decisions.
+
 ## P5 — Task Foundation Slice (2026-07-07)
 
 ### Added

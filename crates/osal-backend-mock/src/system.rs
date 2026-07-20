@@ -34,7 +34,7 @@ static CRITICAL_DEPTH: AtomicUsize = AtomicUsize::new(0);
 /// Mock system — static methods only.
 pub struct MockSystem;
 
-/// RAII guard that decrements [`CRITICAL_DEPTH`] on drop.
+/// RAII guard that decrements the critical-section nesting depth on drop.
 ///
 /// Created by [`MockSystem::enter_critical`]. The private field
 /// prevents external code from constructing a guard without going
