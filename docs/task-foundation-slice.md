@@ -65,35 +65,59 @@ foundation slice.
 ## Mock implementation
 
 Mock executes the task entry synchronously in `spawn()`. There is no
-background thread or scheduler. Join immediately returns the cached
-`ExitCode::SUCCESS`. This model is sufficient for contract smoke tests.
+background thread or scheduler. A `thread_local!` slot provides
+`current()` identity during entry execution. A `LiveTaskToken` RAII
+guard manages the live count. Join immediately returns the cached
+`ExitCode::SUCCESS`. This model is sufficient for all 17 core contract
+tests.
 
 ## POSIX implementation
 
-POSIX uses `pthread_create` to launch a real thread. The backend
-maintains internal completion state with these transitions:
+POSIX uses `pthread_create` with `pthread_attr_setstacksize` to launch
+a real thread. The backend maintains internal completion state:
 
 ```
 Running → Finished(code) → Joining → Joined(code)
 ```
 
-- `pthread_join` is called **once** internally by the first joiner.
+- `pthread_join` is called **once** internally by the first blocking
+  joiner. `NoWait` returns the cached code directly without calling
+  `pthread_join`.
 - Subsequent `join()` calls return the cached exit code.
 - Timeout join is implemented through `pthread_cond_timedwait` on
   completion state, not through non-portable `pthread_timedjoin_np`.
-- `handle()` returns a per-process incrementing ID.
-- `current()` returns `0` for unknown (non-OSAL) threads.
-- `count()` returns the number of live OSAL task handles.
+- `handle()` returns a non-zero `TaskHandle`.
+- `current()` returns `Some(TaskHandle)` via `thread_local!` TLS
+  set in the trampoline.
+- `count()` returns the number of entries that have not yet completed
+  (managed by `LiveTaskToken` RAII).
 
 ## Contract tests
 
+**TaskCoreContract** (17 tests, both Mock and POSIX):
+
 | # | Test | Principle |
 |---|------|-----------|
-| 1 | `task_count_is_callable` | `count()` returns without panicking |
-| 2 | `current_returns_valid_handle` | `current()` returns without panicking |
-| 3 | `spawn_runs_entry_once` | Entry function executes exactly once |
-| 4 | `join_returns_after_task_exit` | `join(Forever)` succeeds after task completes |
-| 5 | `join_after_exit_returns_immediately` | Repeated join after exit returns cached code |
+| 1 | `create_with_default_config` | Builder defaults compile and spawn |
+| 2 | `accept_empty_name` | `""` is valid |
+| 3 | `accept_max_length_name` | 31-byte name is valid |
+| 4 | `reject_nul_in_name` | Embedded NUL → `Error::InvalidParameter` |
+| 5 | `reject_overlong_name` | >31 bytes → `Error::InvalidParameter` |
+| 6 | `reject_zero_stack` | `stack_size(0)` → `Error::InvalidParameter` |
+| 7 | `positive_stack_size_succeeds` | `stack_size(8192)` spawns OK |
+| 8 | `spawn_runs_entry_exactly_once` | `AtomicUsize` counter == 1 |
+| 9 | `join_returns_after_task_exit` | `join(Forever)` succeeds |
+| 10 | `repeated_join_returns_cached` | Cached code returned immediately |
+| 11 | `handle_is_nonzero` | `TaskHandle::get() != 0` |
+| 12 | `handle_is_unique` | Two tasks get different handles |
+| 13 | `current_from_within_task` | `Some(handle)` inside entry |
+| 14 | `current_from_main_is_none` | `None` from main thread |
+| 15 | `priority_is_preserved` | Priority stored and returned as-is |
+| 16 | `count_reflects_live_tasks` | count inside entry > baseline |
+| 17 | `finished_task_not_in_count` | Completed handle alive, count at baseline |
+
+**TaskConcurrencyContract** (POSIX only): three concurrent tasks with
+barrier, NoWait-count timing, timeout retry, drop without cancel.
 
 ## Deferred
 

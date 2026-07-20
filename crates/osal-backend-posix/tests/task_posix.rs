@@ -10,7 +10,7 @@ use osal_api::traits::clock::Clock as _;
 use osal_api::traits::task::{Task as _, TaskBuilder as _};
 
 use osal_backend_posix::clock::PosixClock;
-use osal_backend_posix::task::PosixTaskBuilder;
+use osal_backend_posix::task::{PosixTask, PosixTaskBuilder};
 
 // ---------------------------------------------------------------------------
 // Timeout join
@@ -170,52 +170,71 @@ fn many_tasks_can_be_dropped_without_join() {
 
 #[test]
 fn three_tasks_run_concurrently() {
-    let c = Arc::new(AtomicU32::new(0));
-    let c1 = Arc::clone(&c);
-    let c2 = Arc::clone(&c);
-    let c3 = Arc::clone(&c);
+    use osal_api::traits::task::Task as _;
+    use std::thread;
+
+    static ENTERED: AtomicU32 = AtomicU32::new(0);
+    static RELEASE: AtomicBool = AtomicBool::new(false);
+    ENTERED.store(0, Ordering::SeqCst);
+    RELEASE.store(false, Ordering::SeqCst);
 
     let t1 = PosixTaskBuilder::new()
         .name("c1")
-        .spawn(move || {
-            PosixClock::delay(Duration::from_millis(10));
-            c1.fetch_add(1, Ordering::SeqCst);
+        .spawn(|| {
+            ENTERED.fetch_add(1, Ordering::SeqCst);
+            while !RELEASE.load(Ordering::SeqCst) {
+                thread::yield_now();
+            }
         })
         .unwrap();
 
     let t2 = PosixTaskBuilder::new()
         .name("c2")
-        .spawn(move || {
-            PosixClock::delay(Duration::from_millis(10));
-            c2.fetch_add(1, Ordering::SeqCst);
+        .spawn(|| {
+            ENTERED.fetch_add(1, Ordering::SeqCst);
+            while !RELEASE.load(Ordering::SeqCst) {
+                thread::yield_now();
+            }
         })
         .unwrap();
 
     let t3 = PosixTaskBuilder::new()
         .name("c3")
-        .spawn(move || {
-            PosixClock::delay(Duration::from_millis(10));
-            c3.fetch_add(1, Ordering::SeqCst);
+        .spawn(|| {
+            ENTERED.fetch_add(1, Ordering::SeqCst);
+            while !RELEASE.load(Ordering::SeqCst) {
+                thread::yield_now();
+            }
         })
         .unwrap();
 
+    // Wait until all three have entered their barrier.
+    while ENTERED.load(Ordering::SeqCst) < 3 {
+        thread::yield_now();
+    }
+
+    RELEASE.store(true, Ordering::SeqCst);
     t1.join(Timeout::Forever).unwrap();
     t2.join(Timeout::Forever).unwrap();
     t3.join(Timeout::Forever).unwrap();
-
-    assert_eq!(c.load(Ordering::SeqCst), 3);
 }
 
 #[test]
-fn count_decrements_before_join_returns() {
+fn count_decremented_before_join_returns() {
+    use osal_api::traits::task::Task as _;
+
+    let baseline = PosixTask::count();
+
     let task = PosixTaskBuilder::new()
-        .name("count-dec")
+        .name("count-join")
         .spawn(|| {})
         .unwrap();
 
+    // Block until done — after Forever returns, count must reflect
+    // completion (the trampoline drops live_token before Finished).
     task.join(Timeout::Forever).unwrap();
+    assert_eq!(PosixTask::count(), baseline);
 
-    // After join returns, count() must already reflect completion.
-    let after = task.join(Timeout::NoWait);
-    assert!(after.is_ok());
+    // NoWait on an already-completed task succeeds immediately.
+    assert!(task.join(Timeout::NoWait).is_ok());
 }

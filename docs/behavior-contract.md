@@ -886,9 +886,10 @@ verification.
 
 ### Contract test integration
 
-The mock backend is the primary target for contract tests. Every
-behavioral requirement in this document must be testable against the
-mock backend. Tests that pass on mock and POSIX are considered
+Every backend-independent core behavioral requirement must be testable
+against Mock. Scheduler-dependent and true-concurrency requirements may
+be verified only by backends that provide those capabilities (POSIX,
+future FreeRTOS). Tests that pass on both Mock and POSIX are considered
 validated.
 
 ---

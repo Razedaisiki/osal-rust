@@ -71,13 +71,15 @@ impl PosixThread {
         }
     }
 
-    /// Join the thread, consuming this handle.
+    /// Join the thread (non-consuming — call once only).
     ///
     /// Must be called at most once — `pthread_join` is not repeatable.
     /// The higher-level [`crate::task::PosixTask`] guards this with a
-    /// completion-state machine.
-    pub fn join(self) -> Result<()> {
-        let rc = unsafe { libc::pthread_join(self.tid, core::ptr::null_mut()) };
+    /// completion-state machine. The caller is responsible for dropping
+    /// or detaching this handle separately.
+    pub fn join(&self) -> Result<()> {
+        let raw = self.tid;
+        let rc = unsafe { libc::pthread_join(raw, core::ptr::null_mut()) };
 
         if rc == 0 {
             Ok(())

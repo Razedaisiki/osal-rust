@@ -203,12 +203,13 @@ extern "C" fn task_trampoline(arg: *mut c_void) -> *mut c_void {
         entry();
     }
 
-    // Mark finished BEFORE dropping the live token, so joiners see the
-    // correct state.
-    start.inner.set_finished(ExitCode::SUCCESS);
-
-    // Drop live token — count() decrements after the entry is done.
+    // Drop live token BEFORE publishing Finished.  This guarantees
+    // that any observer who sees Finished (including NoWait pollers)
+    // also sees the decremented count.
     start.live_token.take();
+
+    // Now publish completion.
+    start.inner.set_finished(ExitCode::SUCCESS);
 
     // Wake any blocked joiners.
     let _ = start.inner.condvar.broadcast();
@@ -305,22 +306,28 @@ impl PosixTask {
         }
     }
 
-    /// Take the thread handle and call `pthread_join`, then update
+    /// Call `pthread_join` on the stored thread handle, then update
     /// the state to `Joined`.  Must be called with the mutex *unlocked*.
     ///
-    /// On `pthread_join` failure, restores the state to `Finished(code)`
-    /// and wakes other waiters so the system does not hang permanently.
+    /// The thread handle is only removed from storage on a successful
+    /// join.  On failure the handle is preserved so a subsequent joiner
+    /// can retry.
     fn do_pthread_join(&self) -> Result<ExitCode> {
-        let thread = unsafe { &mut *self.inner.thread.get() };
-        let join_result = if let Some(t) = thread.take() {
-            t.join()
-        } else {
-            Ok(())
+        let join_result = {
+            let thread = unsafe { &*self.inner.thread.get() };
+            match thread.as_ref() {
+                Some(t) => t.join(),
+                None => Ok(()),
+            }
         };
 
         let guard = self.inner.mutex.lock_guard().unwrap();
         match join_result {
             Ok(()) => {
+                // Remove the handle now that pthread_join succeeded.
+                unsafe {
+                    (*self.inner.thread.get()).take();
+                }
                 let code = self.inner.with_state_locked(&guard, |s| {
                     let code = match s {
                         JoinState::Finished(c) => *c,
@@ -335,9 +342,8 @@ impl PosixTask {
                 Ok(code)
             }
             Err(e) => {
-                // pthread_join failed — restore Finished state so
-                // waiters can retry or a subsequent joiner can
-                // attempt again.
+                // pthread_join failed — handle is still stored.
+                // Restore Finished so waiters can retry.
                 let _code = self.inner.with_state_locked(&guard, |s| {
                     let code = match s {
                         JoinState::Finished(c) => *c,
