@@ -200,9 +200,8 @@ impl RuntimeLifecycle {
     }
 }
 
-// Safety: the atomic fields provide internal synchronisation.
-unsafe impl Send for RuntimeLifecycle {}
-unsafe impl Sync for RuntimeLifecycle {}
+// Note: RuntimeLifecycle is auto-Send + auto-Sync via AtomicUsize fields.
+// No manual unsafe impl needed.
 
 // ---------------------------------------------------------------------------
 // InitializeTransition

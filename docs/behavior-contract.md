@@ -95,8 +95,9 @@ All fallible operations return `Result<T, osal_api::Error>`.
 | `NotFound` | Resource not found | Invalid handle or ID |
 | `Overflow` | Arithmetic overflow or count at max | capacity * msg_size overflow; semaphore at max_count |
 | `InvalidParameter` | Argument out of valid range | Overlong name, NUL in name, zero stack, count > max |
-| `AlreadyInitialized` | Resource already created/started | Double `spawn()` on a Task |
-| `NotInitialized` | Resource not yet started | Future extension (not used by Task) |
+| `AlreadyInitialized` | Resource already initialised | Re-initialising a Running runtime |
+| `NotInitialized` | Runtime not initialised | Creating objects before `initialize()`, or `shutdown()` on `Uninitialized` |
+| `Busy` | Runtime in use or in transition | Active objects prevent shutdown; lifecycle transition in progress |
 | `Unsupported` | Backend cannot perform operation | Mock Forever on full/empty queue |
 | `Internal(&'static str)` | Unexpected native error | errno, FreeRTOS status code |
 

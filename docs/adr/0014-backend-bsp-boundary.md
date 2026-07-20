@@ -39,16 +39,53 @@ between backend and BSP must be explicitly defined.
 - Chip-level or platform-level initialization
 - Panic / fault hooks
 
-### Things that stay in Backend (not BSP)
+### Semantic ownership vs. primitive provider
 
-- `Clock`: monotonic time on POSIX comes from the OS; on FreeRTOS
-  it comes from the RTOS tick. Not a board-level concern in MVP.
-- `System::enter_critical()`: on POSIX this is a recursive mutex;
-  on FreeRTOS this will be interrupt disable / BASEPRI. Neither is
-  board-specific.
+The OSAL **semantics** of `Clock` and `System::enter_critical()`
+belong to the backend. However, the underlying **primitive** may
+come from the OS, the RTOS, or the BSP:
 
-These capabilities may move to BSP later if concrete boards need
-custom implementations, but that move should be a separate ADR.
+| Capability | POSIX primitive | FreeRTOS primitive | Possible BSP role |
+|-----------|----------------|-------------------|-------------------|
+| `Clock` | `clock_gettime(CLOCK_MONOTONIC)` | RTOS tick | Bare-metal counter / frequency |
+| `enter_critical()` | `pthread_mutex_t` (recursive) | interrupt disable / BASEPRI | IRQ mask / chip-level hooks |
+
+The backend **may** accept a BSP-provided clock source or critical-
+section primitive via its constructor or configuration, but the
+public OSAL trait semantics remain backend-defined.
+
+### BSP composition rules
+
+```
+Generic backend depends on osal-bsp abstraction
+    (e.g. osal-backend-freertos → osal-bsp)
+
+Concrete BSP is selected at integration time
+    (facade Cargo feature, target crate, or application binary)
+
+POSIX MVP default:
+    backend-posix feature → osal-backend-posix → osal-bsp-linux
+
+Future FreeRTOS:
+    backend-freertos + bsp-stm32f4
+```
+
+A generic backend must not hard-code a specific board BSP.
+
+### Runtime initialisation order
+
+```
+initialize:
+  BSP initialize
+  → backend services initialize
+  → publish RuntimeState::Running
+
+shutdown (reverse):
+  publish RuntimeState::ShuttingDown
+  → backend services shutdown
+  → BSP shutdown
+  → publish RuntimeState::Uninitialized
+```
 
 ### Dependency direction
 
@@ -74,8 +111,12 @@ The existing `osal-bsp` dependency on `osal-api` is removed.
 ## Consequences
 
 - `osal-bsp/Cargo.toml`: remove `osal-api` dependency.
-- `Clock` and `System::enter_critical()` remain in backends.
-- BSP crates are populated with concrete traits, not comment
-  skeletons.
-- `osal-bsp-linux` gets a minimal Linux BSP implementation.
-- FreeRTOS backend will sit above FreeRTOS-compatible BSPs.
+- Backend crates depend on `osal-bsp` (abstraction), not on any
+  concrete board BSP.
+- Concrete BSP selection is a facade/integration concern.
+- `Clock` and `System::enter_critical()` semantics remain in
+  backends; BSP may supply low-level primitives for bare-metal.
+- Runtime init/shutdown follows BSP-first ordering.
+- BSP crates are populated with concrete traits.
+- `osal-bsp-linux` becomes the default POSIX BSP.
+- FreeRTOS backend depends on `osal-bsp` + selected board BSP.

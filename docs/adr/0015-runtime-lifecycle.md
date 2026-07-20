@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted (2026-07-20)
+Accepted (2026-07-20).  **The two-atomic double-check lease algorithm
+in the original text has been superseded by ADR 0016.**  The four-state
+model, transaction guards, re-initialisability, and error semantics
+remain valid.
 
 ## Context
 
@@ -38,16 +41,27 @@ within the same process (essential for integration tests).
 
 ### State transition rules
 
-| Operation       | Current state   | Result |
-|----------------|-----------------|--------|
-| `initialize()` | `Uninitialized` | enter `Initializing` |
-| `initialize()` | any other       | `Error::AlreadyInitialized` |
-| `shutdown()`   | `Running`, no objects | enter `ShuttingDown` |
-| `shutdown()`   | `Running`, objects alive | `Error::Busy` |
-| `shutdown()`   | `Uninitialized` | `Error::NotInitialized` |
-| Init failure   | `Initializing`  | rollback to `Uninitialized` |
-| Shutdown fail  | `ShuttingDown`  | rollback to `Running` |
-| Shutdown ok    | `ShuttingDown`  | transition to `Uninitialized` |
+| Operation       | Current state              | Result |
+|----------------|---------------------------|--------|
+| `initialize()` | `Uninitialized`           | enter `Initializing` |
+| `initialize()` | `Running`                 | `Error::AlreadyInitialized` |
+| `initialize()` | `Initializing`, `ShuttingDown` | `Error::Busy` |
+| `shutdown()`   | `Running`, count == 0     | enter `ShuttingDown` |
+| `shutdown()`   | `Running`, count > 0      | `Error::Busy` |
+| `shutdown()`   | `Uninitialized`           | `Error::NotInitialized` |
+| `shutdown()`   | `Initializing`, `ShuttingDown` | `Error::Busy` |
+| Init failure   | `Initializing`            | rollback to `Uninitialized` |
+| Shutdown fail  | `ShuttingDown`            | rollback to `Running` |
+| Shutdown ok    | `ShuttingDown`            | transition to `Uninitialized` |
+| `acquire()`    | `Running`                 | `Ok(RuntimeLease)` |
+| `acquire()`    | any other                 | `Error::NotInitialized` |
+
+Backend and BSP lifecycle hooks must be **failure-atomic**: if
+`initialize()` returns an error the component must remain
+uninitialised; if `shutdown()` returns an error the component
+must still be fully operational. The `RuntimeLifecycle` guard
+publishes the outcome but does not repair partially-stopped
+services.
 
 ### Object lease tracking
 
@@ -59,22 +73,19 @@ state and do not create additional leases.
 `shutdown()` checks the counter before proceeding. If non-zero,
 it returns `Error::Busy`.
 
-To prevent a race where an object is created just as shutdown
-begins, `acquire_object()` uses a double-check pattern:
+> **Superseded.** The two-atomic double-check algorithm above has been
+> replaced by ADR 0016, which uses a single `AtomicUsize` packing
+> state and count into one word.  The single-word CAS provides a
+> unique linearisation point for each of `acquire` and `shutdown`,
+> closing the window where a temporary count increment could allow
+> shutdown to proceed incorrectly.
 
-```rust
-fn acquire_object(&self) -> Result<RuntimeLease> {
-    if self.state() != RuntimeState::Running {
-        return Err(Error::NotInitialized);
-    }
-    self.active_objects.fetch_add(1, Ordering::AcqRel);
-    if self.state() != RuntimeState::Running {
-        self.active_objects.fetch_sub(1, Ordering::AcqRel);
-        return Err(Error::NotInitialized);
-    }
-    Ok(RuntimeLease { ... })
-}
-```
+Internal runtime services (timer service thread, backend control
+blocks, BSP console) do **not** hold [`RuntimeLease`]s — only
+user-visible logical objects (Queue, Mutex, Task handle, Timer)
+contribute to the active-object count.  Without this distinction,
+the runtime would always see a non-zero count and shutdown would
+never succeed.
 
 ### New error variant
 
