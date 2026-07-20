@@ -12,5 +12,11 @@
 
 #![no_std]
 
+extern crate alloc;
+
+#[cfg(test)]
+extern crate std;
+
 pub mod close_state;
+pub mod runtime;
 pub mod validation;
