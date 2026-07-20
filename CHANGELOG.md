@@ -1,5 +1,24 @@
 # Changelog
 
+## P6B — Runtime Lifecycle (2026-07-20)
+
+### Added
+
+- ADR 0014: Backend and BSP Responsibility Boundary (semantic ownership
+  vs primitive provider, composition rules, init/shutdown ordering).
+- ADR 0015: Runtime Lifecycle (four-state cycle, transactional guards,
+  failure-atomic hooks, re-initialisable after shutdown).
+- ADR 0016: Linearizable Runtime Lease Accounting (single AtomicUsize
+  packing state + count, supersedes ADR 0015 double-check algorithm).
+- `RuntimeState` enum in `osal-api` (`Uninitialized`, `Initializing`,
+  `Running`, `ShuttingDown`).
+- `RuntimeLifecycle` in `osal-shared` with transactional `initialize`/
+  `shutdown` guards and `RuntimeLease` double-count for object tracking.
+- `Error::Busy` (runtime in use or lifecycle transition in progress).
+- 38 runtime unit tests (36 non-concurrent + 2 ignored heavy concurrency).
+- `osal-bsp` dependency on `osal-api` removed per ADR 0014.
+- Updated architecture docs and behavior contract error table.
+
 ## P6A — Task Semantic Alignment (2026-07-20)
 
 ### Breaking changes

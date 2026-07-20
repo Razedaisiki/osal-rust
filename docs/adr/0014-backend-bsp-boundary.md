@@ -63,11 +63,13 @@ Generic backend depends on osal-bsp abstraction
 Concrete BSP is selected at integration time
     (facade Cargo feature, target crate, or application binary)
 
-POSIX MVP default:
-    backend-posix feature → osal-backend-posix → osal-bsp-linux
+POSIX MVP default (facade selects both):
+    backend-posix facade feature
+        ├── osal-backend-posix
+        └── osal-bsp-linux
 
-Future FreeRTOS:
-    backend-freertos + bsp-stm32f4
+Future FreeRTOS (facade + target integration):
+    backend-freertos facade feature + bsp-stm32f4
 ```
 
 A generic backend must not hard-code a specific board BSP.

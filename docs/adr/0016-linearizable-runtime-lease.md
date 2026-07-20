@@ -31,8 +31,11 @@ State and active-object count are packed into a single
 `AtomicUsize`:
 
 ```text
-bits [usize::BITS-1 .. 2] : active object count (saturates at max >> 2)
+bits [usize::BITS-1 .. 2] : active object count
 bits [1 .. 0]              : RuntimeState (2 bits)
+
+Maximum representable count is usize::MAX >> 2.
+acquire() returns Error::Overflow at that limit.
 ```
 
 ```
@@ -101,10 +104,15 @@ corruption is not silently overwritten:
 
 ```
 fn commit(mut self) {
-    let expected = encode(Initializing, 0);
-    let desired  = encode(Running, 0);
-    self.lifecycle.word.compare_exchange(expected, desired, AcqRel, Acquire).ok();
+    // Disarm Drop before assertion so a panic does not double-rollback.
     self.committed = true;
+
+    let result = self.lifecycle.word.compare_exchange(
+        encode(Initializing, 0),
+        encode(Running, 0),
+        AcqRel, Acquire,
+    );
+    assert!(result.is_ok(), "runtime initialize commit invariant violated");
 }
 ```
 

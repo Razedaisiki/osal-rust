@@ -213,6 +213,7 @@ pub enum Error {
     InvalidParameter,
     AlreadyInitialized,
     NotInitialized,
+    Busy,
     Unsupported,
     Internal(&'static str),
 }
