@@ -86,7 +86,11 @@ pub fn reject_zero_stack<F: TaskFactory>(factory: &F) {
 
 /// Positive stack size creates successfully.
 pub fn positive_stack_size_succeeds<F: TaskFactory>(factory: &F) {
-    let task = factory.task_builder().stack_size(8192).spawn(|| {}).unwrap();
+    let task = factory
+        .task_builder()
+        .stack_size(8192)
+        .spawn(|| {})
+        .unwrap();
     task.join(Timeout::Forever).unwrap();
 }
 

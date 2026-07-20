@@ -2,13 +2,14 @@
 //!
 //! Provides common logic shared by all backends:
 //!
-//! - Object ID allocation and tracking
-//! - Resource registration and lookup
-//! - Parameter validation helpers
-//! - Initialization lifecycle management
+//! - Runtime lifecycle state transitions (ADR 0016)
+//! - Active-object lease accounting with linearizable acquire/shutdown
+//! - Close-state tracking helpers
+//! - Parameter validation helpers (`validate_queue_config`,
+//!   `validate_task_config`, etc.)
 //!
-//! This crate prevents each backend from inventing its own
-//! object lifecycle and validation logic.
+//! A global object ID registry and resource lookup table are
+//! deferred (ADR 0006).  The MVP uses strongly typed handles.
 
 #![no_std]
 

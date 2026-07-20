@@ -35,8 +35,8 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use core::cell::{Cell, UnsafeCell};
 use core::ffi::c_void;
-use std::thread_local;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use std::thread_local;
 
 use osal_api::error::{Error, Result};
 use osal_api::time::Timeout;

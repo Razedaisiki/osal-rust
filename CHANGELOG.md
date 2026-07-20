@@ -15,7 +15,9 @@
 - `RuntimeLifecycle` in `osal-shared` with transactional `initialize`/
   `shutdown` guards and `RuntimeLease` double-count for object tracking.
 - `Error::Busy` (runtime in use or lifecycle transition in progress).
-- 38 runtime unit tests (36 non-concurrent + 2 ignored heavy concurrency).
+- 22 RuntimeLifecycle unit tests (20 state-machine + 2 concurrency).
+  38 total `osal-shared` unit tests.
+- RuntimeLease-based active-object accounting.
 - `osal-bsp` dependency on `osal-api` removed per ADR 0014.
 - Updated architecture docs and behavior contract error table.
 

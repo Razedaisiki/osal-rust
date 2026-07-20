@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use osal_api::error::Error;
 use osal_api::time::Timeout;
-use osal_api::types::ExitCode;
 use osal_api::traits::clock::Clock as _;
 use osal_api::traits::task::{Task as _, TaskBuilder as _};
+use osal_api::types::ExitCode;
 
 use osal_backend_posix::clock::PosixClock;
 use osal_backend_posix::task::{PosixTask, PosixTaskBuilder};

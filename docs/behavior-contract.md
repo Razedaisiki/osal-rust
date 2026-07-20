@@ -834,7 +834,84 @@ System contract tests must verify:
 
 ---
 
-## 14. Unsupported capability rules
+## 14. Runtime Lifecycle Contract
+
+### State machine
+
+The OSAL runtime follows a four-state cycle:
+
+```text
+Uninitialized → Initializing → Running → ShuttingDown → Uninitialized
+```
+
+`Uninitialized` is both start and end, enabling re-initialisation.
+
+### Transition rules
+
+| Operation | State | Result |
+|-----------|-------|--------|
+| `initialize()` | `Uninitialized` | enter `Initializing` |
+| `initialize()` | `Running` | `Error::AlreadyInitialized` |
+| `initialize()` | `Initializing`, `ShuttingDown` | `Error::Busy` |
+| `shutdown()` | `Running`, count == 0 | enter `ShuttingDown` |
+| `shutdown()` | `Running`, count > 0 | `Error::Busy` |
+| `shutdown()` | `Uninitialized` | `Error::NotInitialized` |
+| `shutdown()` | `Initializing`, `ShuttingDown` | `Error::Busy` |
+| `acquire()` | `Running` | `Ok(RuntimeLease)` |
+| `acquire()` | any other | `Error::NotInitialized` |
+
+### Object leases
+
+Each user-visible OSAL object (Queue, Mutex, Timer, Task handle)
+holds one `RuntimeLease`. Cloning a handle shares the existing
+lease via the shared inner state — no additional lease is acquired.
+
+Internal runtime services (timer service thread, backend control
+blocks) do **not** hold leases. Only user objects contribute to
+the active-object count.
+
+### Linearisation guarantee
+
+State and object count are packed into a single atomic word.
+`acquire()` and `shutdown()` share one CAS linearisation point:
+at most one can succeed at any instant.
+
+### Shutdown safety
+
+- Shutdown is refused while any lease is alive (`Error::Busy`).
+- Once shutdown is committed, new leases are refused
+  (`Error::NotInitialized`).
+- Shutdown may be retried after all leases are dropped and the
+  runtime is re-initialised.
+
+### Backend hook contract
+
+Backend and BSP lifecycle hooks (`initialize()` / `shutdown()`)
+must be **failure-atomic**:
+
+- If `initialize()` returns an error, the component must be
+  left uninitialised.
+- If `shutdown()` returns an error, the component must remain
+  fully operational.
+
+### Contract tests
+
+Runtime contract tests must verify:
+
+1. Initial state is `Uninitialized`.
+2. `initialize()` commit enters `Running`; drop rolls back.
+3. Re-initialisation returns `AlreadyInitialized`.
+4. `acquire()` before init returns `NotInitialized`.
+5. Active lease prevents shutdown (`Busy`).
+6. Shutdown commit returns to `Uninitialized`; drop rolls back.
+7. Re-initialisation after shutdown succeeds.
+8. `acquire()` and `shutdown()` cannot both succeed.
+9. `acquire()` overflow returns `Overflow`.
+10. Transition guards commit and rollback via CAS.
+
+---
+
+## 15. Unsupported capability rules
 
 Some backends cannot implement every operation. The following rules
 govern how unsupported capabilities must be handled:
@@ -864,7 +941,7 @@ govern how unsupported capabilities must be handled:
 
 ---
 
-## 15. Mock backend requirements
+## 16. Mock backend requirements
 
 The mock backend (`osal-backend-mock`) is a fully in-memory,
 deterministic implementation used for unit tests and contract
@@ -895,7 +972,7 @@ validated.
 
 ---
 
-## 16. POSIX backend requirements
+## 17. POSIX backend requirements
 
 The POSIX backend (`osal-backend-posix`) implements all OSAL primitives
 using pthread and related POSIX APIs.
@@ -936,7 +1013,7 @@ using pthread and related POSIX APIs.
 
 ---
 
-## 17. Conformance test matrix
+## 18. Conformance test matrix
 
 Each behavioral requirement maps to one or more contract tests.
 Backends must pass all non-skipped tests.

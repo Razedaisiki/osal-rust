@@ -98,12 +98,10 @@ impl RuntimeLifecycle {
         let expected = encode(RuntimeState::Uninitialized, 0);
         let desired = encode(RuntimeState::Initializing, 0);
 
-        match self.word.compare_exchange(
-            expected,
-            desired,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
+        match self
+            .word
+            .compare_exchange(expected, desired, Ordering::AcqRel, Ordering::Acquire)
+        {
             Ok(_) => Ok(InitializeTransition {
                 lifecycle: self,
                 committed: false,
@@ -262,10 +260,7 @@ impl ShutdownTransition<'_> {
             Ordering::AcqRel,
             Ordering::Acquire,
         );
-        assert!(
-            result.is_ok(),
-            "runtime shutdown commit invariant violated"
-        );
+        assert!(result.is_ok(), "runtime shutdown commit invariant violated");
     }
 }
 
@@ -443,10 +438,7 @@ mod tests {
     #[test]
     fn shutdown_before_initialize_returns_not_initialized() {
         let rt = RuntimeLifecycle::new();
-        assert!(matches!(
-            rt.begin_shutdown(),
-            Err(Error::NotInitialized)
-        ));
+        assert!(matches!(rt.begin_shutdown(), Err(Error::NotInitialized)));
     }
 
     #[test]
@@ -539,19 +531,18 @@ mod tests {
     // ---- concurrency ----
 
     #[test]
-    #[ignore = "requires multiple hardware threads — run manually or in CI with sufficient cores"]
     fn only_one_concurrent_initialize_succeeds() {
         let n: usize = 4;
-        let rt = Arc::new(RuntimeLifecycle::new());
-
-        let start = Arc::new(Barrier::new(n));
-        let attempted = Arc::new(Barrier::new(n + 1)); // +1 for main
+        // +1 because main thread also calls start.wait().
+        let lifecycle = Arc::new(RuntimeLifecycle::new());
+        let start = Arc::new(Barrier::new(n + 1));
+        let attempted = Arc::new(Barrier::new(n + 1));
         let release = Arc::new(Barrier::new(n + 1));
         let successes = Arc::new(AtomicUsize::new(0));
 
         let mut handles = Vec::new();
         for _ in 0..n {
-            let rt = Arc::clone(&rt);
+            let lifecycle = Arc::clone(&lifecycle);
             let start = Arc::clone(&start);
             let attempted = Arc::clone(&attempted);
             let release = Arc::clone(&release);
@@ -561,7 +552,7 @@ mod tests {
                 start.wait();
 
                 // Hold the transition — must not drop immediately.
-                let transition = rt.begin_initialize().ok();
+                let transition = lifecycle.begin_initialize().ok();
                 if transition.is_some() {
                     successes.fetch_add(1, Ordering::SeqCst);
                 }
@@ -587,11 +578,10 @@ mod tests {
             h.join().unwrap();
         }
 
-        assert_eq!(rt.state(), RuntimeState::Uninitialized);
+        assert_eq!(lifecycle.state(), RuntimeState::Uninitialized);
     }
 
     #[test]
-    #[ignore = "requires multiple hardware threads — run manually or in CI with sufficient cores"]
     fn acquire_and_shutdown_have_one_winner() {
         let rt = Arc::new(RuntimeLifecycle::new());
         init(&rt);
