@@ -290,17 +290,19 @@ impl TaskBuilder {
 
 ### Builder rules
 
-| Field | Default | Valid range |
-|-------|---------|-------------|
-| `name` | `""` (empty) | 0..31 bytes, no embedded NUL |
-| `stack_size` | `4096` | Minimum backend-defined (typically 512) |
-| `priority` | `1` | 0..(backend max - 1) |
+| Field        | Default     | Valid range |
+|-------------|-------------|-------------|
+| `name`      | `""` (empty) | 0..31 bytes, no embedded NUL; >31 bytes → `Error::InvalidParameter` |
+| `stack_size` | `4096`      | >0; `0` → `Error::InvalidParameter`. Backend may round up to a platform minimum |
+| `priority`  | `1`         | all `u32` values accepted; stored and returned as-is |
 
-- `spawn` returns `Error::InvalidParameter` if any field is out of
-  range.
-- `spawn` returns `Error::OutOfMemory` if the task cannot be allocated.
+- `spawn` returns `Error::InvalidParameter` if the name exceeds 31
+  bytes, contains embedded NUL, or `stack_size == 0`.
+- `spawn` returns `Error::OutOfMemory` if the task cannot be
+  allocated.
 - The entry function `F` executes exactly once in the new task.
-- After `spawn` returns `Ok`, the task is in the `Ready` state.
+- After `spawn` returns `Ok`, the task may already be `Running` or
+  even `Finished`; portable code must not assume it is in `Ready`.
 - Calling `spawn` twice on the same builder is not possible (it
   consumes `self`).
 
@@ -309,7 +311,7 @@ impl TaskBuilder {
 ```rust
 impl Task {
     pub fn join(&self, timeout: Timeout) -> Result<ExitCode>;
-    pub fn handle(&self) -> Handle;
+    pub fn handle(&self) -> TaskHandle;
     pub fn priority(&self) -> Priority;
 }
 ```
@@ -322,28 +324,29 @@ impl Task {
     calls to `join` return it immediately without blocking.
   - Returns `Error::Timeout` if the task does not exit within the
     timeout. The caller retains the handle and may retry.
-  - Returns `Error::NotInitialized` if the task was never spawned.
 - `drop`: dropping a `Task` handle does **not** cancel the task or
   kill the thread. The task continues to run independently.
-- `handle()`: returns an opaque `Handle` uniquely identifying this
-  task.
+- `handle()`: returns a non-zero `TaskHandle` uniquely identifying
+  this task within the process.
 - `priority()`: returns the task's configured priority. Priority is
-  stored and reported; scheduling effect is backend-specific and not
-  guaranteed in this foundation slice.
+  stored and reported; scheduling effect is backend-specific.
 
 ### Static methods
 
 ```rust
 impl Task {
-    pub fn current() -> Handle;
+    pub fn current() -> Option<TaskHandle>;
     pub fn count() -> usize;
 }
 ```
 
-- `current()`: returns the handle of the calling task. Must work from
-  any OSAL task context.
-- `count()`: returns the number of tasks currently known to the
-  system. Includes running, ready, blocked, and suspended tasks.
+- `current()`: returns `Some(TaskHandle)` when called from within an
+  OSAL-created task's entry function. Returns `None` from the main
+  thread or any non-OSAL pthread.
+- `count()`: returns the number of OSAL tasks whose entry function
+  has not yet completed. Finished tasks whose handle still exists are
+  **not** counted. The value is a snapshot for diagnostics only; do
+  not use for concurrency synchronisation.
 
 ### Task state
 
@@ -944,21 +947,39 @@ Backends must pass all non-skipped tests.
 - **M**: Mock only — tests fault injection or deterministic behavior
 - **S**: Skipped — backend declares this capability unsupported
 
-### Task tests
+### Task tests — Core (Mock + POSIX)
 
 | Test | Requirement | POSIX | Mock |
 |------|-------------|-------|------|
 | Create with default config | Builder defaults compile and spawn | R | R |
-| Create with all fields set | name, stack, priority propagated | R | R |
-| Reject zero-length name | `Error::InvalidParameter` | R | R |
+| Accept empty name | `""` is valid | R | R |
+| Reject name > 31 bytes | `Error::InvalidParameter` | R | R |
+| Reject embedded NUL | `Error::InvalidParameter` | R | R |
 | Reject zero stack size | `Error::InvalidParameter` | R | R |
 | Spawn and join successfully | Task runs, join returns ExitCode | R | R |
-| Join with timeout | `Error::Timeout` on non-exiting task | R | R |
-| Join unstarted task | `Error::NotInitialized` | R | R |
-| Multiple concurrent tasks | 3+ tasks run simultaneously | R | R |
-| current() from within task | Returns correct handle | R | R |
-| count() reflects reality | Matches number of spawned tasks | R | R |
-| Suspend / resume | Task pauses and resumes | S | R |
+| Repeated join returns cached | Subsequent joins return immediately | R | R |
+| Handle is non-zero | `TaskHandle` is unique and non-zero | R | R |
+| current() from within task | Returns `Some(TaskHandle)` | R | R |
+| current() from main thread | Returns `None` | R | R |
+| count() reflects live tasks | Entry running → count ≥ 1; returned → count back to baseline | R | R |
+| Priority preserved | `priority()` returns configured value | R | R |
+
+### Task tests — Concurrency (POSIX only)
+
+| Test | Requirement | POSIX | Mock |
+|------|-------------|-------|------|
+| Multiple concurrent tasks | 3+ tasks run simultaneously | R | S |
+| Join with timeout | `Error::Timeout` on non-exiting task | R | S |
+| Timeout then retry | Timeout → retry Forever succeeds | R | S |
+| Drop without join | Task continues running after handle drop | R | S |
+
+### Task tests — Deferred (neither)
+
+| Test | Requirement | POSIX | Mock |
+|------|-------------|-------|------|
+| Suspend / resume | Task pauses and resumes | S | S |
+| Cancel / kill | Forced task termination | S | S |
+| Deterministic mock scheduling | Cooperative yield, virtual-time scheduling | S | S |
 
 ### Mutex tests
 
