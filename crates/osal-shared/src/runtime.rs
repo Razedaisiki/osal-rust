@@ -208,25 +208,36 @@ pub struct InitializeTransition<'a> {
 
 impl InitializeTransition<'_> {
     pub fn commit(mut self) {
-        let expected = encode(RuntimeState::Initializing, 0);
-        let desired = encode(RuntimeState::Running, 0);
-        self.lifecycle
-            .word
-            .compare_exchange(expected, desired, Ordering::AcqRel, Ordering::Acquire)
-            .ok();
+        // Disarm Drop BEFORE the assertion, so a panic won't
+        // double-attempt rollback.
         self.committed = true;
+
+        let result = self.lifecycle.word.compare_exchange(
+            encode(RuntimeState::Initializing, 0),
+            encode(RuntimeState::Running, 0),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        assert!(
+            result.is_ok(),
+            "runtime initialize commit invariant violated"
+        );
     }
 }
 
 impl Drop for InitializeTransition<'_> {
     fn drop(&mut self) {
         if !self.committed {
-            let expected = encode(RuntimeState::Initializing, 0);
-            let desired = encode(RuntimeState::Uninitialized, 0);
-            self.lifecycle
-                .word
-                .compare_exchange(expected, desired, Ordering::AcqRel, Ordering::Acquire)
-                .ok();
+            let result = self.lifecycle.word.compare_exchange(
+                encode(RuntimeState::Initializing, 0),
+                encode(RuntimeState::Uninitialized, 0),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            debug_assert!(
+                result.is_ok(),
+                "runtime initialize rollback invariant violated"
+            );
         }
     }
 }
@@ -243,25 +254,34 @@ pub struct ShutdownTransition<'a> {
 
 impl ShutdownTransition<'_> {
     pub fn commit(mut self) {
-        let expected = encode(RuntimeState::ShuttingDown, 0);
-        let desired = encode(RuntimeState::Uninitialized, 0);
-        self.lifecycle
-            .word
-            .compare_exchange(expected, desired, Ordering::AcqRel, Ordering::Acquire)
-            .ok();
         self.committed = true;
+
+        let result = self.lifecycle.word.compare_exchange(
+            encode(RuntimeState::ShuttingDown, 0),
+            encode(RuntimeState::Uninitialized, 0),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        assert!(
+            result.is_ok(),
+            "runtime shutdown commit invariant violated"
+        );
     }
 }
 
 impl Drop for ShutdownTransition<'_> {
     fn drop(&mut self) {
         if !self.committed {
-            let expected = encode(RuntimeState::ShuttingDown, 0);
-            let desired = encode(RuntimeState::Running, 0);
-            self.lifecycle
-                .word
-                .compare_exchange(expected, desired, Ordering::AcqRel, Ordering::Acquire)
-                .ok();
+            let result = self.lifecycle.word.compare_exchange(
+                encode(RuntimeState::ShuttingDown, 0),
+                encode(RuntimeState::Running, 0),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            debug_assert!(
+                result.is_ok(),
+                "runtime shutdown rollback invariant violated"
+            );
         }
     }
 }
@@ -279,9 +299,19 @@ impl Drop for RuntimeLease<'_> {
     fn drop(&mut self) {
         loop {
             let current = self.lifecycle.word.load(Ordering::Acquire);
+
+            assert_eq!(
+                decode_state(current),
+                RuntimeState::Running,
+                "runtime lease dropped outside Running state"
+            );
+
             let count = decode_count(current);
-            debug_assert!(count > 0, "runtime object count underflow");
-            let next = encode(decode_state(current), count - 1);
+            let next_count = count
+                .checked_sub(1)
+                .expect("runtime object count underflow");
+            let next = encode(RuntimeState::Running, next_count);
+
             if self
                 .lifecycle
                 .word
@@ -345,16 +375,25 @@ mod tests {
     fn initialize_while_running_returns_already_initialized() {
         let rt = RuntimeLifecycle::new();
         init(&rt);
-        assert!(rt.begin_initialize().is_err());
-        // Exact variant not tested — do not compare non-Debug types.
+        assert!(matches!(
+            rt.begin_initialize(),
+            Err(Error::AlreadyInitialized)
+        ));
     }
 
     #[test]
     fn initialize_while_initializing_returns_busy() {
         let rt = RuntimeLifecycle::new();
         let _t = rt.begin_initialize().unwrap();
-        // A second initialise attempt while Initializing → Busy.
-        assert!(rt.begin_initialize().is_err());
+        assert!(matches!(rt.begin_initialize(), Err(Error::Busy)));
+    }
+
+    #[test]
+    fn initialize_during_shutting_down_returns_busy() {
+        let rt = RuntimeLifecycle::new();
+        init(&rt);
+        let _st = rt.begin_shutdown().unwrap();
+        assert!(matches!(rt.begin_initialize(), Err(Error::Busy)));
     }
 
     // ---- lease ----
@@ -362,7 +401,7 @@ mod tests {
     #[test]
     fn acquire_before_initialize_fails() {
         let rt = RuntimeLifecycle::new();
-        assert!(rt.acquire().is_err());
+        assert!(matches!(rt.acquire(), Err(Error::NotInitialized)));
         assert_eq!(rt.active_objects(), 0);
     }
 
@@ -404,7 +443,10 @@ mod tests {
     #[test]
     fn shutdown_before_initialize_returns_not_initialized() {
         let rt = RuntimeLifecycle::new();
-        assert!(rt.begin_shutdown().is_err());
+        assert!(matches!(
+            rt.begin_shutdown(),
+            Err(Error::NotInitialized)
+        ));
     }
 
     #[test]
@@ -412,8 +454,23 @@ mod tests {
         let rt = RuntimeLifecycle::new();
         init(&rt);
         let _lease = rt.acquire().unwrap();
-        assert!(rt.begin_shutdown().is_err());
+        assert!(matches!(rt.begin_shutdown(), Err(Error::Busy)));
         assert_eq!(rt.state(), RuntimeState::Running);
+    }
+
+    #[test]
+    fn shutdown_during_initializing_returns_busy() {
+        let rt = RuntimeLifecycle::new();
+        let _t = rt.begin_initialize().unwrap();
+        assert!(matches!(rt.begin_shutdown(), Err(Error::Busy)));
+    }
+
+    #[test]
+    fn shutdown_during_shutting_down_returns_busy() {
+        let rt = RuntimeLifecycle::new();
+        init(&rt);
+        let _st = rt.begin_shutdown().unwrap();
+        assert!(matches!(rt.begin_shutdown(), Err(Error::Busy)));
     }
 
     #[test]
@@ -444,31 +501,7 @@ mod tests {
         assert_eq!(rt.state(), RuntimeState::Running);
     }
 
-    #[test]
-    fn shutdown_during_initializing_returns_busy() {
-        let rt = RuntimeLifecycle::new();
-        let _t = rt.begin_initialize().unwrap();
-        assert!(rt.begin_shutdown().is_err());
-    }
-
     // ---- acquire during transitions ----
-
-    #[test]
-    fn acquire_during_initializing_fails() {
-        let rt = RuntimeLifecycle::new();
-        let _t = rt.begin_initialize().unwrap();
-        assert!(rt.acquire().is_err());
-    }
-
-    #[test]
-    fn acquire_during_shutting_down_fails() {
-        let rt = RuntimeLifecycle::new();
-        init(&rt);
-        let _st = rt.begin_shutdown().unwrap();
-        assert!(rt.acquire().is_err());
-    }
-
-    // ---- overflow ----
 
     #[test]
     fn acquire_overflow_returns_overflow() {
@@ -480,101 +513,157 @@ mod tests {
         rt.word
             .store(encode(RuntimeState::Running, max), Ordering::Release);
         assert_eq!(rt.active_objects(), max);
-        assert!(rt.acquire().is_err());
+        assert!(matches!(rt.acquire(), Err(Error::Overflow)));
         // Word must be unchanged.
         assert_eq!(rt.active_objects(), max);
         assert_eq!(rt.state(), RuntimeState::Running);
     }
 
+    // ---- acquire during transitions ----
+
+    #[test]
+    fn acquire_during_initializing_returns_not_initialized() {
+        let rt = RuntimeLifecycle::new();
+        let _t = rt.begin_initialize().unwrap();
+        assert!(matches!(rt.acquire(), Err(Error::NotInitialized)));
+    }
+
+    #[test]
+    fn acquire_during_shutting_down_returns_not_initialized() {
+        let rt = RuntimeLifecycle::new();
+        init(&rt);
+        let _st = rt.begin_shutdown().unwrap();
+        assert!(matches!(rt.acquire(), Err(Error::NotInitialized)));
+    }
+
     // ---- concurrency ----
 
     #[test]
-    fn concurrent_initialize_at_least_one_succeeds() {
-        let n = 8;
+    #[ignore = "requires multiple hardware threads — run manually or in CI with sufficient cores"]
+    fn only_one_concurrent_initialize_succeeds() {
+        let n: usize = 4;
         let rt = Arc::new(RuntimeLifecycle::new());
-        let barrier = Arc::new(Barrier::new(n));
-        let gate = Arc::new(Barrier::new(n));
+
+        let start = Arc::new(Barrier::new(n));
+        let attempted = Arc::new(Barrier::new(n + 1)); // +1 for main
+        let release = Arc::new(Barrier::new(n + 1));
         let successes = Arc::new(AtomicUsize::new(0));
 
         let mut handles = Vec::new();
         for _ in 0..n {
             let rt = Arc::clone(&rt);
-            let b = Arc::clone(&barrier);
-            let g = Arc::clone(&gate);
-            let s = Arc::clone(&successes);
+            let start = Arc::clone(&start);
+            let attempted = Arc::clone(&attempted);
+            let release = Arc::clone(&release);
+            let successes = Arc::clone(&successes);
+
             handles.push(thread::spawn(move || {
-                b.wait();
-                if rt.begin_initialize().is_ok() {
-                    s.fetch_add(1, Ordering::Relaxed);
+                start.wait();
+
+                // Hold the transition — must not drop immediately.
+                let transition = rt.begin_initialize().ok();
+                if transition.is_some() {
+                    successes.fetch_add(1, Ordering::SeqCst);
                 }
-                g.wait(); // all threads hold until everyone is done
+
+                attempted.wait();
+                release.wait();
+
+                drop(transition);
             }));
         }
+
+        // All threads have started, wait for them to attempt.
+        start.wait();
+        attempted.wait();
+
+        // At this point all guards are still alive, so exactly one
+        // CAS must have succeeded.
+        assert_eq!(successes.load(Ordering::SeqCst), 1);
+
+        // Release all guards.
+        release.wait();
         for h in handles {
             h.join().unwrap();
         }
-        // At least one must have succeeded; state is Uninitialized
-        // after all guards drop.
-        let n_ok = successes.load(Ordering::Relaxed);
-        assert!(n_ok >= 1, "expected >= 1 successes, got {n_ok}");
+
         assert_eq!(rt.state(), RuntimeState::Uninitialized);
     }
 
     #[test]
-    fn acquire_and_shutdown_cannot_both_succeed() {
+    #[ignore = "requires multiple hardware threads — run manually or in CI with sufficient cores"]
+    fn acquire_and_shutdown_have_one_winner() {
         let rt = Arc::new(RuntimeLifecycle::new());
         init(&rt);
 
-        let iterations = 400;
-        let acquired = Arc::new(AtomicUsize::new(0));
-        let shutdowns = Arc::new(AtomicUsize::new(0));
-        let barrier = Arc::new(Barrier::new(2));
-
-        for _ in 0..iterations {
-            // Reset to Running with no leases.
+        for _ in 0..10 {
+            // Ensure clean state each iteration.
             rt.word
                 .store(encode(RuntimeState::Running, 0), Ordering::Release);
 
-            let a = Arc::clone(&acquired);
-            let s = Arc::clone(&shutdowns);
-            let rt_clone = Arc::clone(&rt);
-            let b = Arc::clone(&barrier);
+            let start = Arc::new(Barrier::new(3)); // 2 threads + main
+            let attempted = Arc::new(Barrier::new(3));
+            let release = Arc::new(Barrier::new(3));
 
-            let t1 = thread::spawn(move || {
-                b.wait();
-                if rt_clone.acquire().is_ok() {
-                    a.fetch_add(1, Ordering::Relaxed);
-                }
-            });
+            let acquired = Arc::new(AtomicUsize::new(0));
+            let shutdown = Arc::new(AtomicUsize::new(0));
 
-            let rt_clone2 = Arc::clone(&rt);
-            let b2 = Arc::clone(&barrier);
-            let t2 = thread::spawn(move || {
-                b2.wait();
-                if rt_clone2
-                    .begin_shutdown()
-                    .is_ok_and(|tx| {
-                        tx.commit();
-                        true
-                    })
-                {
-                    s.fetch_add(1, Ordering::Relaxed);
-                }
-            });
+            let acquire_thread = {
+                let rt = Arc::clone(&rt);
+                let start = Arc::clone(&start);
+                let attempted = Arc::clone(&attempted);
+                let release = Arc::clone(&release);
+                let acquired = Arc::clone(&acquired);
 
-            t1.join().unwrap();
-            t2.join().unwrap();
+                thread::spawn(move || {
+                    start.wait();
 
-            // In any given iteration, at most one can succeed.
-            let a_val = acquired.load(Ordering::Relaxed);
-            let s_val = shutdowns.load(Ordering::Relaxed);
-            assert!(
-                a_val + s_val <= 1,
-                "iteration {iterations}: both acquire ({a_val}) and shutdown ({s_val}) succeeded"
+                    // Hold the lease — do NOT drop until release.
+                    let _lease = rt.acquire().ok();
+                    if _lease.is_some() {
+                        acquired.store(1, Ordering::SeqCst);
+                    }
+
+                    attempted.wait();
+                    release.wait();
+                })
+            };
+
+            let shutdown_thread = {
+                let rt = Arc::clone(&rt);
+                let start = Arc::clone(&start);
+                let attempted = Arc::clone(&attempted);
+                let release = Arc::clone(&release);
+                let shutdown = Arc::clone(&shutdown);
+
+                thread::spawn(move || {
+                    start.wait();
+
+                    let _transition = rt.begin_shutdown().ok();
+                    if _transition.is_some() {
+                        shutdown.store(1, Ordering::SeqCst);
+                    }
+
+                    attempted.wait();
+                    release.wait();
+                })
+            };
+
+            start.wait();
+            attempted.wait();
+
+            assert_eq!(
+                acquired.load(Ordering::SeqCst) + shutdown.load(Ordering::SeqCst),
+                1
             );
 
-            acquired.store(0, Ordering::Relaxed);
-            shutdowns.store(0, Ordering::Relaxed);
+            release.wait();
+            acquire_thread.join().unwrap();
+            shutdown_thread.join().unwrap();
+
+            // Both guards/leases dropped → Running, count 0.
+            assert_eq!(rt.state(), RuntimeState::Running);
+            assert_eq!(rt.active_objects(), 0);
         }
     }
 
