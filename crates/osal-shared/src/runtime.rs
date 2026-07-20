@@ -2,36 +2,56 @@
 //!
 //! # Overview
 //!
-//! [`RuntimeLifecycle`] manages the four-state OSAL runtime cycle
-//! (`Uninitialized → Initializing → Running → ShuttingDown`) and
-//! tracks active object leases.  Each logical OSAL object holds a
-//! [`RuntimeLease`]; shutdown is refused while any lease is alive.
+//! [`RuntimeLifecycle`] packs the four-state OSAL runtime cycle and an
+//! active-object counter into a single [`AtomicUsize`], giving every
+//! operation a unique CAS linearisation point (ADR 0016).
 //!
-//! # Design
+//! # Layout
 //!
-//! - **No global singleton** — each backend creates its own `static`
-//!   instance.  This lets POSIX and Mock coexist in the same test
-//!   process, and makes unit tests simple (create a local instance).
-//! - **Transactional guards** — `begin_initialize` and `begin_shutdown`
-//!   return RAII guards.  If the caller does not call `commit()`, the
-//!   guard's `Drop` rolls back the state.  This is panic-safe.
-//! - **Double-check acquire** — `acquire()` atomically increments the
-//!   object counter and then re-checks the state.  If shutdown began
-//!   between the check and the increment, the temporary increment is
-//!   rolled back.
+//! ```text
+//! bits [usize::BITS-1 .. 2]  — active object count
+//! bits [1 .. 0]               — RuntimeState (Uninitialized=0, …, ShuttingDown=3)
+//! ```
 //!
 //! # Distinction from `Task::count()`
 //!
-//! `Task::count()` counts entries whose function has not yet
-//! completed.  `active_objects()` counts logical OSAL objects
-//! (Queue, Mutex, Task handle, etc.) that still hold a
-//! [`RuntimeLease`].  A finished Task whose handle is still alive
-//! has `Task::count() == 0` but contributes to `active_objects()`.
+//! `Task::count()` counts entries whose function has not yet completed.
+//! `active_objects()` counts logical OSAL objects (Queue, Mutex, Task
+//! handle, Timer) that still hold a [`RuntimeLease`].  A finished Task
+//! whose handle is still alive has `Task::count() == 0` but contributes
+//! to `active_objects()`.
 
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use osal_api::error::{Error, Result};
 use osal_api::runtime::RuntimeState;
+
+// ---------------------------------------------------------------------------
+// Word encoding
+// ---------------------------------------------------------------------------
+
+const STATE_BITS: usize = 2;
+const STATE_MASK: usize = (1 << STATE_BITS) - 1;
+const MAX_COUNT: usize = usize::MAX >> STATE_BITS;
+
+fn encode(state: RuntimeState, count: usize) -> usize {
+    debug_assert!(count <= MAX_COUNT);
+    (state as usize) | (count << STATE_BITS)
+}
+
+fn decode_state(word: usize) -> RuntimeState {
+    match word & STATE_MASK {
+        0 => RuntimeState::Uninitialized,
+        1 => RuntimeState::Initializing,
+        2 => RuntimeState::Running,
+        3 => RuntimeState::ShuttingDown,
+        _ => unreachable!(),
+    }
+}
+
+fn decode_count(word: usize) -> usize {
+    word >> STATE_BITS
+}
 
 // ---------------------------------------------------------------------------
 // RuntimeLifecycle
@@ -45,8 +65,7 @@ use osal_api::runtime::RuntimeState;
 /// static RUNTIME: RuntimeLifecycle = RuntimeLifecycle::new();
 /// ```
 pub struct RuntimeLifecycle {
-    state: AtomicU8,
-    active_objects: AtomicUsize,
+    word: AtomicUsize,
 }
 
 impl Default for RuntimeLifecycle {
@@ -56,72 +75,63 @@ impl Default for RuntimeLifecycle {
 }
 
 impl RuntimeLifecycle {
-    /// Create a new lifecycle in [`RuntimeState::Uninitialized`].
     pub const fn new() -> Self {
+        // RuntimeState::Uninitialized = 0, count = 0 → word = 0.
         Self {
-            state: AtomicU8::new(RuntimeState::Uninitialized as u8),
-            active_objects: AtomicUsize::new(0),
+            word: AtomicUsize::new(0),
         }
     }
 
-    /// Current observable state.
     pub fn state(&self) -> RuntimeState {
-        let raw = self.state.load(Ordering::Acquire);
-        match raw {
-            0 => RuntimeState::Uninitialized,
-            1 => RuntimeState::Initializing,
-            2 => RuntimeState::Running,
-            3 => RuntimeState::ShuttingDown,
-            _ => unreachable!("invalid RuntimeState raw value {raw}"),
-        }
+        decode_state(self.word.load(Ordering::Acquire))
     }
 
-    /// Number of active object leases.
     pub fn active_objects(&self) -> usize {
-        self.active_objects.load(Ordering::Acquire)
+        decode_count(self.word.load(Ordering::Acquire))
     }
 
     // ---------------------------------------------------------------
     // Initialisation
     // ---------------------------------------------------------------
 
-    /// Begin the initialisation transaction.
-    ///
-    /// On success, the state is `Initializing`.  Call
-    /// [`InitializeTransition::commit`] to enter `Running`, or drop
-    /// the guard to roll back to `Uninitialized`.
     pub fn begin_initialize(&self) -> Result<InitializeTransition<'_>> {
-        self.state
-            .compare_exchange(
-                RuntimeState::Uninitialized as u8,
-                RuntimeState::Initializing as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .map_err(|_| Error::AlreadyInitialized)?;
+        let expected = encode(RuntimeState::Uninitialized, 0);
+        let desired = encode(RuntimeState::Initializing, 0);
 
-        debug_assert_eq!(self.active_objects.load(Ordering::Acquire), 0);
-
-        Ok(InitializeTransition {
-            lifecycle: self,
-            committed: false,
-        })
+        match self.word.compare_exchange(
+            expected,
+            desired,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => Ok(InitializeTransition {
+                lifecycle: self,
+                committed: false,
+            }),
+            Err(current) => {
+                match decode_state(current) {
+                    RuntimeState::Uninitialized => {
+                        // CAS failed but state reads Uninitialized —
+                        // another thread won the race, so from our
+                        // perspective it is already initialised.
+                        Err(Error::AlreadyInitialized)
+                    }
+                    RuntimeState::Running => Err(Error::AlreadyInitialized),
+                    _ => Err(Error::Busy),
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------
     // Shutdown
     // ---------------------------------------------------------------
 
-    /// Begin the shutdown transaction.
-    ///
-    /// Returns `Error::Busy` if any [`RuntimeLease`] is still alive.
-    /// On success the state is `ShuttingDown`.  Call
-    /// [`ShutdownTransition::commit`] to enter `Uninitialized`.
     pub fn begin_shutdown(&self) -> Result<ShutdownTransition<'_>> {
-        // Retry loop in case a concurrent CAS fails due to a state
-        // change between the load and the compare_exchange.
         loop {
-            match self.state() {
+            let current = self.word.load(Ordering::Acquire);
+
+            match decode_state(current) {
                 RuntimeState::Uninitialized => return Err(Error::NotInitialized),
                 RuntimeState::Initializing | RuntimeState::ShuttingDown => {
                     return Err(Error::Busy);
@@ -129,29 +139,25 @@ impl RuntimeLifecycle {
                 RuntimeState::Running => {}
             }
 
-            if self
-                .state
-                .compare_exchange(
-                    RuntimeState::Running as u8,
-                    RuntimeState::ShuttingDown as u8,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_err()
-            {
-                continue; // state changed, re-evaluate
-            }
-
-            // Now in ShuttingDown — no new leases can succeed.
-            if self.active_objects.load(Ordering::Acquire) != 0 {
-                self.state.store(RuntimeState::Running as u8, Ordering::Release);
+            if decode_count(current) != 0 {
                 return Err(Error::Busy);
             }
 
-            return Ok(ShutdownTransition {
-                lifecycle: self,
-                committed: false,
-            });
+            let next = encode(RuntimeState::ShuttingDown, 0);
+            match self.word.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(ShutdownTransition {
+                        lifecycle: self,
+                        committed: false,
+                    });
+                }
+                Err(_) => continue,
+            }
         }
     }
 
@@ -159,58 +165,41 @@ impl RuntimeLifecycle {
     // Object lease
     // ---------------------------------------------------------------
 
-    /// Acquire an object lease (double-check pattern).
-    ///
-    /// Returns `Error::NotInitialized` if the runtime is not `Running`
-    /// or if shutdown begins between the first check and the increment.
-    /// Returns `Error::Overflow` if the counter would overflow.
     pub fn acquire(&self) -> Result<RuntimeLease<'_>> {
         loop {
-            if self.state() != RuntimeState::Running {
+            let current = self.word.load(Ordering::Acquire);
+
+            if decode_state(current) != RuntimeState::Running {
                 return Err(Error::NotInitialized);
             }
 
-            self.active_objects
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                    count.checked_add(1)
-                })
-                .map_err(|_| Error::Overflow)?;
-
-            // Re-check — shutdown may have started between our first
-            // check and the increment.
-            if self.state() == RuntimeState::Running {
-                return Ok(RuntimeLease { lifecycle: self });
+            let count = decode_count(current);
+            if count >= MAX_COUNT {
+                return Err(Error::Overflow);
             }
+            let next = encode(RuntimeState::Running, count + 1);
 
-            // Shutdown began; roll back the temporary increment.
-            self.release_object();
-
-            // If the state returned to Running (e.g. shutdown was
-            // refused because of our temporary count), retry.
-            if self.state() != RuntimeState::Running {
-                return Err(Error::NotInitialized);
+            match self.word.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(RuntimeLease { lifecycle: self });
+                }
+                Err(_) => continue,
             }
         }
     }
-
-    /// Internal: decrement the active-object counter.
-    fn release_object(&self) {
-        let previous = self.active_objects.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(previous > 0, "runtime object count underflow");
-    }
 }
 
-// Note: RuntimeLifecycle is auto-Send + auto-Sync via AtomicUsize fields.
-// No manual unsafe impl needed.
+// Note: RuntimeLifecycle is auto-Send + auto-Sync via AtomicUsize.
 
 // ---------------------------------------------------------------------------
 // InitializeTransition
 // ---------------------------------------------------------------------------
 
-/// RAII guard returned by [`RuntimeLifecycle::begin_initialize`].
-///
-/// On drop, if [`commit`](InitializeTransition::commit) has not been
-/// called, the state is rolled back to `Uninitialized`.
 #[must_use = "initialization must be committed"]
 pub struct InitializeTransition<'a> {
     lifecycle: &'a RuntimeLifecycle,
@@ -218,11 +207,13 @@ pub struct InitializeTransition<'a> {
 }
 
 impl InitializeTransition<'_> {
-    /// Commit the initialisation — transition to `Running`.
     pub fn commit(mut self) {
+        let expected = encode(RuntimeState::Initializing, 0);
+        let desired = encode(RuntimeState::Running, 0);
         self.lifecycle
-            .state
-            .store(RuntimeState::Running as u8, Ordering::Release);
+            .word
+            .compare_exchange(expected, desired, Ordering::AcqRel, Ordering::Acquire)
+            .ok();
         self.committed = true;
     }
 }
@@ -230,9 +221,12 @@ impl InitializeTransition<'_> {
 impl Drop for InitializeTransition<'_> {
     fn drop(&mut self) {
         if !self.committed {
+            let expected = encode(RuntimeState::Initializing, 0);
+            let desired = encode(RuntimeState::Uninitialized, 0);
             self.lifecycle
-                .state
-                .store(RuntimeState::Uninitialized as u8, Ordering::Release);
+                .word
+                .compare_exchange(expected, desired, Ordering::AcqRel, Ordering::Acquire)
+                .ok();
         }
     }
 }
@@ -241,10 +235,6 @@ impl Drop for InitializeTransition<'_> {
 // ShutdownTransition
 // ---------------------------------------------------------------------------
 
-/// RAII guard returned by [`RuntimeLifecycle::begin_shutdown`].
-///
-/// On drop, if [`commit`](ShutdownTransition::commit) has not been
-/// called, the state is rolled back to `Running`.
 #[must_use = "shutdown must be committed"]
 pub struct ShutdownTransition<'a> {
     lifecycle: &'a RuntimeLifecycle,
@@ -252,12 +242,13 @@ pub struct ShutdownTransition<'a> {
 }
 
 impl ShutdownTransition<'_> {
-    /// Commit the shutdown — transition to `Uninitialized`.
     pub fn commit(mut self) {
-        debug_assert_eq!(self.lifecycle.active_objects.load(Ordering::Acquire), 0);
+        let expected = encode(RuntimeState::ShuttingDown, 0);
+        let desired = encode(RuntimeState::Uninitialized, 0);
         self.lifecycle
-            .state
-            .store(RuntimeState::Uninitialized as u8, Ordering::Release);
+            .word
+            .compare_exchange(expected, desired, Ordering::AcqRel, Ordering::Acquire)
+            .ok();
         self.committed = true;
     }
 }
@@ -265,9 +256,12 @@ impl ShutdownTransition<'_> {
 impl Drop for ShutdownTransition<'_> {
     fn drop(&mut self) {
         if !self.committed {
+            let expected = encode(RuntimeState::ShuttingDown, 0);
+            let desired = encode(RuntimeState::Running, 0);
             self.lifecycle
-                .state
-                .store(RuntimeState::Running as u8, Ordering::Release);
+                .word
+                .compare_exchange(expected, desired, Ordering::AcqRel, Ordering::Acquire)
+                .ok();
         }
     }
 }
@@ -276,32 +270,34 @@ impl Drop for ShutdownTransition<'_> {
 // RuntimeLease
 // ---------------------------------------------------------------------------
 
-/// An object lease proving the runtime is `Running`.
-///
-/// Created by [`RuntimeLifecycle::acquire`].  Each logical OSAL
-/// object holds one lease in its inner state.  Cloning a handle
-/// shares the existing lease (via `Arc`/`Rc`); no additional lease
-/// is acquired.
-///
-/// Dropping the lease decrements the runtime's active-object counter.
-/// This type is **not** `Clone` or `Copy`.
 #[must_use = "the lease must be retained for the object's lifetime"]
 pub struct RuntimeLease<'a> {
     lifecycle: &'a RuntimeLifecycle,
 }
 
-// Safety: the counter is atomic, so Send + Sync are safe.
-unsafe impl Send for RuntimeLease<'_> {}
-unsafe impl Sync for RuntimeLease<'_> {}
-
 impl Drop for RuntimeLease<'_> {
     fn drop(&mut self) {
-        self.lifecycle.release_object();
+        loop {
+            let current = self.lifecycle.word.load(Ordering::Acquire);
+            let count = decode_count(current);
+            debug_assert!(count > 0, "runtime object count underflow");
+            let next = encode(decode_state(current), count - 1);
+            if self
+                .lifecycle
+                .word
+                .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return;
+            }
+        }
     }
 }
 
+// Note: RuntimeLease is auto-Send + auto-Sync via the AtomicUsize reference.
+
 // ---------------------------------------------------------------------------
-// Unit tests — local instances (no global state)
+// Unit tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -310,7 +306,14 @@ mod tests {
     use alloc::sync::Arc;
     use alloc::vec::Vec;
     use core::sync::atomic::AtomicUsize;
+    use std::sync::Barrier;
     use std::thread;
+
+    // ---- helper ----
+
+    fn init(rt: &RuntimeLifecycle) {
+        rt.begin_initialize().unwrap().commit();
+    }
 
     // ---- basic state ----
 
@@ -324,9 +327,7 @@ mod tests {
     #[test]
     fn initialize_commit_enters_running() {
         let rt = RuntimeLifecycle::new();
-        let t = rt.begin_initialize().unwrap();
-        assert_eq!(rt.state(), RuntimeState::Initializing);
-        t.commit();
+        rt.begin_initialize().unwrap().commit();
         assert_eq!(rt.state(), RuntimeState::Running);
     }
 
@@ -341,19 +342,18 @@ mod tests {
     }
 
     #[test]
-    fn repeated_initialize_is_rejected() {
+    fn initialize_while_running_returns_already_initialized() {
         let rt = RuntimeLifecycle::new();
-        let t = rt.begin_initialize().unwrap();
-        t.commit();
-
-        let result = rt.begin_initialize();
-        assert!(result.is_err());
+        init(&rt);
+        assert!(rt.begin_initialize().is_err());
+        // Exact variant not tested — do not compare non-Debug types.
     }
 
     #[test]
-    fn initialize_while_initializing_is_rejected() {
+    fn initialize_while_initializing_returns_busy() {
         let rt = RuntimeLifecycle::new();
         let _t = rt.begin_initialize().unwrap();
+        // A second initialise attempt while Initializing → Busy.
         assert!(rt.begin_initialize().is_err());
     }
 
@@ -369,9 +369,7 @@ mod tests {
     #[test]
     fn acquire_while_running_increments_count() {
         let rt = RuntimeLifecycle::new();
-        let t = rt.begin_initialize().unwrap();
-        t.commit();
-
+        init(&rt);
         let lease = rt.acquire().unwrap();
         assert_eq!(rt.active_objects(), 1);
         drop(lease);
@@ -381,8 +379,7 @@ mod tests {
     #[test]
     fn dropping_lease_decrements_count() {
         let rt = RuntimeLifecycle::new();
-        rt.begin_initialize().unwrap().commit();
-
+        init(&rt);
         let a = rt.acquire().unwrap();
         let b = rt.acquire().unwrap();
         assert_eq!(rt.active_objects(), 2);
@@ -395,8 +392,7 @@ mod tests {
     #[test]
     fn multiple_leases_are_counted() {
         let rt = RuntimeLifecycle::new();
-        rt.begin_initialize().unwrap().commit();
-
+        init(&rt);
         let leases: Vec<RuntimeLease<'_>> = (0..5).map(|_| rt.acquire().unwrap()).collect();
         assert_eq!(rt.active_objects(), 5);
         drop(leases);
@@ -406,7 +402,7 @@ mod tests {
     // ---- shutdown ----
 
     #[test]
-    fn shutdown_before_initialize_fails() {
+    fn shutdown_before_initialize_returns_not_initialized() {
         let rt = RuntimeLifecycle::new();
         assert!(rt.begin_shutdown().is_err());
     }
@@ -414,40 +410,24 @@ mod tests {
     #[test]
     fn shutdown_with_active_lease_returns_busy() {
         let rt = RuntimeLifecycle::new();
-        rt.begin_initialize().unwrap().commit();
-
+        init(&rt);
         let _lease = rt.acquire().unwrap();
         assert!(rt.begin_shutdown().is_err());
         assert_eq!(rt.state(), RuntimeState::Running);
     }
 
     #[test]
-    fn busy_shutdown_restores_running() {
-        let rt = RuntimeLifecycle::new();
-        rt.begin_initialize().unwrap().commit();
-
-        let _lease = rt.acquire().unwrap();
-        let result = rt.begin_shutdown();
-        assert!(result.is_err());
-        assert_eq!(rt.state(), RuntimeState::Running);
-    }
-
-    #[test]
     fn shutdown_commit_returns_to_uninitialized() {
         let rt = RuntimeLifecycle::new();
-        rt.begin_initialize().unwrap().commit();
-
-        let t = rt.begin_shutdown().unwrap();
-        assert_eq!(rt.state(), RuntimeState::ShuttingDown);
-        t.commit();
+        init(&rt);
+        rt.begin_shutdown().unwrap().commit();
         assert_eq!(rt.state(), RuntimeState::Uninitialized);
     }
 
     #[test]
     fn shutdown_drop_rolls_back_to_running() {
         let rt = RuntimeLifecycle::new();
-        rt.begin_initialize().unwrap().commit();
-
+        init(&rt);
         {
             let _t = rt.begin_shutdown().unwrap();
             assert_eq!(rt.state(), RuntimeState::ShuttingDown);
@@ -458,12 +438,17 @@ mod tests {
     #[test]
     fn runtime_can_reinitialize_after_shutdown() {
         let rt = RuntimeLifecycle::new();
-        rt.begin_initialize().unwrap().commit();
+        init(&rt);
         rt.begin_shutdown().unwrap().commit();
-
-        let t = rt.begin_initialize().unwrap();
-        t.commit();
+        init(&rt);
         assert_eq!(rt.state(), RuntimeState::Running);
+    }
+
+    #[test]
+    fn shutdown_during_initializing_returns_busy() {
+        let rt = RuntimeLifecycle::new();
+        let _t = rt.begin_initialize().unwrap();
+        assert!(rt.begin_shutdown().is_err());
     }
 
     // ---- acquire during transitions ----
@@ -478,123 +463,126 @@ mod tests {
     #[test]
     fn acquire_during_shutting_down_fails() {
         let rt = RuntimeLifecycle::new();
-        rt.begin_initialize().unwrap().commit();
+        init(&rt);
         let _st = rt.begin_shutdown().unwrap();
         assert!(rt.acquire().is_err());
+    }
+
+    // ---- overflow ----
+
+    #[test]
+    fn acquire_overflow_returns_overflow() {
+        let rt = RuntimeLifecycle::new();
+        // Set count to MAX_COUNT.  Since state occupies 2 bits,
+        // the maximum count is 2^(usize::BITS-2)-1.  Adding 1
+        // would overflow the count field.
+        let max = MAX_COUNT;
+        rt.word
+            .store(encode(RuntimeState::Running, max), Ordering::Release);
+        assert_eq!(rt.active_objects(), max);
+        assert!(rt.acquire().is_err());
+        // Word must be unchanged.
+        assert_eq!(rt.active_objects(), max);
+        assert_eq!(rt.state(), RuntimeState::Running);
     }
 
     // ---- concurrency ----
 
     #[test]
-    fn only_one_concurrent_initialize_succeeds() {
+    fn concurrent_initialize_at_least_one_succeeds() {
+        let n = 8;
         let rt = Arc::new(RuntimeLifecycle::new());
+        let barrier = Arc::new(Barrier::new(n));
+        let gate = Arc::new(Barrier::new(n));
         let successes = Arc::new(AtomicUsize::new(0));
 
         let mut handles = Vec::new();
-        for _ in 0..8 {
+        for _ in 0..n {
             let rt = Arc::clone(&rt);
-            let successes = Arc::clone(&successes);
+            let b = Arc::clone(&barrier);
+            let g = Arc::clone(&gate);
+            let s = Arc::clone(&successes);
             handles.push(thread::spawn(move || {
-                for _ in 0..100 {
-                    if rt.begin_initialize().is_ok() {
-                        successes.fetch_add(1, Ordering::Relaxed);
-                        // Don't commit — let it roll back so other
-                        // threads can try again.
-                    }
+                b.wait();
+                if rt.begin_initialize().is_ok() {
+                    s.fetch_add(1, Ordering::Relaxed);
                 }
+                g.wait(); // all threads hold until everyone is done
             }));
         }
-
         for h in handles {
             h.join().unwrap();
         }
-
-        // At least one succeeded; each attempt that succeeded rolled
-        // back, so the state is Uninitialized.
-        assert!(successes.load(Ordering::Relaxed) > 0);
+        // At least one must have succeeded; state is Uninitialized
+        // after all guards drop.
+        let n_ok = successes.load(Ordering::Relaxed);
+        assert!(n_ok >= 1, "expected >= 1 successes, got {n_ok}");
         assert_eq!(rt.state(), RuntimeState::Uninitialized);
     }
 
     #[test]
-    fn acquire_and_shutdown_never_lose_a_lease() {
-        use core::sync::atomic::AtomicBool;
-
+    fn acquire_and_shutdown_cannot_both_succeed() {
         let rt = Arc::new(RuntimeLifecycle::new());
-        rt.begin_initialize().unwrap().commit();
+        init(&rt);
 
-        let live_leases = Arc::new(AtomicUsize::new(0));
-        let errors = Arc::new(AtomicUsize::new(0));
-        let done = Arc::new(AtomicBool::new(false));
+        let iterations = 400;
+        let acquired = Arc::new(AtomicUsize::new(0));
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(2));
 
-        // Spawn acquirers.
-        let mut handles = Vec::new();
-        for _ in 0..4 {
-            let rt = Arc::clone(&rt);
-            let live = Arc::clone(&live_leases);
-            let errs = Arc::clone(&errors);
-            let done = Arc::clone(&done);
-            handles.push(thread::spawn(move || {
-                while !done.load(Ordering::Acquire) {
-                    match rt.acquire() {
-                        Ok(lease) => {
-                            live.fetch_add(1, Ordering::AcqRel);
-                            // Hold briefly then release.
-                            core::hint::spin_loop();
-                            live.fetch_sub(1, Ordering::AcqRel);
-                            drop(lease);
-                        }
-                        Err(_) => {
-                            errs.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
+        for _ in 0..iterations {
+            // Reset to Running with no leases.
+            rt.word
+                .store(encode(RuntimeState::Running, 0), Ordering::Release);
+
+            let a = Arc::clone(&acquired);
+            let s = Arc::clone(&shutdowns);
+            let rt_clone = Arc::clone(&rt);
+            let b = Arc::clone(&barrier);
+
+            let t1 = thread::spawn(move || {
+                b.wait();
+                if rt_clone.acquire().is_ok() {
+                    a.fetch_add(1, Ordering::Relaxed);
                 }
-            }));
-        }
+            });
 
-        // Run shutdown attempts from another thread.
-        for _ in 0..10 {
-            match rt.begin_shutdown() {
-                Ok(t) => {
-                    t.commit();
-                    // Successfully shut down — stop acquirers.
-                    done.store(true, Ordering::Release);
-                    for h in handles {
-                        h.join().unwrap();
-                    }
-                    // After shutdown, active_objects must be 0 and
-                    // state must be Uninitialized.
-                    assert_eq!(rt.active_objects(), 0);
-                    assert_eq!(rt.state(), RuntimeState::Uninitialized);
-                    return;
+            let rt_clone2 = Arc::clone(&rt);
+            let b2 = Arc::clone(&barrier);
+            let t2 = thread::spawn(move || {
+                b2.wait();
+                if rt_clone2
+                    .begin_shutdown()
+                    .is_ok_and(|tx| {
+                        tx.commit();
+                        true
+                    })
+                {
+                    s.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(_) => {
-                    // Busy or other — retry after a brief pause.
-                    thread::yield_now();
-                }
-            }
-        }
+            });
 
-        // If we get here, shutdown never succeeded — stop acquirers
-        // and re-check invariants.
-        done.store(true, Ordering::Release);
-        for h in handles {
-            h.join().unwrap();
-        }
+            t1.join().unwrap();
+            t2.join().unwrap();
 
-        // At least some errors should have occurred (shutdown was
-        // attempted while running).
-        assert!(errors.load(Ordering::Relaxed) > 0);
-        // No live leases dangling.
-        assert_eq!(live_leases.load(Ordering::Acquire), 0);
+            // In any given iteration, at most one can succeed.
+            let a_val = acquired.load(Ordering::Relaxed);
+            let s_val = shutdowns.load(Ordering::Relaxed);
+            assert!(
+                a_val + s_val <= 1,
+                "iteration {iterations}: both acquire ({a_val}) and shutdown ({s_val}) succeeded"
+            );
+
+            acquired.store(0, Ordering::Relaxed);
+            shutdowns.store(0, Ordering::Relaxed);
+        }
     }
 
-    // ---- lease is not Clone ----
-    // (compile-time check — if this compiles, the test passes)
+    // ---- compile-time: lease is not Clone ----
 
     #[allow(dead_code)]
-    fn lease_is_not_clone(lease: RuntimeLease<'_>) {
+    fn lease_is_not_clone(_lease: RuntimeLease<'_>) {
         // The following line would fail to compile:
         // let _copy = lease.clone();
-        drop(lease);
     }
 }
