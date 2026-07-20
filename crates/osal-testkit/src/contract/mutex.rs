@@ -1,4 +1,4 @@
-//! Contract tests for the [`Mutex`] trait.
+//! Contract tests for the `Mutex` trait.
 //!
 //! These tests verify the behavioral contract defined in
 //! `docs/behavior-contract.md#9-mutex-contract`.
@@ -136,7 +136,7 @@ where
 
 /// Blocking / concurrency contract tests.
 ///
-/// Requires [`TaskFactory`] for cross-task testing. Currently a
+/// Requires `TaskFactory` for cross-task testing. Currently a
 /// placeholder — these tests are implemented in the POSIX backend's
 /// integration tests using std::thread.
 ///

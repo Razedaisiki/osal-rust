@@ -1,4 +1,4 @@
-//! Contract tests for the [`Timer`] trait.
+//! Contract tests for the `Timer` trait.
 
 use alloc::boxed::Box;
 use core::time::Duration;

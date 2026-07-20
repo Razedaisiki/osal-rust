@@ -1,4 +1,4 @@
-//! Contract tests for the [`Task`] and [`TaskBuilder`] traits.
+//! Contract tests for the `Task` and `TaskBuilder` traits.
 //!
 //! These tests verify the behavioral contract defined in
 //! `docs/behavior-contract.md#8-task-contract`.

@@ -2,7 +2,7 @@
 //!
 //! Critical sections use a process-local recursive `pthread_mutex_t`
 //! initialised once via `pthread_once`. Nesting is supported — each
-//! [`enter_critical`] call acquires the lock and each guard drop
+//! Each `enter_critical()` call acquires the lock and each guard drop
 //! releases one level.
 
 use osal_api::traits::system::System;

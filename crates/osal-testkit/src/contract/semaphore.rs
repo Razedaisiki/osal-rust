@@ -1,4 +1,4 @@
-//! Contract tests for the [`CountingSemaphore`] and [`BinarySemaphore`] traits.
+//! Contract tests for the `CountingSemaphore` and `BinarySemaphore` traits.
 //!
 //! These tests verify the behavioral contract defined in
 //! `docs/behavior-contract.md#10-semaphore-contract`.
@@ -222,7 +222,7 @@ where
 
 /// Blocking / concurrency contract tests (POSIX only).
 ///
-/// Requires [`TaskFactory`]. Currently a placeholder — tests are
+/// Requires `TaskFactory`. Currently a placeholder — tests are
 /// implemented in the POSIX backend's integration tests.
 pub fn run_blocking_contracts<F: SemaphoreFactory + TaskFactory>(_factory: &F) {}
 

@@ -1,4 +1,4 @@
-//! Contract tests for the [`Clock`] trait.
+//! Contract tests for the `Clock` trait.
 //!
 //! These tests verify the behavioral contract defined in
 //! `docs/behavior-contract.md#6-time-and-timeout-semantics`.
@@ -7,7 +7,7 @@
 //!
 //! - **basic**: tests that work against any real or fake clock.
 //! - **controlled**: tests that require a deterministic clock
-//!   ([`ControlledClockFactory`]) to verify timing precisely.
+//!   (`ControlledClockFactory`) to verify timing precisely.
 
 use core::time::Duration;
 

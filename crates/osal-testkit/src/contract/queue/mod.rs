@@ -1,9 +1,9 @@
-//! Contract tests for the [`Queue`] trait.
+//! Contract tests for the `Queue` trait.
 //!
 //! Split into two groups:
 //!
-//! - [`QueueCoreContract`]: tests that all backends must pass (Mock + POSIX).
-//! - [`QueueBlockingContract`]: tests requiring real concurrent blocking
+//! - `QueueCoreContract`: tests that all backends must pass (Mock + POSIX).
+//! - `QueueBlockingContract`: tests requiring real concurrent blocking
 //!   (POSIX only during P0; Mock deferred until scheduler is added).
 //!
 //! See `docs/behavior-contract.md#11-queue-contract` for the full spec.

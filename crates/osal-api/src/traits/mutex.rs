@@ -19,7 +19,7 @@ use crate::time::Timeout;
 ///
 /// # ISR safety
 ///
-/// Mutex operations are **not** ISR-safe. Use [`Semaphore`] or future
+/// Mutex operations are **not** ISR-safe. Use `Semaphore` or future
 /// ISR extension traits for interrupt-context signaling.
 ///
 /// # Examples

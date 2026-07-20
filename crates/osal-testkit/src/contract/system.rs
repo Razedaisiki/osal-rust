@@ -1,4 +1,4 @@
-//! Contract tests for the [`System`] trait.
+//! Contract tests for the `System` trait.
 //!
 //! These tests verify the behavioral contract defined in
 //! `docs/behavior-contract.md` (System section).

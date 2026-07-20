@@ -18,7 +18,7 @@ static MOCK_TIME_TEST_LOCK: Mutex<()> = Mutex::new(());
 /// Acquire the global mock‑time test guard.
 ///
 /// Call this at the top of every `#[test]` that calls
-/// [`MockClockControl::reset`] or [`advance_and_dispatch`].
+/// `MockClockControl::reset` or uses the mock time runtime.
 #[cfg(feature = "testkit")]
 pub fn mock_time_test_guard() -> MutexGuard<'static, ()> {
     MOCK_TIME_TEST_LOCK.lock()

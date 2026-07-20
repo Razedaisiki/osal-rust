@@ -1,6 +1,6 @@
 //! POSIX mutex implementation.
 //!
-//! Wraps [`PosixMutex`] (pthread `PTHREAD_MUTEX_ERRORCHECK`) with
+//! Wraps the POSIX sys mutex (pthread `PTHREAD_MUTEX_ERRORCHECK`) with
 //! typed data storage in an `Arc` for clone sharing, implementing
 //! the [`Mutex<T>`] trait.
 

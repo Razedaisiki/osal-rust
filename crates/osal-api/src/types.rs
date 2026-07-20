@@ -12,7 +12,7 @@ pub type Handle = usize;
 /// Opaque logical identifier for an OSAL task.
 ///
 /// Wraps a non-zero `usize`. `TaskHandle` is the primary task identity
-/// used by [`Task::handle`] and [`Task::current`]. Zero is reserved so
+/// used by `Task::handle()` and `Task::current()`. Zero is reserved so
 /// that `Option<TaskHandle>` is the same size as `usize`.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
