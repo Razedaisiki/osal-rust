@@ -87,6 +87,14 @@ impl PosixThread {
         self.thread = None;
         Ok(())
     }
+
+    /// Return `true` if the calling thread is this thread.
+    pub fn is_current(&self) -> bool {
+        match self.thread {
+            Some(tid) => unsafe { libc::pthread_equal(tid, libc::pthread_self()) != 0 },
+            None => false,
+        }
+    }
 }
 
 impl Drop for PosixThread {

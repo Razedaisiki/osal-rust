@@ -23,6 +23,8 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use alloc::sync::Arc;
 
+use osal_api::error::{Error, Result};
+
 use crate::sys::task::PosixThread;
 
 // ---------------------------------------------------------------------------
@@ -88,10 +90,10 @@ impl TimerServiceControl {
     /// calls `pthread_mutex_init`.  Other threads spin until
     /// `READY`.  On init failure the state rolls back to
     /// `UNINITIALIZED` so retries are possible.
-    fn ensure_init(&self) {
+    fn ensure_init(&self) -> Result<()> {
         loop {
             match self.init_state.load(Ordering::Acquire) {
-                READY => return,
+                READY => return Ok(()),
                 UNINITIALIZED => {
                     if self
                         .init_state
@@ -111,13 +113,11 @@ impl TimerServiceControl {
                         };
                         if rc != 0 {
                             self.init_state.store(UNINITIALIZED, Ordering::Release);
-                            // Let the next caller try again.
-                            continue;
+                            return Err(Error::Internal("timer control mutex init failed"));
                         }
                         self.init_state.store(READY, Ordering::Release);
-                        return;
+                        return Ok(());
                     }
-                    // CAS lost — spin and re-evaluate.
                 }
                 INITIALIZING => {
                     core::hint::spin_loop();
@@ -127,24 +127,25 @@ impl TimerServiceControl {
         }
     }
 
-    fn lock(&self) {
-        self.ensure_init();
-        unsafe {
-            libc::pthread_mutex_lock((*self.mutex.get()).as_mut_ptr());
+    fn lock(&self) -> Result<()> {
+        self.ensure_init()?;
+        let rc = unsafe { libc::pthread_mutex_lock((*self.mutex.get()).as_mut_ptr()) };
+        if rc != 0 {
+            return Err(Error::Internal("timer control mutex lock failed"));
         }
+        Ok(())
     }
 
     fn unlock(&self) {
-        unsafe {
-            libc::pthread_mutex_unlock((*self.mutex.get()).as_mut_ptr());
-        }
+        let rc = unsafe { libc::pthread_mutex_unlock((*self.mutex.get()).as_mut_ptr()) };
+        debug_assert_eq!(rc, 0, "timer control mutex unlock failed");
     }
 
     /// Lock the control mutex, run `f` with mutable access to the
     /// control state, then unlock.  Unlock is guaranteed even if
     /// `f` panics (via RAII guard).
-    pub fn with_state<R>(&self, f: impl FnOnce(&mut TimerControlState) -> R) -> R {
-        self.lock();
+    pub fn with_state<R>(&self, f: impl FnOnce(&mut TimerControlState) -> Result<R>) -> Result<R> {
+        self.lock()?;
         struct Guard<'a> {
             ctrl: &'a TimerServiceControl,
         }
@@ -165,6 +166,6 @@ impl TimerServiceControl {
 
 static CONTROL: TimerServiceControl = TimerServiceControl::new();
 
-pub(crate) fn with_control<R>(f: impl FnOnce(&mut TimerControlState) -> R) -> R {
+pub(crate) fn with_control<R>(f: impl FnOnce(&mut TimerControlState) -> Result<R>) -> Result<R> {
     CONTROL.with_state(f)
 }

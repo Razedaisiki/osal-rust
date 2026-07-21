@@ -196,6 +196,10 @@ fn with_service<R>(f: impl FnOnce(&TimerService, &mut TimerServiceState) -> Resu
 pub fn initialize() -> Result<()> {
     timer_control::with_control(|ctrl| match &ctrl.slot {
         ServiceSlot::Stopped => {
+            // Check generation BEFORE creating any resources.
+            let generation = ctrl.next_generation;
+            let next_generation = generation.checked_add(1).ok_or(Error::Overflow)?;
+
             let service = Arc::new(TimerService::new()?);
             let worker_ref = Arc::into_raw(Arc::clone(&service)).cast_mut().cast::<c_void>();
             let cfg = crate::sys::task::PosixThreadConfig { stack_size: 4096 };
@@ -205,11 +209,8 @@ pub fn initialize() -> Result<()> {
                 }
                 Error::Internal("timer worker spawn failed")
             })?;
-            let generation = ctrl.next_generation;
-            ctrl.next_generation = ctrl
-                .next_generation
-                .checked_add(1)
-                .ok_or(Error::Overflow)?;
+
+            ctrl.next_generation = next_generation;
             ctrl.slot = ServiceSlot::Running {
                 service,
                 worker,
@@ -223,18 +224,25 @@ pub fn initialize() -> Result<()> {
 }
 
 pub fn shutdown() -> Result<()> {
-    // Phase 1: request stop under control lock, extract worker.
-    let mut worker = {
+    // Phase 1: request stop under control lock, extract worker + generation.
+    let (mut worker, shut_gen) = {
         timer_control::with_control(|ctrl| {
-            let (service, generation) = match &ctrl.slot {
+            let (service, g, is_self) = match &ctrl.slot {
                 ServiceSlot::Stopped => return Err(Error::NotInitialized),
                 ServiceSlot::Stopping { .. } => return Err(Error::Busy),
                 ServiceSlot::Running {
-                    service, generation, ..
-                } => (Arc::clone(service), *generation),
+                    service,
+                    worker,
+                    generation,
+                } => (Arc::clone(service), *generation, worker.is_current()),
             };
 
-            // Check for live timers (including stopped-but-not-dropped).
+            // Self-shutdown prevention (ADR 0018).
+            if is_self {
+                return Err(Error::Busy);
+            }
+
+            // Check for live timers.
             {
                 let _guard = service.mutex.lock_guard()?;
                 let state = unsafe { &mut *service.state.get() };
@@ -249,9 +257,10 @@ pub fn shutdown() -> Result<()> {
                     .expect("timer shutdown broadcast failed");
             }
 
-            let old = core::mem::replace(&mut ctrl.slot, ServiceSlot::Stopping { generation });
+            let old =
+                core::mem::replace(&mut ctrl.slot, ServiceSlot::Stopping { generation: g });
             match old {
-                ServiceSlot::Running { worker, .. } => Ok(worker),
+                ServiceSlot::Running { worker, .. } => Ok((worker, g)),
                 _ => unreachable!(),
             }
         })?
@@ -262,19 +271,24 @@ pub fn shutdown() -> Result<()> {
         .try_join()
         .expect("timer worker join invariant violated");
 
-    // Phase 3: transition to Stopped.
+    // Phase 3: transition to Stopped, verifying generation.
     timer_control::with_control(|ctrl| match &ctrl.slot {
-        ServiceSlot::Stopping { .. } => {
+        ServiceSlot::Stopping {
+            generation: current_g,
+        } if *current_g == shut_gen => {
             ctrl.slot = ServiceSlot::Stopped;
             Ok(())
         }
-        _ => Err(Error::Internal("timer slot state inconsistent")),
+        _ => Err(Error::Internal("timer slot generation mismatch")),
     })
 }
 
 #[allow(dead_code)]
 pub fn is_running() -> bool {
-    timer_control::with_control(|ctrl| matches!(ctrl.slot, ServiceSlot::Running { .. }))
+    timer_control::with_control(|ctrl| {
+        Ok(matches!(ctrl.slot, ServiceSlot::Running { .. }))
+    })
+    .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +313,9 @@ pub fn register(
             callback: Some(callback),
             deleted: false,
         });
-        svc.condvar.signal()?;
+        svc.condvar
+            .signal()
+            .expect("timer service signal failed");
         Ok(id)
     })
 }
@@ -309,7 +325,9 @@ pub fn start(id: u64) -> Result<()> {
         let now = time::monotonic_now();
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
             e.state.start(now)?;
-            svc.condvar.signal()?;
+            svc.condvar
+                .signal()
+                .expect("timer service signal failed");
             Ok(())
         } else {
             Err(Error::NotFound)
@@ -321,7 +339,9 @@ pub fn stop(id: u64) -> Result<()> {
     with_service(|svc, state| {
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
             e.state.stop();
-            svc.condvar.signal()?;
+            svc.condvar
+                .signal()
+                .expect("timer service signal failed");
             Ok(())
         } else {
             Err(Error::NotFound)
@@ -334,7 +354,9 @@ pub fn reset(id: u64) -> Result<()> {
         let now = time::monotonic_now();
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
             e.state.reset(now)?;
-            svc.condvar.signal()?;
+            svc.condvar
+                .signal()
+                .expect("timer service signal failed");
             Ok(())
         } else {
             Err(Error::NotFound)
@@ -346,7 +368,9 @@ pub fn change_period(id: u64, new_period: Duration) -> Result<()> {
     with_service(|svc, state| {
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
             e.state.change_period(new_period)?;
-            svc.condvar.signal()?;
+            svc.condvar
+                .signal()
+                .expect("timer service signal failed");
             Ok(())
         } else {
             Err(Error::NotFound)
@@ -360,7 +384,9 @@ pub fn deregister(id: u64) -> Result<()> {
             e.deleted = true;
             e.state.stop();
             e.callback = None;
-            svc.condvar.signal()?;
+            svc.condvar
+                .signal()
+                .expect("timer service signal failed");
             Ok(())
         } else {
             Err(Error::NotFound)
