@@ -9,16 +9,29 @@
 //!
 //! ```text
 //! Timer API:       control mutex → service mutex
-//! shutdown:        control mutex → service mutex
+//! shutdown:        control mutex → service mutex (phase 1)
+//!                  release control lock
+//!                  pthread_join worker (outside all locks)
+//!                  control mutex → Stopped (phase 2)
 //! worker loop:     only service mutex
 //! callback:        holds neither lock
 //! ```
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use alloc::sync::Arc;
+
+use crate::sys::task::PosixThread;
+
+// ---------------------------------------------------------------------------
+// Init states
+// ---------------------------------------------------------------------------
+
+const UNINITIALIZED: u8 = 0;
+const INITIALIZING: u8 = 1;
+const READY: u8 = 2;
 
 // ---------------------------------------------------------------------------
 // Service slot
@@ -28,7 +41,7 @@ pub(crate) enum ServiceSlot {
     Stopped,
     Running {
         service: Arc<super::timer_service::TimerService>,
-        worker: super::sys::task::PosixThread,
+        worker: PosixThread,
         generation: u64,
     },
     #[allow(dead_code)]
@@ -53,7 +66,7 @@ pub(crate) struct TimerControlState {
 pub(crate) struct TimerServiceControl {
     mutex: UnsafeCell<MaybeUninit<libc::pthread_mutex_t>>,
     state: UnsafeCell<TimerControlState>,
-    ready: AtomicBool,
+    init_state: AtomicU8,
 }
 
 unsafe impl Sync for TimerServiceControl {}
@@ -66,27 +79,50 @@ impl TimerServiceControl {
                 slot: ServiceSlot::Stopped,
                 next_generation: 1,
             }),
-            ready: AtomicBool::new(false),
+            init_state: AtomicU8::new(UNINITIALIZED),
         }
     }
 
+    /// Ensure the control mutex is initialised.  Idempotent and
+    /// linearizable — only the thread that CASes to `INITIALIZING`
+    /// calls `pthread_mutex_init`.  Other threads spin until
+    /// `READY`.  On init failure the state rolls back to
+    /// `UNINITIALIZED` so retries are possible.
     fn ensure_init(&self) {
-        if self.ready.load(Ordering::Acquire) {
-            return;
-        }
-        // CAS to claim initialisation; loser spins.
-        if self
-            .ready
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            unsafe {
-                libc::pthread_mutex_init((*self.mutex.get()).as_mut_ptr(), core::ptr::null());
-            }
-            self.ready.store(true, Ordering::Release);
-        } else {
-            while !self.ready.load(Ordering::Acquire) {
-                core::hint::spin_loop();
+        loop {
+            match self.init_state.load(Ordering::Acquire) {
+                READY => return,
+                UNINITIALIZED => {
+                    if self
+                        .init_state
+                        .compare_exchange(
+                            UNINITIALIZED,
+                            INITIALIZING,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        let rc = unsafe {
+                            libc::pthread_mutex_init(
+                                (*self.mutex.get()).as_mut_ptr(),
+                                core::ptr::null(),
+                            )
+                        };
+                        if rc != 0 {
+                            self.init_state.store(UNINITIALIZED, Ordering::Release);
+                            // Let the next caller try again.
+                            continue;
+                        }
+                        self.init_state.store(READY, Ordering::Release);
+                        return;
+                    }
+                    // CAS lost — spin and re-evaluate.
+                }
+                INITIALIZING => {
+                    core::hint::spin_loop();
+                }
+                _ => unreachable!(),
             }
         }
     }
@@ -104,12 +140,22 @@ impl TimerServiceControl {
         }
     }
 
+    /// Lock the control mutex, run `f` with mutable access to the
+    /// control state, then unlock.  Unlock is guaranteed even if
+    /// `f` panics (via RAII guard).
     pub fn with_state<R>(&self, f: impl FnOnce(&mut TimerControlState) -> R) -> R {
         self.lock();
+        struct Guard<'a> {
+            ctrl: &'a TimerServiceControl,
+        }
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                self.ctrl.unlock();
+            }
+        }
+        let _guard = Guard { ctrl: self };
         let state = unsafe { &mut *self.state.get() };
-        let result = f(state);
-        self.unlock();
-        result
+        f(state)
     }
 }
 

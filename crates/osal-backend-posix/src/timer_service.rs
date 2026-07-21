@@ -9,7 +9,10 @@
 //!
 //! ```text
 //! Timer API:       control mutex → service mutex
-//! shutdown:        control mutex → service mutex
+//! shutdown phase1: control mutex → service mutex
+//!                   release control lock
+//! shutdown phase2: pthread_join worker (outside all locks)
+//! shutdown phase3: control mutex → Stopped
 //! worker loop:     only service mutex
 //! callback:        holds neither lock
 //! ```
@@ -20,11 +23,12 @@ use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use core::time::Duration;
 
+use osal_api::error::{Error, Result};
 use osal_api::traits::timer::TimerCallback;
 use osal_portable::timer_state::TimerState;
 
 use crate::sys::condvar::PosixCondvar;
-use crate::sys::mutex::{PosixMutex, PosixMutexGuard};
+use crate::sys::mutex::PosixMutex;
 use crate::sys::task::PosixThread;
 use crate::sys::time;
 use crate::timer_control::{self, ServiceSlot};
@@ -61,10 +65,10 @@ pub(crate) struct TimerService {
 }
 
 impl TimerService {
-    fn new() -> Result<Self, ()> {
+    fn new() -> Result<Self> {
         Ok(Self {
-            mutex: PosixMutex::new().map_err(|_| ())?,
-            condvar: PosixCondvar::new().map_err(|_| ())?,
+            mutex: PosixMutex::new()?,
+            condvar: PosixCondvar::new()?,
             state: UnsafeCell::new(TimerServiceState {
                 timers: Vec::new(),
                 next_id: 1,
@@ -73,26 +77,20 @@ impl TimerService {
         })
     }
 
-    fn with_state_locked<R>(
-        &self,
-        _guard: &PosixMutexGuard<'_>,
-        f: impl FnOnce(&mut TimerServiceState) -> R,
-    ) -> R {
-        unsafe { f(&mut *self.state.get()) }
-    }
-
     /// Worker loop.  Returns when `stop_requested` is set.
     fn run(&self) {
         loop {
             let mut guard = self.mutex.lock_guard().unwrap();
 
-            if self.with_state_locked(&guard, |s| s.stop_requested) {
-                return;
+            {
+                let state = unsafe { &mut *self.state.get() };
+                if state.stop_requested {
+                    return;
+                }
+                state.timers.retain(|e| !e.deleted);
             }
 
             let state = unsafe { &mut *self.state.get() };
-            state.timers.retain(|e| !e.deleted);
-
             let now = time::monotonic_now();
             let mut earliest: Option<Duration> = None;
             for e in &state.timers {
@@ -152,7 +150,6 @@ impl TimerService {
 
         callback();
 
-        // Re-acquire and restore callback.
         let _guard = self.mutex.lock_guard().unwrap();
         let state = unsafe { &mut *self.state.get() };
         if let Some(entry) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
@@ -177,29 +174,47 @@ extern "C" fn timer_worker(arg: *mut c_void) -> *mut c_void {
 }
 
 // ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+fn with_service<R>(f: impl FnOnce(&TimerService, &mut TimerServiceState) -> Result<R>) -> Result<R> {
+    timer_control::with_control(|ctrl| match &ctrl.slot {
+        ServiceSlot::Running { service, .. } => {
+            let _guard = service.mutex.lock_guard()?;
+            let state = unsafe { &mut *service.state.get() };
+            f(service, state)
+        }
+        ServiceSlot::Stopped => Err(Error::NotInitialized),
+        ServiceSlot::Stopping { .. } => Err(Error::Busy),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Initialise the timer service.
-///
-/// Returns `AlreadyInitialized` if already running, `Busy` if
-/// shutdown is in progress.
-pub fn initialize() -> Result<(), osal_api::error::Error> {
-    use osal_api::error::Error;
-
+pub fn initialize() -> Result<()> {
     timer_control::with_control(|ctrl| match &ctrl.slot {
         ServiceSlot::Stopped => {
-            let service = Arc::new(TimerService::new().map_err(|_| Error::Internal("timer service creation failed"))?);
+            let service = Arc::new(TimerService::new()?);
             let worker_ref = Arc::into_raw(Arc::clone(&service)).cast_mut().cast::<c_void>();
             let cfg = crate::sys::task::PosixThreadConfig { stack_size: 4096 };
-            let worker = PosixThread::spawn(&cfg, timer_worker, worker_ref)
-                .map_err(|_| {
-                    unsafe { drop(Arc::from_raw(worker_ref.cast::<TimerService>())); }
-                    Error::Internal("timer worker spawn failed")
-                })?;
+            let worker = PosixThread::spawn(&cfg, timer_worker, worker_ref).map_err(|_| {
+                unsafe {
+                    drop(Arc::from_raw(worker_ref.cast::<TimerService>()));
+                }
+                Error::Internal("timer worker spawn failed")
+            })?;
             let generation = ctrl.next_generation;
-            ctrl.next_generation += 1;
-            ctrl.slot = ServiceSlot::Running { service, worker, generation };
+            ctrl.next_generation = ctrl
+                .next_generation
+                .checked_add(1)
+                .ok_or(Error::Overflow)?;
+            ctrl.slot = ServiceSlot::Running {
+                service,
+                worker,
+                generation,
+            };
             Ok(())
         }
         ServiceSlot::Running { .. } => Err(Error::AlreadyInitialized),
@@ -207,143 +222,148 @@ pub fn initialize() -> Result<(), osal_api::error::Error> {
     })
 }
 
-/// Shut down the timer service.
-///
-/// Waits for in-flight callbacks to complete, joins the worker
-/// thread, and transitions back to `Stopped`.  The `pthread_join`
-/// is done while holding the control mutex — this is safe because
-/// the worker loop only touches the service mutex (lock ordering
-/// control → service is preserved).
-pub fn shutdown() -> Result<(), osal_api::error::Error> {
-    use osal_api::error::Error;
+pub fn shutdown() -> Result<()> {
+    // Phase 1: request stop under control lock, extract worker.
+    let mut worker = {
+        timer_control::with_control(|ctrl| {
+            let (service, generation) = match &ctrl.slot {
+                ServiceSlot::Stopped => return Err(Error::NotInitialized),
+                ServiceSlot::Stopping { .. } => return Err(Error::Busy),
+                ServiceSlot::Running {
+                    service, generation, ..
+                } => (Arc::clone(service), *generation),
+            };
 
-    timer_control::with_control(|ctrl| {
-        let (service, generation) = match &ctrl.slot {
-            ServiceSlot::Stopped => return Err(Error::NotInitialized),
-            ServiceSlot::Stopping { .. } => return Err(Error::Busy),
-            ServiceSlot::Running {
-                service, generation, ..
-            } => (Arc::clone(service), *generation),
-        };
+            // Check for live timers (including stopped-but-not-dropped).
+            {
+                let _guard = service.mutex.lock_guard()?;
+                let state = unsafe { &mut *service.state.get() };
+                state.timers.retain(|e| !e.deleted);
+                if !state.timers.is_empty() {
+                    return Err(Error::Busy);
+                }
+                state.stop_requested = true;
+                service
+                    .condvar
+                    .broadcast()
+                    .expect("timer shutdown broadcast failed");
+            }
 
-        // Signal the worker to exit.
-        {
-            let _guard = service.mutex.lock_guard().unwrap();
-            let state = unsafe { &mut *service.state.get() };
-            state.stop_requested = true;
-            let _ = service.condvar.broadcast();
+            let old = core::mem::replace(&mut ctrl.slot, ServiceSlot::Stopping { generation });
+            match old {
+                ServiceSlot::Running { worker, .. } => Ok(worker),
+                _ => unreachable!(),
+            }
+        })?
+    };
+
+    // Phase 2: join OUTSIDE the control lock.
+    worker
+        .try_join()
+        .expect("timer worker join invariant violated");
+
+    // Phase 3: transition to Stopped.
+    timer_control::with_control(|ctrl| match &ctrl.slot {
+        ServiceSlot::Stopping { .. } => {
+            ctrl.slot = ServiceSlot::Stopped;
+            Ok(())
         }
-
-        // Replace the slot to extract the worker handle.
-        let old = core::mem::replace(&mut ctrl.slot, ServiceSlot::Stopping { generation });
-        let mut worker = match old {
-            ServiceSlot::Running { worker, .. } => worker,
-            _ => unreachable!(),
-        };
-
-        // Join the worker.  The control lock is still held but the
-        // worker only accesses the service mutex — no deadlock.
-        worker
-            .try_join()
-            .expect("timer worker join failed — internal invariant violated");
-
-        ctrl.slot = ServiceSlot::Stopped;
-        Ok(())
+        _ => Err(Error::Internal("timer slot state inconsistent")),
     })
 }
 
-/// Returns `true` if the timer service is initialised and running.
+#[allow(dead_code)]
 pub fn is_running() -> bool {
     timer_control::with_control(|ctrl| matches!(ctrl.slot, ServiceSlot::Running { .. }))
 }
 
 // ---------------------------------------------------------------------------
-// Timer operations — these go through the control block to find the
-// current service instance.
+// Timer operations
 // ---------------------------------------------------------------------------
-
-fn with_service<R>(f: impl FnOnce(&TimerService, &mut TimerServiceState) -> R) -> Option<R> {
-    timer_control::with_control(|ctrl| match &ctrl.slot {
-        ServiceSlot::Running { service, .. } => {
-            let guard = service.mutex.lock_guard().ok()?;
-            let state = unsafe { &mut *service.state.get() };
-            let result = f(service, state);
-            drop(guard);
-            Some(result)
-        }
-        _ => None,
-    })
-}
 
 pub fn register(
     period: Duration,
     mode: osal_api::types::TimerMode,
     callback: TimerCallback,
-) -> Option<u64> {
+) -> Result<u64> {
     with_service(|svc, state| {
         let id = state.next_id;
-        state.next_id = state.next_id.wrapping_add(1);
-        if id == 0 {
-            // Skip 0 — reserved as invalid.
-            state.next_id = 1;
-        }
-        let id = if id == 0 { 1 } else { id };
+        state.next_id = state
+            .next_id
+            .checked_add(1)
+            .ok_or(Error::Overflow)?;
+        debug_assert_ne!(id, 0, "timer ID 0 is reserved");
         state.timers.push(TimerEntry {
             id,
-            state: TimerState::new(period, mode).expect("period validated by caller"),
+            state: TimerState::new(period, mode).map_err(|_| Error::InvalidParameter)?,
             callback: Some(callback),
             deleted: false,
         });
-        let _ = svc.condvar.signal();
-        id
+        svc.condvar.signal()?;
+        Ok(id)
     })
 }
 
-pub fn start(id: u64) {
+pub fn start(id: u64) -> Result<()> {
     with_service(|svc, state| {
         let now = time::monotonic_now();
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
-            let _ = e.state.start(now);
-            let _ = svc.condvar.signal();
+            e.state.start(now)?;
+            svc.condvar.signal()?;
+            Ok(())
+        } else {
+            Err(Error::NotFound)
         }
-    });
+    })
 }
 
-pub fn stop(id: u64) {
+pub fn stop(id: u64) -> Result<()> {
     with_service(|svc, state| {
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
             e.state.stop();
-            let _ = svc.condvar.signal();
+            svc.condvar.signal()?;
+            Ok(())
+        } else {
+            Err(Error::NotFound)
         }
-    });
+    })
 }
 
-pub fn reset(id: u64) {
+pub fn reset(id: u64) -> Result<()> {
     with_service(|svc, state| {
         let now = time::monotonic_now();
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
-            let _ = e.state.reset(now);
-            let _ = svc.condvar.signal();
+            e.state.reset(now)?;
+            svc.condvar.signal()?;
+            Ok(())
+        } else {
+            Err(Error::NotFound)
         }
-    });
+    })
 }
 
-pub fn change_period(id: u64, new_period: Duration) {
+pub fn change_period(id: u64, new_period: Duration) -> Result<()> {
     with_service(|svc, state| {
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
-            let _ = e.state.change_period(new_period);
-            let _ = svc.condvar.signal();
+            e.state.change_period(new_period)?;
+            svc.condvar.signal()?;
+            Ok(())
+        } else {
+            Err(Error::NotFound)
         }
-    });
+    })
 }
 
-pub fn deregister(id: u64) {
+pub fn deregister(id: u64) -> Result<()> {
     with_service(|svc, state| {
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
             e.deleted = true;
             e.state.stop();
             e.callback = None;
-            let _ = svc.condvar.signal();
+            svc.condvar.signal()?;
+            Ok(())
+        } else {
+            Err(Error::NotFound)
         }
-    });
+    })
 }

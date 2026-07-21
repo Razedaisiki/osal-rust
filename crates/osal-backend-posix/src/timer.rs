@@ -19,7 +19,8 @@ struct PosixTimerHandleInner {
 
 impl Drop for PosixTimerHandleInner {
     fn drop(&mut self) {
-        timer_service::deregister(self.id);
+        let result = timer_service::deregister(self.id);
+        debug_assert!(result.is_ok(), "live timer deregistration failed");
     }
 }
 
@@ -42,7 +43,7 @@ impl PosixTimer {
         if period == Duration::ZERO {
             return Err(Error::InvalidParameter);
         }
-        let id = timer_service::register(period, mode, callback).ok_or(Error::OutOfMemory)?;
+        let id = timer_service::register(period, mode, callback)?;
         Ok(Self {
             inner: Arc::new(PosixTimerHandleInner { id }),
         })
@@ -55,26 +56,22 @@ impl Timer for PosixTimer {
     }
 
     fn start(&self) -> Result<()> {
-        timer_service::start(self.inner.id);
-        Ok(())
+        timer_service::start(self.inner.id)
     }
 
     fn stop(&self) -> Result<()> {
-        timer_service::stop(self.inner.id);
-        Ok(())
+        timer_service::stop(self.inner.id)
     }
 
     fn reset(&self) -> Result<()> {
-        timer_service::reset(self.inner.id);
-        Ok(())
+        timer_service::reset(self.inner.id)
     }
 
     fn change_period(&self, new_period: Duration) -> Result<()> {
         if new_period == Duration::ZERO {
             return Err(Error::InvalidParameter);
         }
-        timer_service::change_period(self.inner.id, new_period);
-        Ok(())
+        timer_service::change_period(self.inner.id, new_period)
     }
 }
 
