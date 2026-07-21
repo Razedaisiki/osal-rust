@@ -48,14 +48,19 @@ pub struct PosixCountingSemaphore {
 
 impl PosixCountingSemaphore {
     pub fn new(max_count: u32, initial_count: u32) -> Result<Self> {
-        // Validate parameters (CountingSemaphoreState::new handles this),
-        // then acquire a runtime lease before creating native resources.
+        // 1. Validate parameters first (ADR 0001, ADR 0019 §6).
+        let state = CountingSemaphoreState::new(max_count, initial_count)?;
+
+        // 2. Acquire a runtime lease.  If this fails, the validated
+        //    state is dropped — no resource leaked.
         let runtime = crate::runtime::acquire_object()?;
+
+        // 3. Create native resources.  On failure the lease drops.
         Ok(Self {
             inner: Arc::new(PosixCountingSemaphoreInner {
                 mutex: PosixMutex::new()?,
                 condvar: PosixCondvar::new()?,
-                state: UnsafeCell::new(CountingSemaphoreState::new(max_count, initial_count)?),
+                state: UnsafeCell::new(state),
                 max_count,
                 _runtime: runtime,
             }),

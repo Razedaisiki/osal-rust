@@ -45,13 +45,16 @@ pub struct MockCountingSemaphore {
 
 impl MockCountingSemaphore {
     pub fn new(max_count: u32, initial_count: u32) -> Result<Self> {
+        // 1. Validate parameters first (ADR 0001, ADR 0019 §6).
+        let state = CountingSemaphoreState::new(max_count, initial_count)?;
+
+        // 2. Acquire a runtime lease.
         let runtime = crate::runtime::acquire_object()?;
+
+        // 3. Construct inner with validated state and lease.
         Ok(Self {
             inner: Rc::new(MockSemaphoreInner {
-                state: RefCell::new(CountingSemaphoreState::new(
-                    max_count,
-                    initial_count,
-                )?),
+                state: RefCell::new(state),
                 _runtime: runtime,
             }),
         })
