@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use osal_api::error::Error;
 use osal_api::time::Timeout;
 use osal_api::traits::semaphore::{BinarySemaphore as _, CountingSemaphore as _};
-use osal_testkit::factory::SemaphoreFactory;
 use osal_backend_posix::runtime;
+use osal_testkit::factory::SemaphoreFactory;
 
 // ===========================================================================
 // CountingSemaphore blocking

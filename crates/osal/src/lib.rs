@@ -67,7 +67,6 @@ pub use runtime::{initialize, runtime_state, shutdown};
 /// use osal::prelude::*;
 /// ```
 pub mod prelude {
-    pub use crate::runtime::{initialize, runtime_state, shutdown};
     #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
     pub use crate::backend::BinarySemaphore;
     #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
@@ -86,6 +85,7 @@ pub mod prelude {
     pub use crate::backend::TaskBuilder;
     #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
     pub use crate::backend::Timer;
+    pub use crate::runtime::{initialize, runtime_state, shutdown};
     pub use osal_api::error::{Error, Result};
     pub use osal_api::prelude::*;
     pub use osal_api::traits::clock::Clock as _;

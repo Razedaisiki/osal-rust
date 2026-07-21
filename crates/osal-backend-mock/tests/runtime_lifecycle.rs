@@ -34,10 +34,7 @@ fn initialize_enters_running() {
 #[test]
 fn repeated_initialize_returns_already_initialized() {
     runtime::initialize().unwrap();
-    assert_eq!(
-        runtime::initialize(),
-        Err(Error::AlreadyInitialized)
-    );
+    assert_eq!(runtime::initialize(), Err(Error::AlreadyInitialized));
     assert_eq!(runtime::state(), RuntimeState::Running);
     runtime::shutdown().unwrap();
 }
