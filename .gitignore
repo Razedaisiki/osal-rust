@@ -9,6 +9,9 @@
 *.swo
 *~
 
+# git
+latest_commit.txt
+
 # OS
 .DS_Store
 Thumbs.db

@@ -26,12 +26,12 @@ struct TimerEntry {
     deleted: bool,
 }
 
-struct TimerServiceState {
+pub(crate) struct TimerServiceState {
     timers: Vec<TimerEntry>,
     next_id: u64,
 }
 
-struct TimerService {
+pub(crate) struct TimerService {
     mutex: PosixMutex,
     condvar: PosixCondvar,
     state: UnsafeCell<TimerServiceState>,
