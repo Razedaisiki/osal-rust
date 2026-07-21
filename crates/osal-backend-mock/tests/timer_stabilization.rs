@@ -8,14 +8,25 @@ use osal_api::traits::clock::Clock as _;
 use osal_api::traits::timer::Timer as _;
 use osal_api::types::TimerMode;
 use osal_backend_mock::clock::{MockClock, MockClockControl};
+use osal_backend_mock::runtime;
 use osal_backend_mock::test_support::mock_time_test_guard;
 use osal_backend_mock::timer::MockTimer;
 use osal_testkit::factory::clock::ClockControl as _;
+
+/// Ensure the runtime is Running — tolerate AlreadyInitialized from a
+/// previous serialised test that left the runtime running.
+fn ensure_running() {
+    match runtime::initialize() {
+        Ok(()) | Err(osal_api::error::Error::AlreadyInitialized) => {}
+        Err(e) => panic!("unexpected runtime init error: {e:?}"),
+    }
+}
 
 #[test]
 fn callback_stops_self() {
     let _guard = mock_time_test_guard();
 
+    ensure_running();
     MockClockControl.reset();
     let t = MockTimer::new(
         "t",
@@ -44,6 +55,7 @@ fn callback_stops_self() {
 fn callback_resets_self() {
     let _guard = mock_time_test_guard();
 
+    ensure_running();
     MockClockControl.reset();
     let t = MockTimer::new(
         "t",
@@ -73,6 +85,7 @@ fn callback_resets_self() {
 fn callback_stops_another_timer() {
     let _guard = mock_time_test_guard();
 
+    ensure_running();
     MockClockControl.reset();
     let a_fired = Arc::new(AtomicBool::new(false));
     let af = Arc::clone(&a_fired);
@@ -125,6 +138,7 @@ fn callback_stops_another_timer() {
 fn oneshot_re_trigger() {
     let _guard = mock_time_test_guard();
 
+    ensure_running();
     MockClockControl.reset();
     let fired = Arc::new(AtomicU32::new(0));
     let f = Arc::clone(&fired);
@@ -149,6 +163,7 @@ fn oneshot_re_trigger() {
 fn epoch_reset_isolates_old_handles() {
     let _guard = mock_time_test_guard();
 
+    ensure_running();
     MockClockControl.reset();
     let t = MockTimer::new(
         "t",
@@ -157,6 +172,7 @@ fn epoch_reset_isolates_old_handles() {
         Box::new(|| {}),
     )
     .unwrap();
+    // Reset bumps the time-runtime epoch; the old handle is safe.
     MockClockControl.reset();
     t.start().unwrap();
     t.stop().unwrap();
@@ -168,6 +184,7 @@ fn epoch_reset_isolates_old_handles() {
 fn callback_calls_delay() {
     let _guard = mock_time_test_guard();
 
+    ensure_running();
     MockClockControl.reset();
     let fired = Arc::new(AtomicBool::new(false));
     let f = Arc::clone(&fired);
@@ -190,6 +207,7 @@ fn callback_calls_delay() {
 fn periodic_not_reentrant() {
     let _guard = mock_time_test_guard();
 
+    ensure_running();
     MockClockControl.reset();
     let count = Arc::new(AtomicU32::new(0));
     let c = Arc::clone(&count);
@@ -211,6 +229,7 @@ fn periodic_not_reentrant() {
 fn callback_in_flight_last_handle_dropped() {
     let _guard = mock_time_test_guard();
 
+    ensure_running();
     MockClockControl.reset();
     let fired = Arc::new(AtomicBool::new(false));
     let f = Arc::clone(&fired);

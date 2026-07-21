@@ -6,22 +6,28 @@ use core::time::Duration;
 use osal_api::error::{Error, Result};
 use osal_api::traits::timer::{Timer, TimerCallback};
 use osal_api::types::TimerMode;
+use osal_shared::runtime::RuntimeLease;
 
 #[cfg(feature = "testkit")]
 use crate::clock::advance_and_dispatch;
 use crate::time_runtime::{MockTimerKey, deregister_timer, with_runtime};
 
 // ---------------------------------------------------------------------------
-// Handle inner — Drop deregisters from runtime
+// Handle inner — Drop deregisters from runtime, then releases RuntimeLease
 // ---------------------------------------------------------------------------
 
 struct MockTimerHandleInner {
     key: MockTimerKey,
+    /// Held for the lifetime of the logical timer object.  On drop,
+    /// decrements the active-object count (ADR 0019 §6).
+    _runtime: RuntimeLease<'static>,
 }
 
 impl Drop for MockTimerHandleInner {
     fn drop(&mut self) {
         deregister_timer(self.key);
+        // Fields drop after this Drop impl returns:
+        // _runtime drops → active_objects decremented
     }
 }
 
@@ -41,12 +47,24 @@ impl MockTimer {
         mode: TimerMode,
         callback: TimerCallback,
     ) -> Result<Self> {
+        // 1. Validate parameters first (ADR 0001, ADR 0019 §6).
         if period == Duration::ZERO {
             return Err(Error::InvalidParameter);
         }
+
+        // 2. Acquire a runtime lease.
+        let runtime = crate::runtime::acquire_object()?;
+
+        // 3. Register with the mock time runtime.  If this panics, the
+        //    local `runtime` lease drops — no active-object leak.
         let key = with_runtime(|rt| rt.register_timer(period, mode, callback));
+
+        // 4. Construct the inner handle.
         Ok(Self {
-            inner: Arc::new(MockTimerHandleInner { key }),
+            inner: Arc::new(MockTimerHandleInner {
+                key,
+                _runtime: runtime,
+            }),
         })
     }
 }
