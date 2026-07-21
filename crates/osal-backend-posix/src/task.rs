@@ -70,6 +70,12 @@ static TASK_TLS: TaskTlsSlot = TaskTlsSlot::new();
 ///
 /// Holds an `Arc<PosixTaskInner>` so the pointee remains alive as
 /// long as the TLS slot points to it.
+///
+/// # Safety: field order
+///
+/// Rust drops struct fields in declaration order.  `_tls` must
+/// appear before `_inner` so the pthread TLS slot is cleared
+/// before the `Arc` keeping the pointee alive is released.
 struct CurrentGuard {
     _tls: PthreadTlsGuard,
     _inner: Arc<PosixTaskInner>,
@@ -192,7 +198,9 @@ impl PosixTaskInner {
             Ok(()) => StartupState::Ready,
             Err(e) => StartupState::Failed(e),
         };
-        let _ = self.condvar.broadcast();
+        self.condvar
+            .broadcast()
+            .expect("task startup condvar broadcast failed");
     }
 
     fn wait_startup(inner: &Arc<PosixTaskInner>) -> Result<()> {
@@ -544,11 +552,15 @@ impl TaskBuilder for PosixTaskBuilder {
         match PosixTaskInner::wait_startup(&inner) {
             Ok(()) => Ok(PosixTask { inner }),
             Err(e) => {
-                // Join the failed child thread.
+                // Join the failed child thread.  The child has
+                // already published Failed and is about to exit;
+                // join must succeed under normal operation.
                 let thread = unsafe { &mut *inner.thread.get() };
-                if let Some(mut t) = thread.take() {
-                    let _ = t.try_join();
-                }
+                let mut t = thread
+                    .take()
+                    .expect("failed task startup must retain its pthread handle");
+                t.try_join()
+                    .expect("failed task startup pthread must be joinable");
                 Err(e)
             }
         }

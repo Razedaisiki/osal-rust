@@ -92,9 +92,8 @@ impl PosixThread {
 impl Drop for PosixThread {
     fn drop(&mut self) {
         if let Some(tid) = self.thread.take() {
-            unsafe {
-                libc::pthread_detach(tid);
-            }
+            let rc = unsafe { libc::pthread_detach(tid) };
+            debug_assert_eq!(rc, 0, "pthread_detach on owned handle failed");
         }
     }
 }
