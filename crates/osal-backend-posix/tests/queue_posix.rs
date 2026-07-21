@@ -16,6 +16,7 @@ use osal_api::time::Timeout;
 use osal_api::traits::queue::Queue as _;
 
 use osal_backend_posix::queue::PosixQueue;
+use osal_backend_posix::runtime;
 
 // ---------------------------------------------------------------------------
 // Blocking send/recv — Forever
@@ -24,6 +25,7 @@ use osal_backend_posix::queue::PosixQueue;
 /// recv(Forever) is woken by a send from another thread.
 #[test]
 fn recv_forever_woken_by_send() {
+    let _ = runtime::initialize();
     let q = PosixQueue::new(1, 4).unwrap();
 
     let q2 = q.clone();
@@ -41,6 +43,7 @@ fn recv_forever_woken_by_send() {
 /// send(Forever) is woken by a recv from another thread.
 #[test]
 fn send_forever_woken_by_recv() {
+    let _ = runtime::initialize();
     let q = PosixQueue::new(1, 4).unwrap();
     q.send(&[1, 2, 3, 4], Timeout::NoWait).unwrap();
 
@@ -62,6 +65,7 @@ fn send_forever_woken_by_recv() {
 /// recv(After) returns Timeout when no message arrives within the duration.
 #[test]
 fn recv_after_returns_timeout() {
+    let _ = runtime::initialize();
     let q = PosixQueue::new(4, 4).unwrap();
     let mut buf = [0u8; 4];
     assert_eq!(
@@ -74,6 +78,7 @@ fn recv_after_returns_timeout() {
 /// send(After) returns Timeout when the queue stays full.
 #[test]
 fn send_after_returns_timeout_when_full() {
+    let _ = runtime::initialize();
     let q = PosixQueue::new(1, 4).unwrap();
     q.send(&[1, 2, 3, 4], Timeout::NoWait).unwrap();
     assert_eq!(
@@ -90,6 +95,7 @@ fn send_after_returns_timeout_when_full() {
 /// close() wakes a thread blocked on recv(Forever) with QueueClosed.
 #[test]
 fn close_wakes_blocked_recv() {
+    let _ = runtime::initialize();
     let q = PosixQueue::new(4, 4).unwrap();
     let q2 = q.clone();
 
@@ -109,6 +115,7 @@ fn close_wakes_blocked_recv() {
 /// close() wakes a thread blocked on send(Forever) with QueueClosed.
 #[test]
 fn close_wakes_blocked_send() {
+    let _ = runtime::initialize();
     let q = PosixQueue::new(1, 4).unwrap();
     // Fill the queue.
     q.send(&[1, 2, 3, 4], Timeout::NoWait).unwrap();

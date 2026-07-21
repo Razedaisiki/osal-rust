@@ -9,6 +9,7 @@ use core::cell::UnsafeCell;
 use osal_api::error::{Error, Result};
 use osal_api::time::Timeout;
 use osal_api::traits::queue::Queue;
+use osal_shared::runtime::RuntimeLease;
 
 use osal_portable::byte_queue::ByteQueue;
 use osal_shared::validation;
@@ -29,6 +30,9 @@ struct QueueInner {
     /// Cached construction-time values — immutable, no lock needed.
     capacity: usize,
     message_size: usize,
+    /// Held for the lifetime of the queue.  On drop, decrements the
+    /// active-object count (ADR 0019 §6).
+    _runtime: RuntimeLease<'static>,
 }
 
 unsafe impl Send for QueueInner {}
@@ -52,8 +56,16 @@ impl Clone for PosixQueue {
 
 impl PosixQueue {
     pub fn new(capacity: usize, msg_size: usize) -> Result<Self> {
+        // 1. Validate parameters first (error precedence: parameters >
+        //    runtime state — ADR 0001, ADR 0019 §6).
         validation::validate_queue_capacity(capacity)?;
         validation::validate_queue_message_size(msg_size)?;
+
+        // 2. Acquire a runtime lease.
+        let runtime = crate::runtime::acquire_object()?;
+
+        // 3. Create native resources.  On failure the local `runtime`
+        //    lease drops — no active-object leak.
         Ok(Self {
             inner: Arc::new(QueueInner {
                 mutex: PosixMutex::new()?,
@@ -62,6 +74,7 @@ impl PosixQueue {
                 buffer: UnsafeCell::new(ByteQueue::new(capacity, msg_size)?),
                 capacity,
                 message_size: msg_size,
+                _runtime: runtime,
             }),
         })
     }

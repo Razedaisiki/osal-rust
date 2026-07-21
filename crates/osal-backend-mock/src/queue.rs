@@ -23,6 +23,7 @@ use core::cell::RefCell;
 use osal_api::error::{Error, Result};
 use osal_api::time::Timeout;
 use osal_api::traits::queue::Queue;
+use osal_shared::runtime::RuntimeLease;
 
 use osal_portable::byte_queue::ByteQueue;
 use osal_shared::validation;
@@ -37,6 +38,8 @@ use crate::wait::apply_timeout;
 struct MockQueueInner {
     buffer: ByteQueue,
     faults: Option<Rc<RefCell<FaultState>>>,
+    /// Held for the lifetime of the queue (ADR 0019 §6).
+    _runtime: RuntimeLease<'static>,
 }
 
 impl MockQueueInner {
@@ -45,11 +48,18 @@ impl MockQueueInner {
         msg_size: usize,
         faults: Option<Rc<RefCell<FaultState>>>,
     ) -> Result<Self> {
+        // 1. Validate parameters first (ADR 0001, ADR 0019 §6).
         validation::validate_queue_capacity(capacity)?;
         validation::validate_queue_message_size(msg_size)?;
+
+        // 2. Acquire a runtime lease.
+        let runtime = crate::runtime::acquire_object()?;
+
+        // 3. Create the buffer.  On failure the lease drops.
         Ok(Self {
             buffer: ByteQueue::new(capacity, msg_size)?,
             faults,
+            _runtime: runtime,
         })
     }
 }
