@@ -5,9 +5,13 @@
 //! - State transitions follow the four-state machine.
 //! - Idempotent initialize / shutdown return precise errors.
 //! - Re-initialization works after clean shutdown.
-//! - Parameter validation errors take precedence over runtime errors
-//!   (tested per-object in P6B-6A).
-//! - Concurrent initialize / shutdown has exactly one winner.
+//!
+//! Concurrency contracts (single-winner initialize/shutdown) are
+//! backend-specific: POSIX provides them in its `runtime_lifecycle`
+//! integration tests; Mock defers them (single-context model).
+//!
+//! Parameter validation precedence over `NotInitialized` is tested
+//! per-object (see `contract::timer`, `contract::queue`, etc.).
 
 use osal_api::error::Error;
 use osal_api::runtime::RuntimeState;

@@ -210,13 +210,11 @@ use osal_backend_posix::semaphore::PosixSemaphoreFactory;
 #[test]
 fn posix_counting_forever_wakes() {
     let _ = runtime::initialize();
-    let _ = runtime::initialize();
     counting_forever_wakes_after_release(&PosixSemaphoreFactory);
 }
 
 #[test]
 fn posix_counting_after_succeeds() {
-    let _ = runtime::initialize();
     let _ = runtime::initialize();
     counting_after_succeeds_before_deadline(&PosixSemaphoreFactory);
 }
@@ -224,13 +222,11 @@ fn posix_counting_after_succeeds() {
 #[test]
 fn posix_counting_after_not_early() {
     let _ = runtime::initialize();
-    let _ = runtime::initialize();
     counting_after_does_not_timeout_early(&PosixSemaphoreFactory);
 }
 
 #[test]
 fn posix_counting_after_times_out() {
-    let _ = runtime::initialize();
     let _ = runtime::initialize();
     counting_after_times_out(&PosixSemaphoreFactory);
 }
@@ -238,13 +234,11 @@ fn posix_counting_after_times_out() {
 #[test]
 fn posix_counting_one_wakes_one() {
     let _ = runtime::initialize();
-    let _ = runtime::initialize();
     counting_one_release_wakes_one_waiter(&PosixSemaphoreFactory);
 }
 
 #[test]
 fn posix_counting_limit_ok() {
-    let _ = runtime::initialize();
     let _ = runtime::initialize();
     counting_limit_never_exceeded(&PosixSemaphoreFactory);
 }
@@ -252,13 +246,11 @@ fn posix_counting_limit_ok() {
 #[test]
 fn posix_binary_forever_wakes() {
     let _ = runtime::initialize();
-    let _ = runtime::initialize();
     binary_forever_wakes_after_release(&PosixSemaphoreFactory);
 }
 
 #[test]
 fn posix_binary_after_not_early() {
-    let _ = runtime::initialize();
     let _ = runtime::initialize();
     binary_after_does_not_timeout_early(&PosixSemaphoreFactory);
 }

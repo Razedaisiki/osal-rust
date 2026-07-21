@@ -10,8 +10,9 @@ ADR 0015 defines a four-state runtime lifecycle (Uninitialized →
 Initializing → Running → ShuttingDown → Uninitialized) with an
 active-object lease counter. ADR 0016 refines it into a single
 `AtomicUsize` CAS state machine. ADR 0014 establishes the Backend /
-BSP boundary in principle, but BSP does not yet exist as a concrete
-crate or trait.
+BSP boundary in principle. BSP crates (`osal-bsp`, `osal-bsp-linux`)
+exist as deferred workspace placeholders, but no BSP capability model
+or concrete platform integration is currently selected by the facade.
 
 We now need to decide **where** the `RuntimeLifecycle` instance lives,
 how backends wire it into their service lifecycles, and which objects
@@ -157,17 +158,18 @@ decrement the active-object count.
   public `runtime` module exposing `initialize()`, `shutdown()`,
   `state()`, `acquire_object()` (pub(crate)), and
   `active_objects()` (testkit-gated).
-- POSIX `timer_service` lifecycle continues to be gated by its
-  own `TimerServiceControl` slot, but the backend `runtime.rs`
-  now orchestrates initialization order: `RuntimeLifecycle` first,
-  then timer service.  Timer-local liveness checks remain as a
-  defense-in-depth measure until Timer handles gain `RuntimeLease`
-  (P6B-6A).
+- POSIX `timer_service` lifecycle is orchestrated by the backend
+  `runtime.rs`: `RuntimeLifecycle` first, then timer service.
+  Timer-local liveness checks remain as defense-in-depth even
+  though `PosixTimer` handles now hold `RuntimeLease` (P6B-6A).
 - `Error::NotInitialized` becomes reachable from every managed-object
   constructor; `Error::AlreadyInitialized` and `Error::Busy` become
   reachable from `initialize()` and `shutdown()`.
 - Mock backend can inject faults into `initialize`/`shutdown` hooks
   to verify rollback semantics — something POSIX cannot easily do.
+  **Deferred:** runtime hook failure injection is not yet implemented;
+  the current Mock `runtime.rs` calls `reset_runtime()` directly
+  without a failure seam.
 - Task `LIVE_COUNT` and `RuntimeLease` are separate mechanisms;
   documentation must clearly distinguish them.
 - ADR 0015's "Object lease tracking" section is now fully realized:
