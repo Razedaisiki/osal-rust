@@ -55,12 +55,16 @@ pub use osal_api;
 /// Backend type aliases — concrete types from the active backend.
 pub mod backend;
 
+/// Runtime lifecycle API — explicit init and shutdown.
+pub mod runtime;
+
 /// Commonly used types, re-exported for convenience.
 ///
 /// ```ignore
 /// use osal::prelude::*;
 /// ```
 pub mod prelude {
+    pub use crate::runtime::{initialize, runtime_state, shutdown};
     #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
     pub use crate::backend::BinarySemaphore;
     #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
