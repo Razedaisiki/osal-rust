@@ -9,3 +9,4 @@ pub mod mutex;
 pub mod recursive_mutex;
 pub mod task;
 pub mod time;
+pub mod tls;

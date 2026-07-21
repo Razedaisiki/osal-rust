@@ -25,18 +25,17 @@
 //!
 //! # P6A: TLS, live count, stack size
 //!
-//! A `thread_local!` slot provides `current()` via `CurrentGuard` set
-//! in the trampoline. A `LiveTaskToken` ensures `count()` reflects
-//! running entries, not handle lifecycle. Stack size is passed through
-//! `pthread_attr_setstacksize`.
+//! A `pthread_key_t` slot (ADR 0017) provides `current()` via
+//! `CurrentGuard` set in the trampoline. A `LiveTaskToken` ensures
+//! `count()` reflects running entries, not handle lifecycle.
+//! Stack size is passed through `pthread_attr_setstacksize`.
 
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
-use core::cell::{Cell, UnsafeCell};
+use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::thread_local;
 
 use osal_api::error::{Error, Result};
 use osal_api::time::Timeout;
@@ -59,27 +58,31 @@ static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(1);
 static LIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 // ---------------------------------------------------------------------------
-// Backend-local TLS for current()
+// Per-thread current-task identity via pthread TLS (ADR 0017)
 // ---------------------------------------------------------------------------
 
-thread_local! {
-    static CURRENT: Cell<Option<TaskHandle>> = const { Cell::new(None) };
-}
+use crate::sys::tls::{CurrentGuard as PthreadTlsGuard, TaskTlsSlot};
+
+static TASK_TLS: TaskTlsSlot = TaskTlsSlot::new();
 
 struct CurrentGuard {
-    prev: Option<TaskHandle>,
+    _inner: Option<PthreadTlsGuard>,
 }
 
 impl CurrentGuard {
     fn enter(handle: TaskHandle) -> Self {
-        let prev = CURRENT.with(|slot| slot.replace(Some(handle)));
-        Self { prev }
-    }
-}
-
-impl Drop for CurrentGuard {
-    fn drop(&mut self) {
-        CURRENT.with(|slot| slot.set(self.prev));
+        match TASK_TLS.get_or_init() {
+            Ok(key) => {
+                let value = &handle as *const TaskHandle as *mut c_void;
+                match PthreadTlsGuard::enter(key, value) {
+                    Ok(guard) => Self {
+                        _inner: Some(guard),
+                    },
+                    Err(_) => Self { _inner: None },
+                }
+            }
+            Err(_) => Self { _inner: None },
+        }
     }
 }
 
@@ -375,7 +378,14 @@ impl Task for PosixTask {
     }
 
     fn current() -> Option<TaskHandle> {
-        CURRENT.with(Cell::get)
+        let key = TASK_TLS.get()?;
+        let ptr = unsafe { libc::pthread_getspecific(key) };
+        if ptr.is_null() {
+            return None;
+        }
+        // Safety: the pointer was set by CurrentGuard::enter, which
+        // stored a reference to a TaskHandle inside the Arc'd inner.
+        Some(unsafe { *(ptr as *const TaskHandle) })
     }
 
     fn count() -> usize {

@@ -8,6 +8,8 @@
 #![no_std]
 
 extern crate alloc;
+
+#[cfg(any(test, feature = "testkit"))]
 extern crate std;
 
 pub mod clock;

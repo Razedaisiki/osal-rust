@@ -238,6 +238,7 @@ pub fn run_controlled_contracts<F: ControlledTimerFactory>(factory: &F) {
 // ===========================================================================
 
 #[cfg(feature = "std")]
+#[cfg(test)]
 pub mod realtime {
     use super::*;
     use std::sync::Arc;
