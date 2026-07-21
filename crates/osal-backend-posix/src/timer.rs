@@ -6,21 +6,28 @@ use core::time::Duration;
 use osal_api::error::{Error, Result};
 use osal_api::traits::timer::{Timer, TimerCallback};
 use osal_api::types::TimerMode;
+use osal_shared::runtime::RuntimeLease;
 
 use crate::timer_service;
 
 // ---------------------------------------------------------------------------
-// Handle inner — Drop deregisters from service
+// Handle inner — Drop deregisters from service, then releases RuntimeLease
 // ---------------------------------------------------------------------------
 
 struct PosixTimerHandleInner {
     id: u64,
+    /// Held for the lifetime of the logical timer object.  On drop,
+    /// decrements the active-object count so `shutdown()` can proceed
+    /// once all timers are released (ADR 0019 §6).
+    _runtime: RuntimeLease<'static>,
 }
 
 impl Drop for PosixTimerHandleInner {
     fn drop(&mut self) {
         let result = timer_service::deregister(self.id);
         debug_assert!(result.is_ok(), "live timer deregistration failed");
+        // Fields drop after this Drop impl returns:
+        // _runtime drops → active_objects decremented
     }
 }
 
@@ -40,12 +47,27 @@ impl PosixTimer {
         mode: TimerMode,
         callback: TimerCallback,
     ) -> Result<Self> {
+        // 1. Validate parameters first (error precedence: parameters >
+        //    runtime state — ADR 0001, ADR 0019 §6).
         if period == Duration::ZERO {
             return Err(Error::InvalidParameter);
         }
+
+        // 2. Acquire a runtime lease.  If the runtime is not Running,
+        //    this returns NotInitialized.  The lease is held until the
+        //    last clone drops.
+        let runtime = crate::runtime::acquire_object()?;
+
+        // 3. Register with the timer service.  If this fails, the
+        //    local `runtime` lease drops — no active-object leak.
         let id = timer_service::register(period, mode, callback)?;
+
+        // 4. Construct the inner handle.
         Ok(Self {
-            inner: Arc::new(PosixTimerHandleInner { id }),
+            inner: Arc::new(PosixTimerHandleInner {
+                id,
+                _runtime: runtime,
+            }),
         })
     }
 }
