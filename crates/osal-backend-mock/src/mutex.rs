@@ -24,6 +24,7 @@ use core::ops::{Deref, DerefMut};
 use osal_api::error::{Error, Result};
 use osal_api::time::Timeout;
 use osal_api::traits::mutex::Mutex;
+use osal_shared::runtime::RuntimeLease;
 
 // ---------------------------------------------------------------------------
 // Inner state
@@ -34,6 +35,8 @@ struct MockMutexInner<T> {
     data: UnsafeCell<T>,
     /// `true` when the mutex is currently held.
     locked: Cell<bool>,
+    /// Held for the lifetime of the mutex (ADR 0019 §6).
+    _runtime: RuntimeLease<'static>,
 }
 
 // ---------------------------------------------------------------------------
@@ -58,10 +61,12 @@ impl<T> Clone for MockMutex<T> {
 impl<T> MockMutex<T> {
     /// Create a new mock mutex containing `value`.
     pub fn new(value: T) -> Result<Self> {
+        let runtime = crate::runtime::acquire_object()?;
         Ok(Self {
             inner: Rc::new(MockMutexInner {
                 data: UnsafeCell::new(value),
                 locked: Cell::new(false),
+                _runtime: runtime,
             }),
         })
     }
@@ -167,6 +172,7 @@ mod tests {
 
     #[test]
     fn after_nonzero_relock_returns_timeout() {
+        let _ = crate::runtime::initialize(); // tolerate AlreadyInitialized
         let m = MockMutex::new(0u32).unwrap();
         let _guard = m.lock(Timeout::NoWait).unwrap();
         let result = m.lock(Timeout::After(Duration::from_millis(10)));
@@ -175,6 +181,7 @@ mod tests {
 
     #[test]
     fn forever_relock_returns_lock_failed() {
+        let _ = crate::runtime::initialize();
         let m = MockMutex::new(0u32).unwrap();
         let _guard = m.lock(Timeout::NoWait).unwrap();
         let result = m.lock(Timeout::Forever);
@@ -183,6 +190,7 @@ mod tests {
 
     #[test]
     fn failed_relock_does_not_release_original_guard() {
+        let _ = crate::runtime::initialize();
         let m = MockMutex::new(0u32).unwrap();
         let guard = m.lock(Timeout::NoWait).unwrap();
 

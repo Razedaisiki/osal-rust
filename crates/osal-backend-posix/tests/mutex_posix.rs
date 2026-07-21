@@ -10,10 +10,12 @@ use osal_api::time::Timeout;
 use osal_api::traits::mutex::Mutex as _;
 
 use osal_backend_posix::mutex::PosixMutexImpl;
+use osal_backend_posix::runtime;
 
 /// NoWait fails with LockFailed when mutex is held by another thread.
 #[test]
 fn no_wait_fails_when_held() {
+    let _ = runtime::initialize();
     let m = PosixMutexImpl::new(0u32).unwrap();
     let m2 = m.clone();
 
@@ -29,6 +31,7 @@ fn no_wait_fails_when_held() {
 /// After returns Timeout when mutex stays held.
 #[test]
 fn after_returns_timeout_when_held() {
+    let _ = runtime::initialize();
     let m = PosixMutexImpl::new(0u32).unwrap();
     let m2 = m.clone();
 
@@ -44,6 +47,7 @@ fn after_returns_timeout_when_held() {
 /// Forever is woken when the guard is dropped by another thread.
 #[test]
 fn forever_woken_by_guard_drop() {
+    let _ = runtime::initialize();
     let m = PosixMutexImpl::new(0u32).unwrap();
     let m2 = m.clone();
 
@@ -64,6 +68,7 @@ fn forever_woken_by_guard_drop() {
 fn after_does_not_timeout_early() {
     use std::time::Instant;
 
+    let _ = runtime::initialize();
     let m = PosixMutexImpl::new(0u32).unwrap();
     let m2 = m.clone();
     let _guard = m.lock(Timeout::NoWait).unwrap();

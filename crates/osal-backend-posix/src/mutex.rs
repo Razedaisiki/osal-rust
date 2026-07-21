@@ -13,6 +13,7 @@ use core::time::Duration;
 use osal_api::error::{Error, Result};
 use osal_api::time::Timeout;
 use osal_api::traits::mutex::Mutex;
+use osal_shared::runtime::RuntimeLease;
 
 use crate::sys::mutex::PosixMutex;
 
@@ -23,6 +24,8 @@ use crate::sys::mutex::PosixMutex;
 struct PosixMutexInner<T> {
     raw: PosixMutex,
     data: UnsafeCell<T>,
+    /// Held for the lifetime of the mutex (ADR 0019 §6).
+    _runtime: RuntimeLease<'static>,
 }
 
 // Safety: PosixMutex ensures mutual exclusion. The data is only
@@ -53,10 +56,13 @@ impl<T> Clone for PosixMutexImpl<T> {
 impl<T> PosixMutexImpl<T> {
     /// Create a new mutex containing `value`.
     pub fn new(value: T) -> Result<Self> {
+        // Acquire a runtime lease before creating the native mutex.
+        let runtime = crate::runtime::acquire_object()?;
         Ok(Self {
             inner: Arc::new(PosixMutexInner {
                 raw: PosixMutex::new()?,
                 data: UnsafeCell::new(value),
+                _runtime: runtime,
             }),
         })
     }
@@ -166,6 +172,7 @@ mod tests {
 
     #[test]
     fn create_and_lock() {
+        let _ = crate::runtime::initialize();
         let m = PosixMutexImpl::new(42u32).unwrap();
         let guard = m.lock(Timeout::NoWait).unwrap();
         assert_eq!(*guard, 42);
@@ -173,6 +180,7 @@ mod tests {
 
     #[test]
     fn guard_deref_mut() {
+        let _ = crate::runtime::initialize();
         let m = PosixMutexImpl::new(0u32).unwrap();
         {
             let mut guard = m.lock(Timeout::NoWait).unwrap();
@@ -185,6 +193,7 @@ mod tests {
 
     #[test]
     fn lock_forever() {
+        let _ = crate::runtime::initialize();
         let m = PosixMutexImpl::new(100u32).unwrap();
         let guard = m.lock(Timeout::Forever).unwrap();
         assert_eq!(*guard, 100);
@@ -194,6 +203,7 @@ mod tests {
 
     #[test]
     fn no_second_guard() {
+        let _ = crate::runtime::initialize();
         let m = PosixMutexImpl::new(0u32).unwrap();
         let _g = m.lock(Timeout::NoWait).unwrap();
         // Second lock from same thread with ERRORCHECK — should fail.
@@ -203,6 +213,7 @@ mod tests {
 
     #[test]
     fn clone_shares_state() {
+        let _ = crate::runtime::initialize();
         let m1 = PosixMutexImpl::new(0u32).unwrap();
         let m2 = m1.clone();
         {
@@ -215,6 +226,7 @@ mod tests {
 
     #[test]
     fn drop_clone_keeps_alive() {
+        let _ = crate::runtime::initialize();
         let m1 = PosixMutexImpl::new(0u32).unwrap();
         let m2 = m1.clone();
         drop(m1);
