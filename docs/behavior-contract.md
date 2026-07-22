@@ -886,17 +886,18 @@ leak.
 
 ### Object leases
 
-Each user-visible OSAL object (Queue, Mutex, Semaphore, Timer,
-Task handle) **MUST** hold exactly one `RuntimeLease`. Cloning a
-handle **MUST NOT** acquire an additional lease — the clone shares
-the existing lease via the shared inner state (`Arc` or `Rc`).
+Each user-visible OSAL logical object (Queue, Mutex, Semaphore,
+Timer, Task handle) **MUST** hold exactly one lifecycle-accounting
+unit. Cloning a public handle **MUST NOT** increase the logical
+active-object count — all clones of one logical object share one
+unit.
 
-The last clone drop **MUST** release the lease, decrementing the
-active-object count.
+Destroying the final handle of the logical object **MUST** release
+that unit exactly once, decrementing `active_objects()`.
 
 Internal runtime services (timer service thread, backend control
-blocks) **MUST NOT** hold leases. Only user-visible logical objects
-contribute to `active_objects()`.
+blocks) **MUST NOT** contribute to the public `active_objects()`
+count. Only user-visible logical objects are counted.
 
 ### Error precedence
 

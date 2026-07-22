@@ -11,7 +11,7 @@ across different platforms by switching the backend.
 
 ## Project Status
 
-**Current milestone: P6C — Documentation Baseline Freeze.**
+**Latest completed milestone: P6C — Documentation Baseline Freeze.**
 
 The POSIX and Mock MVP covers Queue, Mutex, Semaphore, Clock, Timer,
 System, and Task foundation APIs. Runtime lifecycle (explicit
@@ -55,7 +55,7 @@ Public APIs may change before version 1.0.
 | Capability        | API       | Mock        | POSIX       | Contract    | Facade    |
 |-------------------|-----------|-------------|-------------|-------------|-----------|
 | Queue Core        | Validated | Validated   | Validated   | Validated   | Validated |
-| Queue Blocking    | Validated | Planned     | Validated   | POSIX only  | Validated |
+| Queue Blocking    | Validated | Planned     | Validated   | Validated¹  | Validated |
 | Queue ISR         | Deferred  | N/A         | N/A         | Deferred    | Deferred  |
 | Mutex             | Validated | Validated   | Validated   | Validated   | Validated |
 | CountingSemaphore | Validated | Validated   | Validated   | Validated   | Validated |
@@ -66,7 +66,7 @@ Public APIs may change before version 1.0.
 | Timer ISR         | Deferred  | N/A         | N/A         | Deferred    | Deferred  |
 | System            | Validated | Validated   | Validated   | Validated   | Validated |
 | Task Foundation   | Validated | Foundation  | Foundation  | Foundation  | Validated |
-| Runtime Lifecycle | Validated | Implemented | Implemented | In progress | Implemented |
+| Runtime Lifecycle | Validated | Implemented | Implemented | Implemented | Implemented |
 | ISR Extensions    | Planned   | N/A         | N/A         | Planned     | Planned   |
 | BSP               | Planned   | N/A         | N/A         | N/A         | N/A       |
 | FreeRTOS          | Planned   | N/A         | N/A         | Planned     | Planned   |
@@ -81,6 +81,10 @@ Public APIs may change before version 1.0.
 | `Planned`   | Design exists, implementation not started |
 | `Deferred`  | Explicitly deferred to a future phase |
 | `N/A`       | Not applicable to this layer |
+
+¹ Blocking Queue contracts currently apply to the POSIX backend only.
+Mock blocking is deferred until a deterministic task scheduler is
+implemented.
 
 ## Architecture
 
@@ -173,7 +177,6 @@ osal = { version = "0.1", default-features = false,
 
 ```rust
 use osal::prelude::*;
-use core::time::Duration;
 
 fn main() -> Result<()> {
     // Initialise the runtime before creating any objects.

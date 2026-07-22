@@ -1,6 +1,6 @@
 # Changelog
 
-## P6C — Documentation Baseline Freeze (2026-07-22)
+## P6C — Documentation Baseline Freeze (2026-07-22) — Completed
 
 ### Changed
 

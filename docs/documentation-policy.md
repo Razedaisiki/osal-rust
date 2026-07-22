@@ -6,32 +6,48 @@ This document defines the authority of each document in the OSAL
 repository, when each must be updated, and the status terminology
 used throughout.
 
-## Source-of-truth hierarchy
+## Authority model
 
-When documents disagree, the higher-priority source wins:
+Two distinct kinds of authority exist in this repository:
 
-1. **Rust public API / Cargo manifests** — what actually compiles.
-   Code is the ultimate authority on current behavior.
+- **Compilation-surface authority**: Rust public APIs and Cargo
+  manifests are authoritative for the currently available compilation
+  surface — signatures, types, feature flags, and dependency edges.
+- **Semantic authority**: `docs/behavior-contract.md` is authoritative
+  for intended observable backend semantics — what every backend
+  **MUST** do at runtime.
 
-2. **`docs/behavior-contract.md`** — normative backend conformance
+When an implementation disagrees with the behavior contract, the
+disagreement is a **conformance defect**; the implementation does not
+silently redefine the contract.
+
+### Resolution order
+
+When two documents make conflicting claims about backend semantics,
+resolve using this order:
+
+1. **`docs/behavior-contract.md`** — normative backend conformance
    requirements. Describes what backends **MUST** do.
 
-3. **`docs/adr/*.md`** — why specific design decisions were made.
+2. **`docs/adr/*.md`** — why specific design decisions were made.
    Accepted ADRs record the rationale at the time of decision.
 
-4. **`docs/architecture.md`** — stable layer boundaries, dependency
+3. **`docs/architecture.md`** — stable layer boundaries, dependency
    directions, and crate responsibility descriptions.
 
-5. **`docs/*-foundation-slice.md`** — per-capability implementation
+4. **`docs/*-foundation-slice.md`** — per-capability implementation
    status, component breakdown, and deferred items for a specific
    feature slice.
 
-6. **`README.md`** — summary snapshot for new contributors. Must not
+5. **`README.md`** — summary snapshot for new contributors. Must not
    introduce new semantic claims not present in higher-priority
    documents.
 
-7. **`CHANGELOG.md`** — record of what changed when, grouped by
+6. **`CHANGELOG.md`** — record of what changed when, grouped by
    development phase.
+
+Rust public APIs and Cargo manifests are the authority on what
+compiles, not on what the intended runtime semantics are.
 
 ## Document responsibilities
 
@@ -87,7 +103,16 @@ When documents disagree, the higher-priority source wins:
 
 ## Status terminology
 
-Use these terms consistently across all documents:
+Capability status and crate maturity are separate vocabularies.
+Capability status describes behavioral completeness of a feature
+(Queue, Mutex, Runtime Lifecycle, etc.). Crate maturity describes
+whether a workspace crate is actively maintained, stabilizing, a
+placeholder, or not yet created.
+
+### Capability status
+
+Use these terms in the README capability matrix and foundation
+slice documents:
 
 | Term | Meaning |
 |------|---------|
@@ -97,7 +122,18 @@ Use these terms consistently across all documents:
 | `Planned` | Design exists or sketched; implementation not started |
 | `Deferred` | Explicitly deferred to a future phase with recorded rationale |
 | `N/A` | Not applicable to this layer or backend |
-| `Skeleton` | Crate or module exists as workspace placeholder only |
+
+### Crate maturity
+
+Use these terms in `architecture.md` and when discussing workspace
+crate lifecycle:
+
+| Term | Meaning |
+|------|---------|
+| `Active` | Crate is actively developed and maintained |
+| `Stabilizing` | Core implementation complete; API surface settling |
+| `Skeleton` | Crate exists as workspace placeholder only (no runtime logic) |
+| `Planned` | Design exists; crate not yet created |
 
 ## ADR rules
 
