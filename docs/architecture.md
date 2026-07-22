@@ -24,6 +24,8 @@ single Cargo feature flag.
 
 ## 3. Layer Architecture
 
+### 3.1 Current implementation
+
 ```
 Application
     ↓
@@ -37,60 +39,96 @@ osal-api (public traits and types)
 +-------+     +---------------+
     ↓               ↓
 +-----------------------+
-| osal-backend-*        |  ← platform-specific implementations
-| (posix, freertos,     |
-|  mock)                |
+| osal-backend-posix    |
+| osal-backend-mock     |
 +-----------------------+
     ↓
-osal-bsp + osal-bsp-*   ← board support packages
-    ↓
-Native OS / RTOS / hardware
+POSIX host / deterministic in-process model
 ```
 
-### 3.1 `osal-api` — Foundation
+### 3.2 Target extension (future)
+
+```
+osal-api
+    ↓
+osal-shared + osal-portable
+    ↓
+osal-backend-freertos        (future)
+    ↓
+osal-bsp + board BSP         (future)
+    ↓
+RTOS / hardware
+```
+
+BSP crates (`osal-bsp`, `osal-bsp-linux`) currently exist as deferred
+workspace placeholders. They define a future responsibility boundary
+but are not part of the active POSIX/Mock MVP and do not yet provide
+production board-support functionality.
+
+### 3.3 Crate maturity
+
+| Crate                   | Status               |
+| ----------------------- | -------------------- |
+| `osal-api`              | Active               |
+| `osal-shared`           | Active / stabilizing |
+| `osal-portable`         | Active               |
+| `osal-backend-posix`    | Active               |
+| `osal-backend-mock`     | Active               |
+| `osal-testkit`          | Active               |
+| `osal` (facade)         | Active               |
+| `osal-bsp`              | Skeleton / deferred  |
+| `osal-bsp-linux`        | Skeleton / deferred  |
+| `osal-backend-freertos` | Planned              |
+
+## 4. Crate Descriptions
+
+### 4.1 `osal-api` — Foundation
 
 The foundation crate. Defines **what** OSAL can do, not **how**.
 
 - Public traits for all OS primitives (Mutex, Semaphore, Queue, Task,
-  Timer, Clock, EventFlags, System)
-- Shared types: `Error`, `Timeout`, `Result<T>`, `Handle`, `TaskHandle`,
-  `Priority`, `EventMask`, `StackSize`
+  Timer, Clock, System)
+- Shared types: `Error`, `Timeout`, `Result<T>`, `TaskHandle`,
+  `Priority`, `RuntimeState`
 - Zero runtime dependencies
-- `no_std` compatible by default; optional `std` feature
+- `no_std` compatible
 
 Backend crates implement these traits. The `osal` facade re-exports
 everything users need.
 
-### 3.2 `osal-shared` — OS-Independent Logic
+**Current public traits:** `Queue`, `Mutex<T>`, `CountingSemaphore`,
+`BinarySemaphore`, `Clock`, `Timer`, `System`, `Task`, `TaskBuilder`.
+
+**Planned capabilities:** `EventFlags`, ISR extension traits,
+FreeRTOS-specific extensions. These are not yet implemented and are not
+part of the current backend conformance requirements.
+
+### 4.2 `osal-shared` — OS-Independent Logic
 
 Shared implementation that all backends use:
 
 - Common parameter validation helpers (`validate_queue_capacity`,
   `validate_send_message_size`, etc.)
-- Close-state tracking (`CloseFlag`)
-- Initialization and lifecycle state management
+- Runtime lifecycle state machine (`RuntimeLifecycle`, `RuntimeLease`,
+  `InitializeTransition`, `ShutdownTransition`)
+- Close-state tracking
 
 A global object ID registry and object table are deferred by
 [ADR 0006](adr/0006-object-handle-model.md). The MVP uses strongly
-typed handles (`Queue`, `Mutex<T>`, `Timer`) with
-backend-appropriate ownership (`Arc`, `Rc`, native handles) rather
-than a central numeric-ID registry.
+typed handles with backend-appropriate ownership (`Arc`, `Rc`, native
+handles) rather than a central numeric-ID registry.
 
-Without this crate, each backend would reinvent validation and
-lifecycle logic, leading to inconsistency.
-
-### 3.3 `osal-portable` — Reusable Helpers
+### 4.3 `osal-portable` — Reusable Helpers
 
 Utilities that multiple backends may optionally use:
 
-- Ring buffer implementation
-- Time conversion helpers
-- Static memory pools for `no_std`
-- Fallback no-op implementations for unsupported features
+- Ring buffer implementation (`ByteQueue`)
+- Counting semaphore state machine (`CountingSemaphoreState`)
+- Timer state machine (`TimerState`)
 
 These are **internal building blocks**, not part of the public API.
 
-### 3.4 `osal-backend-*` — Platform Implementations
+### 4.4 `osal-backend-*` — Platform Implementations
 
 Each backend crate implements all `osal-api` traits for a specific
 platform:
@@ -99,14 +137,16 @@ platform:
 |-------|----------|----------|
 | `osal-backend-posix` | Linux, macOS, POSIX | Development, CI, simulation |
 | `osal-backend-mock` | In-process fake | Unit tests, contract verification |
-| `osal-backend-freertos` | FreeRTOS | ARM Cortex-M, RISC-V embedded |
+| `osal-backend-freertos` | FreeRTOS | ARM Cortex-M, RISC-V embedded (planned) |
 
 Backends depend on `osal-api`, `osal-shared`, and optionally
-`osal-portable`. They must not depend on each other.
+`osal-portable`. They must not depend on each other. Each backend
+owns its own `RuntimeLifecycle` instance (ADR 0019).
 
-### 3.5 `osal-bsp` + `osal-bsp-*` — Board Support
+### 4.5 `osal-bsp` + `osal-bsp-*` — Board Support (deferred)
 
-Separates platform hardware configuration from OS backend logic:
+Separates platform hardware configuration from OS backend logic.
+**Not part of the current MVP.** Planned responsibilities:
 
 - Boot and startup hooks
 - Console / debug output
@@ -115,19 +155,16 @@ Separates platform hardware configuration from OS backend logic:
 - Memory and heap region setup
 - Resource limits (max tasks, max queues)
 
-BSP crates sit below the OSAL layer and are selected independently
-from the backend.
-
-### 3.6 `osal-testkit` — Test Infrastructure
+### 4.6 `osal-testkit` — Test Infrastructure
 
 Shared testing utilities:
 
 - Contract test harness for running behavior tests against any backend
+- Factory traits (`QueueFactory`, `MutexFactory`, `RuntimeFactory`, etc.)
 - Assertion helpers for OSAL-specific verification
-- Fake clock for deterministic timing
-- Fault injection framework
+- Fake clock and fault injection framework
 
-### 3.7 `osal` — Facade
+### 4.7 `osal` — Facade
 
 The only crate users depend on:
 
@@ -141,13 +178,29 @@ Responsibilities:
 - Select backend via facade Cargo features (`backend-posix`, `backend-mock`, future `backend-freertos`)
 - Guard against multiple-backend selection at compile time
 - Provide `prelude` module for convenient imports
+- Expose `initialize()`, `shutdown()`, `runtime_state()` at crate root
 
-## 4. Dependency Graph
+## 5. Runtime and Allocation Model
+
+- The public API is designed for `no_std`.
+- Dynamic allocation is currently a project-level requirement.
+  Crates that need heap allocation declare `extern crate alloc`
+  unconditionally. `alloc` is **not** a selectable facade feature.
+- Backend selection is independent from Rust `std`.
+- The POSIX backend uses native platform APIs through FFI (`libc`)
+  and does not require application code to link against Rust `std`.
+- A future `std` feature may enable host-only integrations (e.g.
+  `impl std::error::Error`), but does not select or enable a backend.
+
+This section is normative and must match
+[docs/behavior-contract.md §2](behavior-contract.md).
+
+## 6. Dependency Graph
 
 ```
 osal-api  ←── osal-shared ←── osal-portable ←── osal-backend-posix
     ↑              ↑
-    +── osal-bsp ←── osal-bsp-linux
+    +── osal-bsp (skeleton) ←── osal-bsp-linux (skeleton)
     +── osal-testkit
     +── osal-backend-mock
     +── osal (facade)
@@ -155,9 +208,9 @@ osal-api  ←── osal-shared ←── osal-portable ←── osal-backend-p
 
 No circular dependencies. Each crate depends only on crates below it.
 
-## 5. Feature Flags
+## 7. Feature Flags
 
-### 5.1 Facade-level features
+### 7.1 Facade-level features
 
 ```toml
 [features]
@@ -171,31 +224,29 @@ Rules:
 - `backend-posix` is the default for development convenience
 - `backend-mock` is used for testing
 
-### 5.2 Environment features
+### 7.2 Environment features
 
-```toml
-std = ["osal-api/std", "osal-shared/std"]
-alloc = ["osal-api/alloc", "osal-shared/alloc"]
-```
+The `std` Cargo feature is reserved for future host-only integrations.
+It is not required to build, test, or use any backend.
 
-- `std`: Enables standard library (host test runners, examples)
-- `alloc`: Enables heap allocation without full `std`
+`alloc` is **not** a Cargo feature — it is a project-level runtime
+assumption. See §5 and behavior-contract §2.
 
-## 6. Naming Conventions
+## 8. Naming Conventions
 
 | Aspect | Convention | Example |
 |--------|-----------|---------|
 | Crate names | `osal-{layer}` | `osal-api`, `osal-backend-posix` |
 | Trait names | Noun directly | `pub trait Mutex`, `pub trait Task` |
-| Module files | `snake_case.rs` | `event_flags.rs`, `clock.rs` |
+| Module files | `snake_case.rs` | `clock.rs` |
 | Error type | `Error` (no lifetime parameter) | `Error::Timeout` |
 | Return type | `Result<(), Error>` for boolean ops | `fn lock(&self) -> Result<()>` |
 | ISR methods | `isr_` prefix | `isr_lock()`, `isr_signal()` |
-| Backend types | Descriptive names | `Priority`, `EventMask`, `StackSize` |
+| Backend types | Descriptive names | `Priority` |
 | Prelude import | `use osal::prelude::*` | |
 | Time types | `core::time::Duration` + `Timeout` enum | `Timeout::After(d)` |
 
-## 7. Error Handling Strategy
+## 9. Error Handling Strategy
 
 OSAL uses a single, flat `Error` enum in `osal-api`:
 
@@ -231,7 +282,7 @@ idiomatic Rust and integrates with the `?` operator.
 errors inside backend implementations. Raw platform error codes never
 appear in the public API.
 
-## 8. Module Organization Pattern
+## 10. Module Organization Pattern
 
 Within each crate, modules follow this pattern:
 
@@ -241,6 +292,7 @@ crates/osal-api/src/
 ├── error.rs        # Error enum and Result alias
 ├── time.rs         # Timeout, duration helpers
 ├── types.rs        # Common type aliases
+├── runtime.rs      # RuntimeState enum
 ├── traits.rs       # trait module declarations
 ├── traits/
 │   ├── mutex.rs
@@ -249,7 +301,6 @@ crates/osal-api/src/
 │   ├── task.rs
 │   ├── timer.rs
 │   ├── clock.rs
-│   ├── event_flags.rs
 │   └── system.rs
 └── prelude.rs      # selective re-exports
 ```
@@ -259,6 +310,7 @@ Backend crates mirror the trait structure with concrete implementations:
 ```
 crates/osal-backend-posix/src/
 ├── lib.rs
+├── runtime.rs
 ├── task.rs
 ├── mutex.rs
 ├── semaphore.rs
@@ -266,24 +318,28 @@ crates/osal-backend-posix/src/
 ├── timer.rs
 ├── clock.rs
 ├── system.rs
+├── timer_control.rs
+├── timer_service.rs
 └── sys/            # thin FFI wrappers
     ├── condvar.rs
     ├── errno.rs
     ├── mutex.rs
     ├── recursive_mutex.rs
     ├── task.rs
-    └── time.rs
+    ├── time.rs
+    └── tls.rs
 ```
 
-## 9. Future Backends
+## 11. Future Backends
 
 To add a new backend:
 
 1. Create `crates/osal-backend-{name}/` with `Cargo.toml` depending on
    `osal-api` + `osal-shared`
 2. Implement all `osal-api` traits
-3. Add the feature flag to `crates/osal/Cargo.toml`
-4. Pass the contract test suite from `osal-testkit`
+3. Own a backend-local `RuntimeLifecycle` instance (ADR 0019)
+4. Add the feature flag to `crates/osal/Cargo.toml`
+5. Pass the contract test suite from `osal-testkit`
 
 No changes to `osal-api`, `osal-shared`, or existing backends are
 required.
