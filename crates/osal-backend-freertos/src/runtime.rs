@@ -90,6 +90,12 @@ pub(crate) fn capabilities() -> Option<Capabilities> {
     *CAPABILITIES.read()
 }
 
+/// Public accessor for test/fixture use (testkit-only).
+#[cfg(feature = "testkit")]
+pub fn capabilities_for_test() -> Option<Capabilities> {
+    capabilities()
+}
+
 /// Query the current FreeRTOS scheduler state (dynamic — never cached).
 pub fn scheduler_state() -> osal_backend_freertos_sys::SchedulerState {
     osal_backend_freertos_sys::scheduler_state()
