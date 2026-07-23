@@ -37,13 +37,22 @@
 
 extern crate alloc;
 
-#[cfg(not(any(feature = "backend-posix", feature = "backend-mock")))]
+// Feature exclusivity: exactly one backend must be selected.
+#[cfg(not(any(
+    feature = "backend-posix",
+    feature = "backend-mock",
+    feature = "backend-freertos",
+)))]
 compile_error!(
     "At least one OSAL backend must be enabled. \
-     Enable the 'backend-posix' or 'backend-mock' feature."
+     Enable 'backend-posix', 'backend-mock', or 'backend-freertos'."
 );
 
-#[cfg(all(feature = "backend-posix", feature = "backend-mock"))]
+#[cfg(any(
+    all(feature = "backend-posix", feature = "backend-mock"),
+    all(feature = "backend-posix", feature = "backend-freertos"),
+    all(feature = "backend-mock", feature = "backend-freertos"),
+))]
 compile_error!("Only one OSAL backend may be enabled at a time.");
 
 /// Re-export the public API types.

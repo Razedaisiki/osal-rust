@@ -39,9 +39,13 @@ pub fn initialize() -> Result<()> {
     {
         osal_backend_mock::runtime::initialize()
     }
-    #[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
+    #[cfg(feature = "backend-posix")]
     {
         osal_backend_posix::runtime::initialize()
+    }
+    #[cfg(feature = "backend-freertos")]
+    {
+        osal_backend_freertos::runtime::initialize()
     }
 }
 
@@ -58,9 +62,13 @@ pub fn shutdown() -> Result<()> {
     {
         osal_backend_mock::runtime::shutdown()
     }
-    #[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
+    #[cfg(feature = "backend-posix")]
     {
         osal_backend_posix::runtime::shutdown()
+    }
+    #[cfg(feature = "backend-freertos")]
+    {
+        osal_backend_freertos::runtime::shutdown()
     }
 }
 
@@ -70,8 +78,12 @@ pub fn runtime_state() -> RuntimeState {
     {
         osal_backend_mock::runtime::state()
     }
-    #[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
+    #[cfg(feature = "backend-posix")]
     {
         osal_backend_posix::runtime::state()
+    }
+    #[cfg(feature = "backend-freertos")]
+    {
+        osal_backend_freertos::runtime::state()
     }
 }
