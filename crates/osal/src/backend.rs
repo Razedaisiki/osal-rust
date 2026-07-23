@@ -50,6 +50,12 @@ pub use osal_backend_mock::clock::MockClock as Clock;
 #[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
 pub use osal_backend_posix::clock::PosixClock as Clock;
 
+#[cfg(all(
+    feature = "backend-freertos",
+    not(any(feature = "backend-posix", feature = "backend-mock"))
+))]
+pub use osal_backend_freertos::clock::FreeRtosClock as Clock;
+
 // ---------------------------------------------------------------------------
 // Timer
 // ---------------------------------------------------------------------------
@@ -69,6 +75,12 @@ pub use osal_backend_mock::system::MockSystem as System;
 
 #[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
 pub use osal_backend_posix::system::PosixSystem as System;
+
+#[cfg(all(
+    feature = "backend-freertos",
+    not(any(feature = "backend-posix", feature = "backend-mock"))
+))]
+pub use osal_backend_freertos::system::FreeRtosSystem as System;
 
 // ---------------------------------------------------------------------------
 // Task

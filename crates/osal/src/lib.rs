@@ -82,7 +82,7 @@ pub use runtime::{initialize, runtime_state, shutdown};
 pub mod prelude {
     #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
     pub use crate::backend::BinarySemaphore;
-    #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
+    #[cfg(any(feature = "backend-mock", feature = "backend-posix", feature = "backend-freertos"))]
     pub use crate::backend::Clock;
     #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
     pub use crate::backend::CountingSemaphore;
@@ -90,7 +90,7 @@ pub mod prelude {
     pub use crate::backend::Mutex;
     #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
     pub use crate::backend::Queue;
-    #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
+    #[cfg(any(feature = "backend-mock", feature = "backend-posix", feature = "backend-freertos"))]
     pub use crate::backend::System;
     #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
     pub use crate::backend::Task;
