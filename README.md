@@ -11,19 +11,21 @@ across different platforms by switching the backend.
 
 ## Project Status
 
-**Latest milestone: P7A — FreeRTOS Integration Boundary and Backend Skeleton.**
+**Latest milestone: P7B — FreeRTOS Tick/Time Model, Clock and System.**
 
 The POSIX backend fully implements the current non-deferred `osal-api`
 trait surface. The Mock backend implements the same surface with the
 exception of blocking Queue contracts (deferred until a deterministic
 scheduler is implemented).
 
-FreeRTOS integration skeleton: ADRs 0020–0022 define scheduler
-ownership, configuration contract, and FFI boundary. The
-`osal-backend-freertos` crate provides `initialize`/`shutdown`/
-`runtime_state` with a C shim capability probe. FreeRTOS primitive
-implementations (Queue, Mutex, Task, Timer, etc.) are deferred to
-P7B+.
+FreeRTOS integration: ADRs 0020–0024 define scheduler ownership,
+configuration contract, FFI boundary, tick/time model, and System
+mapping. The `osal-backend-freertos` crate provides `initialize`/
+`shutdown`/`runtime_state` with a C shim capability probe, plus
+Clock (`now`/`delay` via coherent tick snapshots) and System
+(`heap_free`/`enter_critical` with nesting). FreeRTOS primitive
+implementations (Queue, Mutex, Semaphore, Task, Timer) are deferred
+to P7C+.
 
 Advanced task controls (cancellation, suspend/resume, real priority
 scheduling, stack watermark), ISR extension traits, and production
@@ -71,12 +73,12 @@ Public APIs may change before version 1.0.
 | CountingSemaphore | Validated | Validated   | Validated   | Planned    | Validated   | Validated |
 | BinarySemaphore   | Validated | Validated   | Validated   | Planned    | Validated   | Validated |
 | Semaphore ISR     | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
-| Clock             | Validated | Validated   | Validated   | Planned    | Validated   | Validated |
+| Clock             | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
 | Timer             | Validated | Validated   | Validated   | Planned    | Validated   | Validated |
 | Timer ISR         | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
-| System            | Validated | Validated   | Validated   | Planned    | Validated   | Validated |
+| System            | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
 | Task Foundation   | Validated | Foundation  | Validated   | Planned    | Foundation  | Validated |
-| Runtime Lifecycle | Validated | Implemented | Validated   | Skeleton   | Implemented | Implemented |
+| Runtime Lifecycle | Validated | Implemented | Validated   | Implemented| Implemented | Implemented |
 | ISR Extensions    | Planned   | N/A         | N/A         | Planned    | Planned     | Planned   |
 | BSP               | Planned   | N/A         | N/A         | N/A        | N/A         | N/A       |
 
@@ -177,6 +179,11 @@ the full authority model, update triggers, and status terminology.
 - [ADR 0017: POSIX no_std Boundary](docs/adr/0017-posix-no-std-boundary.md)
 - [ADR 0018: POSIX Timer Service Lifecycle](docs/adr/0018-posix-timer-service-lifecycle.md)
 - [ADR 0019: Backend Runtime Ownership Without BSP](docs/adr/0019-backend-runtime-ownership.md)
+- [ADR 0020: FreeRTOS Integration Boundary](docs/adr/0020-freertos-integration-boundary.md)
+- [ADR 0021: FreeRTOS Configuration Contract](docs/adr/0021-freertos-configuration-contract.md)
+- [ADR 0022: FreeRTOS FFI Boundary](docs/adr/0022-freertos-ffi-boundary.md)
+- [ADR 0023: FreeRTOS Tick and Time Model](docs/adr/0023-freertos-tick-time-model.md)
+- [ADR 0024: FreeRTOS System Mapping](docs/adr/0024-freertos-system-mapping.md)
 
 > The English behavior contract (`docs/behavior-contract.md`) is the
 > source of truth for backend conformance. Chinese translations are

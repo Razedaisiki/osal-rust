@@ -26,7 +26,6 @@ fn main() {
         println!(
             "cargo:warning=osal-backend-freertos-sys: using test fixture (no FreeRTOS kernel)"
         );
-        return;
     }
 
     #[cfg(not(feature = "test-fixture"))]

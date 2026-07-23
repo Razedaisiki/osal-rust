@@ -54,6 +54,7 @@ version = "0.1.0"
 dependencies = [
  "osal-api",
  "osal-backend-freertos-sys",
+ "osal-portable",
  "osal-shared",
  "osal-testkit",
  "spin",

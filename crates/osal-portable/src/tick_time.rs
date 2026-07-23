@@ -14,9 +14,8 @@
 //!   (reserving the all-ones value as `portMAX_DELAY`-style sentinel).
 //!
 //! All arithmetic is checked — overflow produces
-//! [`Error::Overflow`](osal_api::error::Error::Overflow); invalid
-//! parameters produce
-//! [`Error::InvalidParameter`](osal_api::error::Error::InvalidParameter).
+//! [`Error::Overflow`]; invalid parameters produce
+//! [`Error::InvalidParameter`].
 
 use core::time::Duration;
 
@@ -144,7 +143,7 @@ fn validate_config(config: &TickConfig) -> Result<()> {
 ///
 /// `total = (overflow_count << bits) | tick_count`
 fn expand_ticks(snapshot: TickSnapshot, tick_bits: u8) -> u128 {
-    (snapshot.overflow_count as u128) << tick_bits | (snapshot.tick_count as u128)
+    ((snapshot.overflow_count as u128) << tick_bits) | (snapshot.tick_count as u128)
 }
 
 /// Convert total ticks to [`Duration`], saturating at `Duration::MAX`.
