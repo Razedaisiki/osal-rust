@@ -6,6 +6,7 @@ members = [
     "crates/osal-portable",
     "crates/osal-backend-posix",
     "crates/osal-backend-mock",
+    "crates/osal-backend-freertos-sys",
     "crates/osal-bsp",
     "crates/osal-bsp-linux",
     "crates/osal-testkit",

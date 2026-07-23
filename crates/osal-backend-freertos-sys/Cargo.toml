@@ -1,0 +1,17 @@
+[package]
+name = "osal-backend-freertos-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Low-level C FFI bindings for the FreeRTOS kernel — OSAL backend"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+test-fixture = []
+
+[build-dependencies]
+cc = { version = "1", default-features = false }
