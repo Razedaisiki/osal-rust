@@ -68,27 +68,28 @@ OSAL uses **strong typed handles** for all Rust public APIs.
 
 | Backend | Internal storage | `Send` | `Sync` | Intended use |
 |---------|-----------------|--------|--------|-------------|
-| POSIX   | `Arc<Inner>`    | Yes    | Yes    | Multi-threaded, real pthreads |
+| POSIX   | `Arc<Inner>`    | Conditional | Conditional | Multi-threaded, real pthreads |
 | Mock    | `Rc<RefCell<Inner>>` or `Rc<Inner>` | No | No | Single-threaded, deterministic tests |
 | FreeRTOS (future) | TBD | TBD | TBD | Multi-task, RTOS primitives |
 
 This is an intentional design decision:
 
-- POSIX handles use `Arc` and are fully `Send + Sync + 'static`.
-  They can be shared across threads, sent to spawned tasks, and
-  stored in global state — matching the expectations of a
-  multi-threaded host platform.
-- Mock handles use `Rc` and are intentionally NOT `Send + Sync`.
-  The Mock backend is a single-threaded deterministic test harness.
-  Cross-thread mock tests would deadlock on `RefCell` panics; this
-  is a feature, not a bug — it catches incorrect concurrency
-  assumptions in test code at compile time.
+- POSIX handles use `Arc` and are `Send + Sync + 'static` **where
+  the inner type permits**. Non-generic handles (Queue, Timer,
+  Task, Semaphore) are unconditionally `Send + Sync`. Generic
+  handles (`PosixMutexImpl<T>`) require `T: Send` for `Send`
+  and `T: Send + Sync` for `Sync` — matching Rust's standard
+  `Arc<T>` rules. Mutex guards are intentionally `!Send` (must
+  not be moved to another thread while a lock is held).
+- Mock handles use `Rc` and are intentionally `!Send + !Sync`.
+  Attempting to use a Mock handle across threads is a **compile
+  error**, not a runtime panic or deadlock. This catches incorrect
+  concurrency assumptions in test code at the type level.
 - The `osal-api` trait layer does NOT require `Send + Sync` as
   supertrait bounds. This keeps Mock implementable. Generic
   application code that needs thread-safety should either target
   the POSIX backend specifically, or accept the `Send + Sync`
   bounds implied by the concrete types resolved through the facade.
-- FreeRTOS will need its own decision. If FreeRTOS tasks share an
-  address space but use RTOS primitives (mutex, queue) for
-  synchronisation, `Send` without `Sync` may be appropriate.
-  This is deferred to the FreeRTOS backend slice.
+- FreeRTOS handle `Send`/`Sync` properties will be audited
+  per-type when the FreeRTOS backend is implemented. No global
+  backend-level assumption is made in advance.
