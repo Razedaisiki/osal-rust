@@ -13,19 +13,6 @@
 #![no_std]
 
 // ---------------------------------------------------------------------------
-// Platform gate: fixture OR native FreeRTOS build are the two valid paths.
-// When neither is active the crate cannot compile — the user must either
-// enable test-fixture (host CI) or provide the env vars for a native build.
-// ---------------------------------------------------------------------------
-
-#[cfg(not(feature = "test-fixture"))]
-compile_error!(
-    "osal-backend-freertos-sys: enable 'test-fixture' for host builds, \
-     or set ROUSSATL_FREERTOS_*_INCLUDE env vars for a native FreeRTOS build. \
-     See ADR 0022 §6."
-);
-
-// ---------------------------------------------------------------------------
 // Opaque handle types (ADR 0022 §2)
 // ---------------------------------------------------------------------------
 

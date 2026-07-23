@@ -56,8 +56,15 @@ jobs:
       - name: FreeRTOS fixture compiles
         run: cargo check -p osal --no-default-features --features freertos-test-fixture
 
-      - name: FreeRTOS backend skeleton compiles
+      - name: FreeRTOS backend skeleton compiles (fixture)
         run: cargo check -p osal-backend-freertos --features test-fixture
+
+      - name: FreeRTOS native C shim smoke build
+        env:
+          ROUSSATL_FREERTOS_KERNEL_INCLUDE: tests/freertos-native-fixture/kernel/include
+          ROUSSATL_FREERTOS_CONFIG_INCLUDE: tests/freertos-native-fixture/config
+          ROUSSATL_FREERTOS_PORT_INCLUDE: tests/freertos-native-fixture/port
+        run: cargo check -p osal-backend-freertos-sys
 
       - name: No backend must fail
         run: |
@@ -75,21 +82,21 @@ jobs:
 
       - name: POSIX + FreeRTOS must fail
         run: |
-          if cargo check -p osal --no-default-features --features backend-posix,backend-freertos 2>/dev/null; then
+          if cargo check -p osal --no-default-features --features backend-posix,freertos-test-fixture 2>/dev/null; then
             echo "Expected posix+freertos build to fail"
             exit 1
           fi
 
       - name: Mock + FreeRTOS must fail
         run: |
-          if cargo check -p osal --no-default-features --features backend-mock,backend-freertos 2>/dev/null; then
+          if cargo check -p osal --no-default-features --features backend-mock,freertos-test-fixture 2>/dev/null; then
             echo "Expected mock+freertos build to fail"
             exit 1
           fi
 
       - name: All three backends must fail
         run: |
-          if cargo check -p osal --no-default-features --features backend-posix,backend-mock,backend-freertos 2>/dev/null; then
+          if cargo check -p osal --no-default-features --features backend-posix,backend-mock,freertos-test-fixture 2>/dev/null; then
             echo "Expected three-backend build to fail"
             exit 1
           fi

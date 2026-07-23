@@ -32,8 +32,9 @@ typedef struct {
 // ---------------------------------------------------------------------------
 
 #define OSAL_FREERTOS_SCHEDULER_NOT_STARTED 0
-#define OSAL_FREERTOS_SCHEDULER_RUNNING    1
-#define OSAL_FREERTOS_SCHEDULER_SUSPENDED  2
+#define OSAL_FREERTOS_SCHEDULER_RUNNING     1
+#define OSAL_FREERTOS_SCHEDULER_SUSPENDED   2
+#define OSAL_FREERTOS_SCHEDULER_UNKNOWN     0xFFFFFFFFu
 
 // ---------------------------------------------------------------------------
 // Capability probe

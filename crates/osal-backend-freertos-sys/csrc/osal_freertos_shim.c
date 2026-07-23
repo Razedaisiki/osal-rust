@@ -77,5 +77,18 @@ osal_freertos_capability_t osal_freertos_probe_capabilities(void) {
 // ---------------------------------------------------------------------------
 
 uint32_t osal_freertos_scheduler_state(void) {
-    return (uint32_t) xTaskGetSchedulerState();
+    BaseType_t state = xTaskGetSchedulerState();
+
+    // Translate FreeRTOS internal values to stable OSAL ABI values.
+    // Rust must not depend on FreeRTOS macro numeric values (ADR 0022).
+    if (state == taskSCHEDULER_NOT_STARTED) {
+        return OSAL_FREERTOS_SCHEDULER_NOT_STARTED;
+    }
+    if (state == taskSCHEDULER_RUNNING) {
+        return OSAL_FREERTOS_SCHEDULER_RUNNING;
+    }
+    if (state == taskSCHEDULER_SUSPENDED) {
+        return OSAL_FREERTOS_SCHEDULER_SUSPENDED;
+    }
+    return OSAL_FREERTOS_SCHEDULER_UNKNOWN;
 }
