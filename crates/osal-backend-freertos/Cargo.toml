@@ -1,0 +1,20 @@
+[package]
+name = "osal-backend-freertos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "FreeRTOS backend for the OSAL framework"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+testkit = ["dep:osal-testkit", "osal-backend-freertos-sys/test-fixture"]
+
+[dependencies]
+osal-api = { path = "../osal-api" }
+osal-shared = { path = "../osal-shared" }
+osal-backend-freertos-sys = { path = "../osal-backend-freertos-sys" }
+osal-testkit = { path = "../osal-testkit", optional = true }
