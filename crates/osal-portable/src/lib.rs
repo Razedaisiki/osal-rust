@@ -18,5 +18,6 @@ extern crate alloc;
 
 pub mod byte_queue;
 pub mod counting_semaphore;
+pub mod tick_time;
 pub mod time_convert;
 pub mod timer_state;
