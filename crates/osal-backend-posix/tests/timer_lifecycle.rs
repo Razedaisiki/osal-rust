@@ -308,3 +308,65 @@ fn busy_shutdown_leaves_service_running() {
     drop(t);
     drop(t2);
 }
+
+// ---------------------------------------------------------------------------
+// Timer starvation regression (Item 1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn earliest_deadline_dispatched_not_lowest_index() {
+    let _rt = TestRuntime::init();
+
+    // Timer A: short period, slow callback — would starve Timer B
+    // under a "first expired" selection strategy.
+    let b_fired = Arc::new(AtomicBool::new(false));
+    let bf = Arc::clone(&b_fired);
+
+    // Create B first so it has a lower index in the Vec.
+    let tb = PosixTimer::new(
+        "b",
+        Duration::from_millis(20),
+        TimerMode::OneShot,
+        Box::new(move || {
+            bf.store(true, Ordering::SeqCst);
+        }),
+    )
+    .unwrap();
+    tb.start().unwrap();
+
+    // Create A second — it will be at a higher index.
+    let a_ticks = Arc::new(AtomicU32::new(0));
+    let at = Arc::clone(&a_ticks);
+    let ta = PosixTimer::new(
+        "a",
+        Duration::from_millis(1),
+        TimerMode::Periodic,
+        Box::new(move || {
+            at.fetch_add(1, Ordering::SeqCst);
+            // Slow callback: holds the worker long enough for B to expire.
+            thread::sleep(Duration::from_millis(30));
+        }),
+    )
+    .unwrap();
+    ta.start().unwrap();
+
+    // Wait long enough for B's deadline (20 ms) to pass while A is
+    // repeatedly firing.  A fires at t≈1 ms and blocks for 30 ms;
+    // B expires at t≈20 ms.  With earliest-deadline dispatch, B
+    // should fire.  With first-expired, B might starve.
+    thread::sleep(Duration::from_millis(100));
+
+    // Even if A ran a few times, B must have fired at least once.
+    assert!(
+        b_fired.load(Ordering::SeqCst),
+        "Timer B (one-shot, 20 ms) must not be starved by Timer A (periodic, 1 ms)"
+    );
+    // A should also have run (at least once).
+    assert!(
+        a_ticks.load(Ordering::SeqCst) > 0,
+        "Timer A should have fired at least once"
+    );
+
+    drop(ta);
+    drop(tb);
+}

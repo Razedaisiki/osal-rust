@@ -125,26 +125,27 @@ impl TimerService {
     }
 
     /// Dispatch ONE expired callback.  Callback executes outside all locks.
+    ///
+    /// Selects the timer with the **earliest** deadline among all expired
+    /// timers to prevent a short-period timer at a low index from
+    /// starving a later timer that is also expired.
     fn dispatch_one(&self) {
         let (id, mut callback) = {
             let _guard = self.mutex.lock_guard().unwrap();
             let state = unsafe { &mut *self.state.get() };
             let now = time::monotonic_now();
 
-            let mut best_idx: Option<usize> = None;
-            for (i, e) in state.timers.iter().enumerate() {
-                if e.deleted || e.callback.is_none() {
-                    continue;
-                }
-                if let Some(d) = e.state.deadline() {
-                    if d <= now {
-                        best_idx = Some(i);
-                        break;
-                    }
-                }
-            }
+            // Find the expired timer with the earliest deadline.
+            let best = state
+                .timers
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| !e.deleted && e.callback.is_some())
+                .filter_map(|(i, e)| e.state.deadline().map(|d| (i, d, e.id)))
+                .filter(|(_, d, _)| *d <= now)
+                .min_by_key(|(_, d, id)| (*d, *id));
 
-            let Some(idx) = best_idx else { return };
+            let Some((idx, _, _)) = best else { return };
             let entry = &mut state.timers[idx];
             if !entry.state.advance_on_expiry(now) {
                 return;
