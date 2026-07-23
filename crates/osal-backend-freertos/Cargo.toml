@@ -16,6 +16,7 @@ testkit = ["dep:osal-testkit", "test-fixture"]
 
 [dependencies]
 osal-api = { path = "../osal-api" }
+osal-portable = { path = "../osal-portable" }
 osal-shared = { path = "../osal-shared" }
 osal-backend-freertos-sys = { path = "../osal-backend-freertos-sys" }
 osal-testkit = { path = "../osal-testkit", optional = true }
