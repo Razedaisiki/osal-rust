@@ -2,16 +2,6 @@
 //!
 //! Wraps [`ByteQueue`] with `pthread_mutex_t` + `pthread_cond_t` for
 //! thread-safe access, implementing the [`Queue`] trait.
-//!
-//! # Wake-after-commit policy
-//!
-//! Once the queue state has been modified (message enqueued, dequeued,
-//! or queue closed), the subsequent condvar signal/broadcast is a
-//! best-effort notification. A pthread wake failure at that point
-//! cannot roll back the committed state change. The API currently
-//! propagates the error for visibility; callers should treat the
-//! operation as having succeeded regardless of the returned Result
-//! when the state change was already committed.
 
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
@@ -122,7 +112,7 @@ impl Queue for PosixQueue {
             Timeout::NoWait => {
                 let result = self.buffer_locked(&guard).try_send(data);
                 if result.is_ok() {
-                    self.inner.not_empty.signal()?;
+                    self.inner.not_empty.wake_one_after_commit();
                 }
                 result
             }
@@ -134,7 +124,7 @@ impl Queue for PosixQueue {
                     }
                     match self.buffer_locked(&guard).try_send(data) {
                         Ok(()) => {
-                            self.inner.not_empty.signal()?;
+                            self.inner.not_empty.wake_one_after_commit();
                             return Ok(());
                         }
                         Err(Error::QueueFull) => {
@@ -154,7 +144,7 @@ impl Queue for PosixQueue {
                 }
                 match self.buffer_locked(&guard).try_send(data) {
                     Ok(()) => {
-                        self.inner.not_empty.signal()?;
+                        self.inner.not_empty.wake_one_after_commit();
                         return Ok(());
                     }
                     Err(Error::QueueFull) => {
@@ -175,7 +165,7 @@ impl Queue for PosixQueue {
             Timeout::NoWait => {
                 let result = self.buffer_locked(&guard).try_recv(buffer).map(|_| ());
                 if result.is_ok() {
-                    self.inner.not_full.signal()?;
+                    self.inner.not_full.wake_one_after_commit();
                 }
                 result
             }
@@ -190,7 +180,7 @@ impl Queue for PosixQueue {
                     }
                     match self.buffer_locked(&guard).try_recv(buffer) {
                         Ok(_) => {
-                            self.inner.not_full.signal()?;
+                            self.inner.not_full.wake_one_after_commit();
                             return Ok(());
                         }
                         Err(Error::QueueEmpty) => {
@@ -216,7 +206,7 @@ impl Queue for PosixQueue {
                 }
                 match self.buffer_locked(&guard).try_recv(buffer) {
                     Ok(_) => {
-                        self.inner.not_full.signal()?;
+                        self.inner.not_full.wake_one_after_commit();
                         return Ok(());
                     }
                     Err(Error::QueueEmpty) => {
@@ -243,14 +233,10 @@ impl Queue for PosixQueue {
 
         // Wake all blocked senders and receivers.  Once `close()` is
         // committed, wake failures are non-recoverable — they cannot
-        // roll back the close.  We attempt both broadcasts regardless
-        // of whether the first succeeds, and return the last error (if
-        // any) for diagnostics.
-        let e1 = self.inner.not_empty.broadcast().err();
-        let e2 = self.inner.not_full.broadcast().err();
-        if let Some(e) = e2.or(e1) {
-            return Err(e);
-        }
+        // roll back the close.  Both broadcasts are attempted; either
+        // failing is a fatal backend invariant violation.
+        self.inner.not_empty.wake_all_after_commit();
+        self.inner.not_full.wake_all_after_commit();
 
         Ok(())
     }

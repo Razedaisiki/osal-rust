@@ -105,6 +105,30 @@ impl PosixCondvar {
     pub fn broadcast(&self) -> Result<()> {
         errno::check_ret(unsafe { libc::pthread_cond_broadcast(self.raw_ptr()) })
     }
+
+    /// Wake one waiter after a state commit.
+    ///
+    /// After the caller has already modified shared state (message
+    /// enqueued, semaphore count changed), a condvar wake failure is
+    /// an unrecoverable backend invariant violation — it cannot be
+    /// rolled back.  This method panics on failure rather than
+    /// returning a `Result` that callers might misinterpret as
+    /// "the operation did not happen".
+    pub fn wake_one_after_commit(&self) {
+        if let Err(e) = self.signal() {
+            panic!("POSIX condvar signal failed after state commit: {e:?}");
+        }
+    }
+
+    /// Wake all waiters after a state commit.
+    ///
+    /// Same invariant as [`wake_one_after_commit`]: the state change
+    /// is already committed, so a wake failure is fatal.
+    pub fn wake_all_after_commit(&self) {
+        if let Err(e) = self.broadcast() {
+            panic!("POSIX condvar broadcast failed after state commit: {e:?}");
+        }
+    }
 }
 
 impl Drop for PosixCondvar {
