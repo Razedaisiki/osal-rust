@@ -3,6 +3,13 @@
 //! Uses `pthread_mutex_t` + `pthread_cond_t` + [`CountingSemaphoreState`]
 //! for blocking acquire with monotonic-clock timeouts.
 //! BinarySemaphore delegates to CountingSemaphore(max=1, initial=0).
+//!
+//! # Wake-after-commit policy
+//!
+//! Once the semaphore count has been modified (acquired or released),
+//! the subsequent condvar signal is a best-effort notification. A
+//! pthread wake failure at that point cannot roll back the committed
+//! count change. Same policy as Queue (see queue.rs module doc).
 
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;

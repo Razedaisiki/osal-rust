@@ -2,6 +2,16 @@
 //!
 //! Wraps [`ByteQueue`] with `pthread_mutex_t` + `pthread_cond_t` for
 //! thread-safe access, implementing the [`Queue`] trait.
+//!
+//! # Wake-after-commit policy
+//!
+//! Once the queue state has been modified (message enqueued, dequeued,
+//! or queue closed), the subsequent condvar signal/broadcast is a
+//! best-effort notification. A pthread wake failure at that point
+//! cannot roll back the committed state change. The API currently
+//! propagates the error for visibility; callers should treat the
+//! operation as having succeeded regardless of the returned Result
+//! when the state change was already committed.
 
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
