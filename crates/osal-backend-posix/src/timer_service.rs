@@ -118,8 +118,8 @@ impl TimerService {
                     // exceeding time_t range.  Cap to a safe slice;
                     // the worker will re-scan after the partial wait.
                     let slice = timeout.min(Duration::from_secs(3600));
-                    let abs = time::checked_abs_deadline(slice)
-                        .expect("1-hour slice must fit in time_t");
+                    let abs =
+                        time::checked_abs_deadline(slice).expect("1-hour slice must fit in time_t");
                     match self.condvar.timed_wait(&mut guard, &abs) {
                         Ok(()) | Err(Error::Timeout) => {}
                         Err(e) => panic!("timer worker timed wait failed: {e:?}"),

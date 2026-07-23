@@ -149,12 +149,8 @@ mod tests {
     #[test]
     fn periodic_not_passed_yet() {
         // Deadline is already ahead of now — no advance needed.
-        let n = next_periodic_deadline(
-            Duration::MAX,
-            Duration::from_secs(1),
-            Duration::ZERO,
-        )
-        .unwrap();
+        let n =
+            next_periodic_deadline(Duration::MAX, Duration::from_secs(1), Duration::ZERO).unwrap();
         assert_eq!(n, Duration::MAX);
     }
 
@@ -162,8 +158,7 @@ mod tests {
     fn periodic_large_but_valid_duration() {
         // Period of > u64::MAX nanos but within valid Duration range.
         let period = Duration::new(u64::MAX / 2 + 1, 0);
-        let result =
-            next_periodic_deadline(Duration::ZERO, period, Duration::ZERO).unwrap();
+        let result = next_periodic_deadline(Duration::ZERO, period, Duration::ZERO).unwrap();
         assert_eq!(result, period);
     }
 
@@ -181,8 +176,12 @@ mod tests {
     #[test]
     fn periodic_zero_period_defensive() {
         assert_eq!(
-            next_periodic_deadline(Duration::from_secs(1), Duration::ZERO, Duration::from_secs(2))
-                .unwrap_err(),
+            next_periodic_deadline(
+                Duration::from_secs(1),
+                Duration::ZERO,
+                Duration::from_secs(2)
+            )
+            .unwrap_err(),
             Error::InvalidParameter
         );
     }

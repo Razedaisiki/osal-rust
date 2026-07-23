@@ -119,16 +119,6 @@ impl PosixCondvar {
             panic!("POSIX condvar signal failed after state commit: {e:?}");
         }
     }
-
-    /// Wake all waiters after a state commit.
-    ///
-    /// Same invariant as [`wake_one_after_commit`]: the state change
-    /// is already committed, so a wake failure is fatal.
-    pub fn wake_all_after_commit(&self) {
-        if let Err(e) = self.broadcast() {
-            panic!("POSIX condvar broadcast failed after state commit: {e:?}");
-        }
-    }
 }
 
 impl Drop for PosixCondvar {

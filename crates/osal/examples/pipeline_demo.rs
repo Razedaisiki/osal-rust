@@ -21,7 +21,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use core::time::Duration;
 
 use osal::prelude::*;
@@ -58,9 +58,7 @@ const CONSUMER_GO_BIT: u8 = 1 << 2;
 // ---------------------------------------------------------------------------
 
 fn tick_ms(start: Duration) -> u32 {
-    Clock::now()
-        .saturating_sub(start)
-        .as_millis() as u32
+    Clock::now().saturating_sub(start).as_millis() as u32
 }
 
 fn delay_until(wake: &mut Duration, period: Duration) {
@@ -145,10 +143,10 @@ fn producer_task(id: u32, state: Arc<AppState>, start: Duration) {
         }
 
         let packet = build_packet(id, seq);
-        match state
-            .queue
-            .send(&packet, Timeout::After(Duration::from_millis(QUEUE_POST_TIMEOUT_MS)))
-        {
+        match state.queue.send(
+            &packet,
+            Timeout::After(Duration::from_millis(QUEUE_POST_TIMEOUT_MS)),
+        ) {
             Ok(()) => {
                 let mut guard = state.stats.lock(Timeout::Forever).unwrap();
                 guard.produced += 1;
@@ -173,10 +171,10 @@ fn producer_task(id: u32, state: Arc<AppState>, start: Duration) {
         }
 
         let packet = build_packet(id, seq);
-        match state
-            .queue
-            .send(&packet, Timeout::After(Duration::from_millis(QUEUE_POST_TIMEOUT_MS)))
-        {
+        match state.queue.send(
+            &packet,
+            Timeout::After(Duration::from_millis(QUEUE_POST_TIMEOUT_MS)),
+        ) {
             Ok(()) => {
                 let mut guard = state.stats.lock(Timeout::Forever).unwrap();
                 guard.produced += 1;
@@ -218,10 +216,10 @@ fn consumer_task(_id: u32, state: Arc<AppState>) {
             break;
         }
 
-        match state
-            .queue
-            .recv(&mut packet, Timeout::After(Duration::from_millis(QUEUE_FETCH_TIMEOUT_MS)))
-        {
+        match state.queue.recv(
+            &mut packet,
+            Timeout::After(Duration::from_millis(QUEUE_FETCH_TIMEOUT_MS)),
+        ) {
             Ok(_) => {
                 let valid = verify_packet(&packet);
 
@@ -286,8 +284,12 @@ fn monitor_task(state: Arc<AppState>, timer_fired: Arc<AtomicU32>, start: Durati
         let guard = state.stats.lock(Timeout::Forever).unwrap();
         println!(
             "[monitor] tick={:5} produced={} consumed={} dropped={} timeout={} checksum_error={}",
-            tick, guard.produced, guard.consumed, guard.dropped,
-            guard.queue_timeout, guard.checksum_error,
+            tick,
+            guard.produced,
+            guard.consumed,
+            guard.dropped,
+            guard.queue_timeout,
+            guard.checksum_error,
         );
         drop(guard);
     }
@@ -334,8 +336,11 @@ fn supervisor_main(state: Arc<AppState>, timer: Timer) {
         let guard = state.stats.lock(Timeout::Forever).unwrap();
         println!(
             "[summary] produced={} consumed={} dropped={} timeout={} checksum_error={}",
-            guard.produced, guard.consumed, guard.dropped,
-            guard.queue_timeout, guard.checksum_error,
+            guard.produced,
+            guard.consumed,
+            guard.dropped,
+            guard.queue_timeout,
+            guard.checksum_error,
         );
         println!("[summary] demo finished");
     }

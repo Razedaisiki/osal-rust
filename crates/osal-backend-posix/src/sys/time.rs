@@ -54,7 +54,10 @@ pub fn duration_to_timespec(d: Duration) -> Result<libc::timespec> {
 pub fn monotonic_now_raw() -> libc::timespec {
     let mut ts: libc::timespec = unsafe { core::mem::zeroed() };
     let ret = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-    assert_eq!(ret, 0, "clock_gettime(CLOCK_MONOTONIC) failed unrecoverably");
+    assert_eq!(
+        ret, 0,
+        "clock_gettime(CLOCK_MONOTONIC) failed unrecoverably"
+    );
     ts
 }
 
@@ -138,18 +141,11 @@ pub fn checked_abs_deadline(timeout: Duration) -> Result<libc::timespec> {
     let to = duration_to_timespec(timeout)?;
 
     let mut ts = now;
-    ts.tv_sec = ts
-        .tv_sec
-        .checked_add(to.tv_sec)
-        .ok_or(Error::Overflow)?;
+    ts.tv_sec = ts.tv_sec.checked_add(to.tv_sec).ok_or(Error::Overflow)?;
     ts.tv_nsec += to.tv_nsec;
     if ts.tv_nsec >= 1_000_000_000 {
-        ts.tv_sec = ts
-            .tv_sec
-            .checked_add(1)
-            .ok_or(Error::Overflow)?;
+        ts.tv_sec = ts.tv_sec.checked_add(1).ok_or(Error::Overflow)?;
         ts.tv_nsec -= 1_000_000_000;
     }
     Ok(ts)
 }
-
