@@ -12,6 +12,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 // ---------------------------------------------------------------------------
 // Opaque handle types (ADR 0022 §2)
 // ---------------------------------------------------------------------------
@@ -575,50 +577,16 @@ pub fn semaphore_delete(handle: SemaphoreHandle) {
 }
 
 // ---------------------------------------------------------------------------
-// Fixture sync stubs (test-fixture only — real impl in Commit 5)
+// Fixture sync module (test-fixture only)
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "test-fixture")]
+#[path = "sync_fixture.rs"]
+mod fixture_sync;
+
+#[cfg(not(feature = "test-fixture"))]
 mod fixture_sync {
-    use super::*;
-
-    // Placeholder stubs — commit 5 replaces these with real std::sync
-    // Condvar + Mutex-based fixture implementations.
-
-    static NEXT_HANDLE: core::sync::atomic::AtomicU64 =
-        core::sync::atomic::AtomicU64::new(1);
-
-    fn make_dummy_ptr() -> core::ptr::NonNull<core::ffi::c_void> {
-        let v = NEXT_HANDLE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        // Safety: the value is never dereferenced in fixture mode.
-        unsafe { core::ptr::NonNull::new_unchecked(v as *mut core::ffi::c_void) }
-    }
-
-    pub fn mutex_create() -> Option<MutexHandle> {
-        Some(MutexHandle { raw: make_dummy_ptr() })
-    }
-    pub fn mutex_take(_: &MutexHandle, _ticks: u64) -> TakeStatus {
-        TakeStatus::Acquired
-    }
-    pub fn mutex_give(_: &MutexHandle) -> GiveStatus {
-        GiveStatus::Ok
-    }
-    pub fn mutex_delete(_: MutexHandle) {}
-
-    pub fn counting_semaphore_create(_max: u32, _initial: u32) -> Option<SemaphoreHandle> {
-        Some(SemaphoreHandle { raw: make_dummy_ptr() })
-    }
-    pub fn binary_semaphore_create() -> Option<SemaphoreHandle> {
-        Some(SemaphoreHandle { raw: make_dummy_ptr() })
-    }
-    pub fn semaphore_take(_: &SemaphoreHandle, _ticks: u64) -> TakeStatus {
-        TakeStatus::Acquired
-    }
-    pub fn semaphore_give(_: &SemaphoreHandle) -> GiveStatus {
-        GiveStatus::Ok
-    }
-    pub fn semaphore_count(_: &SemaphoreHandle) -> u64 { 1 }
-    pub fn semaphore_delete(_: SemaphoreHandle) {}
+    // Stub — never compiled; all callers are cfg-gated.
 }
 
 // ---------------------------------------------------------------------------
@@ -685,6 +653,7 @@ pub mod fixture {
         super::CRITICAL_DEPTH_FIXTURE.store(0, Ordering::Relaxed);
         super::TICK_BITS_FIXTURE.store(32, Ordering::Relaxed);
         super::MAX_FINITE_DELAY_FIXTURE.store((1u64 << 32) - 2, Ordering::Relaxed);
+        super::fixture_sync::sync_reset();
     }
 
     /// Set the tick snapshot that `tick_snapshot()` will return.
@@ -755,5 +724,61 @@ pub mod fixture {
     /// Return the current overflow count value (for test assertions).
     pub fn tick_overflow_count() -> u64 {
         super::TICK_OVERFLOW_FIXTURE.load(Ordering::Relaxed)
+    }
+
+    // ------------------------------------------------------------------
+    // Sync fixture controls
+    // ------------------------------------------------------------------
+
+    /// Make the next `mutex_create()` return `None` (simulates OOM).
+    pub fn set_fail_next_mutex_create(fail: bool) {
+        super::fixture_sync::sync_set_fail_next_mutex_create(fail);
+    }
+
+    /// Make the next semaphore create return `None`.
+    pub fn set_fail_next_semaphore_create(fail: bool) {
+        super::fixture_sync::sync_set_fail_next_semaphore_create(fail);
+    }
+
+    /// Set the max finite wait ticks for mutex/semaphore take.
+    ///
+    /// Must be ≥ 2.
+    pub fn set_max_finite_wait_ticks(ticks: u64) {
+        super::fixture_sync::sync_set_max_finite_wait_ticks(ticks);
+    }
+
+    /// Number of mutex creates since last reset.
+    pub fn mutex_create_count() -> usize {
+        super::fixture_sync::sync_mutex_create_count()
+    }
+
+    /// Number of mutex deletes since last reset.
+    pub fn mutex_delete_count() -> usize {
+        super::fixture_sync::sync_mutex_delete_count()
+    }
+
+    /// Number of semaphore creates since last reset.
+    pub fn sem_create_count() -> usize {
+        super::fixture_sync::sync_sem_create_count()
+    }
+
+    /// Number of semaphore deletes since last reset.
+    pub fn sem_delete_count() -> usize {
+        super::fixture_sync::sync_sem_delete_count()
+    }
+
+    /// Ticks passed to take calls since last reset.
+    pub fn take_call_ticks() -> alloc::vec::Vec<u64> {
+        super::fixture_sync::sync_take_call_ticks()
+    }
+
+    /// Clear the recorded take call ticks.
+    pub fn clear_take_call_ticks() {
+        super::fixture_sync::sync_clear_take_call_ticks();
+    }
+
+    /// Number of give calls since last reset.
+    pub fn give_call_count() -> usize {
+        super::fixture_sync::sync_give_call_count()
     }
 }
