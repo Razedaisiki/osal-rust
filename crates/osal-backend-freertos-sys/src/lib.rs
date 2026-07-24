@@ -22,14 +22,89 @@ pub type TaskHandle = *mut core::ffi::c_void;
 /// Opaque FreeRTOS queue handle.
 pub type QueueHandle = *mut core::ffi::c_void;
 
-/// Opaque FreeRTOS semaphore handle.
-pub type SemaphoreHandle = *mut core::ffi::c_void;
-
 /// Opaque FreeRTOS timer handle.
 pub type TimerHandle = *mut core::ffi::c_void;
 
 /// Opaque FreeRTOS event group handle.
 pub type EventGroupHandle = *mut core::ffi::c_void;
+
+// ---------------------------------------------------------------------------
+// Synchronisation handle types (ADR 0026 §1)
+// ---------------------------------------------------------------------------
+
+/// Opaque FreeRTOS mutex handle.
+///
+/// Wraps a `SemaphoreHandle_t` created by `xSemaphoreCreateMutex()`.
+/// Not `Copy` — the backend inner owns the handle; `Clone` on the
+/// public type only increments the `Arc` reference count.
+pub struct MutexHandle {
+    pub(crate) raw: core::ptr::NonNull<core::ffi::c_void>,
+}
+
+/// Opaque FreeRTOS semaphore handle.
+///
+/// Wraps a `SemaphoreHandle_t` created by `xSemaphoreCreateCounting()`
+/// or `xSemaphoreCreateBinary()`.  Not `Copy`.
+pub struct SemaphoreHandle {
+    pub(crate) raw: core::ptr::NonNull<core::ffi::c_void>,
+}
+
+// Safety: FreeRTOS handles may be sent and shared across tasks.
+unsafe impl Send for MutexHandle {}
+unsafe impl Sync for MutexHandle {}
+unsafe impl Send for SemaphoreHandle {}
+unsafe impl Sync for SemaphoreHandle {}
+
+// ---------------------------------------------------------------------------
+// Take / Give status enums
+// ---------------------------------------------------------------------------
+
+/// Outcome of a native take (mutex or semaphore acquire).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TakeStatus {
+    Acquired,
+    Timeout,
+    Invalid,
+}
+
+impl TakeStatus {
+    #[cfg(not(feature = "test-fixture"))]
+    fn from_raw(raw: u32) -> Self {
+        match raw {
+            TAKE_ACQUIRED => TakeStatus::Acquired,
+            TAKE_TIMEOUT => TakeStatus::Timeout,
+            _ => TakeStatus::Invalid,
+        }
+    }
+}
+
+/// Outcome of a native give (mutex unlock or semaphore release).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GiveStatus {
+    Ok,
+    Full,
+    Invalid,
+}
+
+impl GiveStatus {
+    #[cfg(not(feature = "test-fixture"))]
+    fn from_raw(raw: u32) -> Self {
+        match raw {
+            GIVE_OK => GiveStatus::Ok,
+            GIVE_FULL => GiveStatus::Full,
+            _ => GiveStatus::Invalid,
+        }
+    }
+}
+
+// Take / Give raw constants (matching C #defines).
+pub const TAKE_ACQUIRED: u32 = 0;
+pub const TAKE_TIMEOUT: u32 = 1;
+pub const TAKE_INVALID: u32 = 2;
+
+pub const GIVE_OK: u32 = 0;
+pub const GIVE_FULL: u32 = 1;
+pub const GIVE_INVALID: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // Capability struct (ADR 0021 §2)
@@ -113,6 +188,17 @@ unsafe extern "C" {
     fn osal_freertos_enter_critical();
     fn osal_freertos_exit_critical();
     fn osal_freertos_max_semaphore_count() -> u64;
+    fn osal_freertos_mutex_create() -> *mut core::ffi::c_void;
+    fn osal_freertos_mutex_take(handle: *mut core::ffi::c_void, ticks: u64) -> u32;
+    fn osal_freertos_mutex_give(handle: *mut core::ffi::c_void) -> u32;
+    fn osal_freertos_mutex_delete(handle: *mut core::ffi::c_void);
+    fn osal_freertos_counting_semaphore_create(max: u32, initial: u32)
+        -> *mut core::ffi::c_void;
+    fn osal_freertos_binary_semaphore_create() -> *mut core::ffi::c_void;
+    fn osal_freertos_semaphore_take(handle: *mut core::ffi::c_void, ticks: u64) -> u32;
+    fn osal_freertos_semaphore_give(handle: *mut core::ffi::c_void) -> u32;
+    fn osal_freertos_semaphore_count(handle: *mut core::ffi::c_void) -> u64;
+    fn osal_freertos_semaphore_delete(handle: *mut core::ffi::c_void);
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +429,196 @@ pub fn max_semaphore_count() -> u64 {
     {
         unsafe { osal_freertos_max_semaphore_count() }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Mutex safe wrappers (ADR 0026)
+// ---------------------------------------------------------------------------
+
+/// Create a FreeRTOS native mutex.
+///
+/// Returns `None` on allocation failure (`NULL` from `xSemaphoreCreateMutex`).
+pub fn mutex_create() -> Option<MutexHandle> {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_sync::mutex_create()
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        let raw = unsafe { osal_freertos_mutex_create() };
+        core::ptr::NonNull::new(raw).map(|nn| MutexHandle { raw: nn })
+    }
+}
+
+/// Attempt to acquire the mutex.
+pub fn mutex_take(handle: &MutexHandle, ticks: u64) -> TakeStatus {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_sync::mutex_take(handle, ticks)
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        let raw = unsafe { osal_freertos_mutex_take(handle.raw.as_ptr(), ticks) };
+        TakeStatus::from_raw(raw)
+    }
+}
+
+/// Release the mutex.
+pub fn mutex_give(handle: &MutexHandle) -> GiveStatus {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_sync::mutex_give(handle)
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        let raw = unsafe { osal_freertos_mutex_give(handle.raw.as_ptr()) };
+        GiveStatus::from_raw(raw)
+    }
+}
+
+/// Delete the mutex. The caller must ensure no task holds it.
+pub fn mutex_delete(handle: MutexHandle) {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_sync::mutex_delete(handle);
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        unsafe { osal_freertos_mutex_delete(handle.raw.as_ptr()) };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Semaphore safe wrappers (ADR 0026)
+// ---------------------------------------------------------------------------
+
+/// Create a counting semaphore.
+pub fn counting_semaphore_create(max: u32, initial: u32) -> Option<SemaphoreHandle> {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_sync::counting_semaphore_create(max, initial)
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        let raw = unsafe {
+            osal_freertos_counting_semaphore_create(max, initial)
+        };
+        core::ptr::NonNull::new(raw).map(|nn| SemaphoreHandle { raw: nn })
+    }
+}
+
+/// Create a binary semaphore.
+pub fn binary_semaphore_create() -> Option<SemaphoreHandle> {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_sync::binary_semaphore_create()
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        let raw = unsafe { osal_freertos_binary_semaphore_create() };
+        core::ptr::NonNull::new(raw).map(|nn| SemaphoreHandle { raw: nn })
+    }
+}
+
+/// Attempt to acquire the semaphore.
+pub fn semaphore_take(handle: &SemaphoreHandle, ticks: u64) -> TakeStatus {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_sync::semaphore_take(handle, ticks)
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        let raw = unsafe {
+            osal_freertos_semaphore_take(handle.raw.as_ptr(), ticks)
+        };
+        TakeStatus::from_raw(raw)
+    }
+}
+
+/// Release the semaphore (wake one waiter).
+pub fn semaphore_give(handle: &SemaphoreHandle) -> GiveStatus {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_sync::semaphore_give(handle)
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        let raw = unsafe {
+            osal_freertos_semaphore_give(handle.raw.as_ptr())
+        };
+        GiveStatus::from_raw(raw)
+    }
+}
+
+/// Return the current semaphore count (snapshot).
+pub fn semaphore_count(handle: &SemaphoreHandle) -> u64 {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_sync::semaphore_count(handle)
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        unsafe { osal_freertos_semaphore_count(handle.raw.as_ptr()) }
+    }
+}
+
+/// Delete the semaphore.
+pub fn semaphore_delete(handle: SemaphoreHandle) {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_sync::semaphore_delete(handle);
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        unsafe { osal_freertos_semaphore_delete(handle.raw.as_ptr()) };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fixture sync stubs (test-fixture only — real impl in Commit 5)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "test-fixture")]
+mod fixture_sync {
+    use super::*;
+
+    // Placeholder stubs — commit 5 replaces these with real std::sync
+    // Condvar + Mutex-based fixture implementations.
+
+    static NEXT_HANDLE: core::sync::atomic::AtomicU64 =
+        core::sync::atomic::AtomicU64::new(1);
+
+    fn make_dummy_ptr() -> core::ptr::NonNull<core::ffi::c_void> {
+        let v = NEXT_HANDLE.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        // Safety: the value is never dereferenced in fixture mode.
+        unsafe { core::ptr::NonNull::new_unchecked(v as *mut core::ffi::c_void) }
+    }
+
+    pub fn mutex_create() -> Option<MutexHandle> {
+        Some(MutexHandle { raw: make_dummy_ptr() })
+    }
+    pub fn mutex_take(_: &MutexHandle, _ticks: u64) -> TakeStatus {
+        TakeStatus::Acquired
+    }
+    pub fn mutex_give(_: &MutexHandle) -> GiveStatus {
+        GiveStatus::Ok
+    }
+    pub fn mutex_delete(_: MutexHandle) {}
+
+    pub fn counting_semaphore_create(_max: u32, _initial: u32) -> Option<SemaphoreHandle> {
+        Some(SemaphoreHandle { raw: make_dummy_ptr() })
+    }
+    pub fn binary_semaphore_create() -> Option<SemaphoreHandle> {
+        Some(SemaphoreHandle { raw: make_dummy_ptr() })
+    }
+    pub fn semaphore_take(_: &SemaphoreHandle, _ticks: u64) -> TakeStatus {
+        TakeStatus::Acquired
+    }
+    pub fn semaphore_give(_: &SemaphoreHandle) -> GiveStatus {
+        GiveStatus::Ok
+    }
+    pub fn semaphore_count(_: &SemaphoreHandle) -> u64 { 1 }
+    pub fn semaphore_delete(_: SemaphoreHandle) {}
 }
 
 // ---------------------------------------------------------------------------

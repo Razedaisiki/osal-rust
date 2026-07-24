@@ -191,3 +191,98 @@ uint64_t osal_freertos_max_semaphore_count(void) {
     // UBaseType_t may be narrower than u64; return its maximum value.
     return (uint64_t)(UBaseType_t)(~((UBaseType_t)0));
 }
+
+// ---------------------------------------------------------------------------
+// Mutex (ADR 0026)
+// ---------------------------------------------------------------------------
+
+osal_freertos_mutex_handle_t osal_freertos_mutex_create(void) {
+    SemaphoreHandle_t h = xSemaphoreCreateMutex();
+    return (osal_freertos_mutex_handle_t)h;
+}
+
+uint32_t osal_freertos_mutex_take(osal_freertos_mutex_handle_t handle,
+                                  uint64_t ticks) {
+    if (handle == NULL) {
+        return OSAL_FREERTOS_TAKE_INVALID;
+    }
+    BaseType_t result = xSemaphoreTake((SemaphoreHandle_t)handle,
+                                       (TickType_t)ticks);
+    if (result == pdTRUE) {
+        return OSAL_FREERTOS_TAKE_ACQUIRED;
+    }
+    return OSAL_FREERTOS_TAKE_TIMEOUT;
+}
+
+uint32_t osal_freertos_mutex_give(osal_freertos_mutex_handle_t handle) {
+    if (handle == NULL) {
+        return OSAL_FREERTOS_GIVE_INVALID;
+    }
+    BaseType_t result = xSemaphoreGive((SemaphoreHandle_t)handle);
+    if (result == pdTRUE) {
+        return OSAL_FREERTOS_GIVE_OK;
+    }
+    return OSAL_FREERTOS_GIVE_INVALID;
+}
+
+void osal_freertos_mutex_delete(osal_freertos_mutex_handle_t handle) {
+    if (handle != NULL) {
+        vSemaphoreDelete((SemaphoreHandle_t)handle);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Semaphore (ADR 0026)
+// ---------------------------------------------------------------------------
+
+osal_freertos_semaphore_handle_t
+osal_freertos_counting_semaphore_create(uint32_t max_count,
+                                        uint32_t initial_count) {
+    SemaphoreHandle_t h = xSemaphoreCreateCounting(
+        (UBaseType_t)max_count, (UBaseType_t)initial_count);
+    return (osal_freertos_semaphore_handle_t)h;
+}
+
+osal_freertos_semaphore_handle_t
+osal_freertos_binary_semaphore_create(void) {
+    SemaphoreHandle_t h = xSemaphoreCreateBinary();
+    return (osal_freertos_semaphore_handle_t)h;
+}
+
+uint32_t osal_freertos_semaphore_take(osal_freertos_semaphore_handle_t handle,
+                                      uint64_t ticks) {
+    if (handle == NULL) {
+        return OSAL_FREERTOS_TAKE_INVALID;
+    }
+    BaseType_t result = xSemaphoreTake((SemaphoreHandle_t)handle,
+                                       (TickType_t)ticks);
+    if (result == pdTRUE) {
+        return OSAL_FREERTOS_TAKE_ACQUIRED;
+    }
+    return OSAL_FREERTOS_TAKE_TIMEOUT;
+}
+
+uint32_t osal_freertos_semaphore_give(osal_freertos_semaphore_handle_t handle) {
+    if (handle == NULL) {
+        return OSAL_FREERTOS_GIVE_INVALID;
+    }
+    BaseType_t result = xSemaphoreGive((SemaphoreHandle_t)handle);
+    if (result == pdTRUE) {
+        return OSAL_FREERTOS_GIVE_OK;
+    }
+    // errQUEUE_FULL → no more room in counting semaphore.
+    return OSAL_FREERTOS_GIVE_FULL;
+}
+
+uint64_t osal_freertos_semaphore_count(osal_freertos_semaphore_handle_t handle) {
+    if (handle == NULL) {
+        return 0;
+    }
+    return (uint64_t)uxSemaphoreGetCount((SemaphoreHandle_t)handle);
+}
+
+void osal_freertos_semaphore_delete(osal_freertos_semaphore_handle_t handle) {
+    if (handle != NULL) {
+        vSemaphoreDelete((SemaphoreHandle_t)handle);
+    }
+}

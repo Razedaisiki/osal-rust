@@ -87,6 +87,49 @@ void osal_freertos_exit_critical(void);
 
 uint64_t osal_freertos_max_semaphore_count(void);
 
+// ---------------------------------------------------------------------------
+// Opaque handle types (ADR 0026 §1)
+// ---------------------------------------------------------------------------
+
+typedef void *osal_freertos_mutex_handle_t;
+typedef void *osal_freertos_semaphore_handle_t;
+
+// ---------------------------------------------------------------------------
+// Take / Give status codes
+// ---------------------------------------------------------------------------
+
+#define OSAL_FREERTOS_TAKE_ACQUIRED  0u
+#define OSAL_FREERTOS_TAKE_TIMEOUT   1u
+#define OSAL_FREERTOS_TAKE_INVALID   2u
+
+#define OSAL_FREERTOS_GIVE_OK        0u
+#define OSAL_FREERTOS_GIVE_FULL      1u
+#define OSAL_FREERTOS_GIVE_INVALID   2u
+
+// ---------------------------------------------------------------------------
+// Mutex API (ADR 0026)
+// ---------------------------------------------------------------------------
+
+osal_freertos_mutex_handle_t osal_freertos_mutex_create(void);
+uint32_t osal_freertos_mutex_take(osal_freertos_mutex_handle_t handle,
+                                  uint64_t ticks);
+uint32_t osal_freertos_mutex_give(osal_freertos_mutex_handle_t handle);
+void osal_freertos_mutex_delete(osal_freertos_mutex_handle_t handle);
+
+// ---------------------------------------------------------------------------
+// Semaphore API (ADR 0026)
+// ---------------------------------------------------------------------------
+
+osal_freertos_semaphore_handle_t
+osal_freertos_counting_semaphore_create(uint32_t max_count,
+                                        uint32_t initial_count);
+osal_freertos_semaphore_handle_t osal_freertos_binary_semaphore_create(void);
+uint32_t osal_freertos_semaphore_take(osal_freertos_semaphore_handle_t handle,
+                                      uint64_t ticks);
+uint32_t osal_freertos_semaphore_give(osal_freertos_semaphore_handle_t handle);
+uint64_t osal_freertos_semaphore_count(osal_freertos_semaphore_handle_t handle);
+void osal_freertos_semaphore_delete(osal_freertos_semaphore_handle_t handle);
+
 #ifdef __cplusplus
 }
 #endif
