@@ -154,28 +154,40 @@ fn delay_with_small_max_finite_advances_correctly() {
 
 #[test]
 fn delay_crosses_native_tick_wrap() {
-    setup();
-
-    // Set 16-bit tick mode and place counter just before wrap.
+    // Set tick_bits BEFORE initialize so the capability probe caches
+    // the correct width.  Must come before setup() which calls init.
+    fixture::reset();
     fixture::set_tick_bits(16);
+
+    // Place counter just before 16-bit wrap.
     fixture::set_tick_snapshot(0, 0xFFF0);
-    // 0xFFFF - 0xFFF0 + 1 = 16 ticks to wrap past 0x10000
+
+    let _ = runtime::shutdown();
+    runtime::initialize().expect("initialize");
 
     let before = FreeRtosClock::now();
 
-    // Delay past the wrap point.
+    // 20 ms = 20 ceil ticks at 1000 Hz + 1 guard = 21 ticks.
+    // 0xFFF0 + 21 = 0x10005 → wraps to tick_count=5, overflow_count=1.
     delay_via_clock(Duration::from_millis(20));
 
     let after = FreeRtosClock::now();
 
-    assert!(after > before, "now() must advance across tick wrap");
-    // After wrap, overflow_count should be ≥ 1.
+    // Exact delta: 21 ticks at 1000 Hz = 21 ms.
+    // This verifies that both the wrap simulation AND the capability
+    // probe agree on 16-bit width (if they disagreed, the expansion
+    // would produce a wild jump).
+    assert_eq!(
+        after - before,
+        Duration::from_millis(21),
+        "wrap delay must advance exactly 21 ms (20 ceil + 1 guard)"
+    );
     assert!(
         fixture::tick_overflow_count() >= 1,
         "overflow_count must increase after tick wrap"
     );
 
-    teardown();
+    let _ = runtime::shutdown();
 }
 
 // ---------------------------------------------------------------------------

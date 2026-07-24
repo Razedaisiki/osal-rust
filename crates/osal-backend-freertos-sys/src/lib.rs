@@ -156,7 +156,7 @@ fn probe_capabilities() -> KernelCapabilities {
             tick_rate_hz: 1000,
             max_priorities: 8,
             max_task_name_len: 16,
-            tick_bits: 32,
+            tick_bits: TICK_BITS_FIXTURE.load(core::sync::atomic::Ordering::Relaxed),
             stack_word_size: 4,
             dynamic_allocation: 1,
             software_timers: 1,
@@ -397,7 +397,18 @@ pub mod fixture {
     }
 
     /// Set the tick width (bits) for wrap simulation (16, 32, or 64).
+    ///
+    /// Must be called **before** `runtime::initialize()` so the
+    /// capability probe caches the correct value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `bits` is not 16, 32, or 64.
     pub fn set_tick_bits(bits: u8) {
+        assert!(
+            matches!(bits, 16 | 32 | 64),
+            "tick_bits must be 16, 32, or 64, got {bits}"
+        );
         super::TICK_BITS_FIXTURE.store(bits, Ordering::Relaxed);
     }
 
@@ -405,7 +416,16 @@ pub mod fixture {
     ///
     /// Use a small value (e.g. 7) to force multi-chunk delay paths in tests
     /// without waiting for enormous durations.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `value` is less than 2 (must be at least
+    /// `guard_tick + 1` so that `max_payload ≥ 1`).
     pub fn set_max_finite_delay_ticks(value: u64) {
+        assert!(
+            value >= 2,
+            "max_finite_delay_ticks must be ≥ 2 (guard tick + min payload), got {value}"
+        );
         super::MAX_FINITE_DELAY_FIXTURE.store(value, Ordering::Relaxed);
     }
 
