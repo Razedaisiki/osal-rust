@@ -80,7 +80,11 @@ pub use runtime::{initialize, runtime_state, shutdown};
 /// use osal::prelude::*;
 /// ```
 pub mod prelude {
-    #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
+    #[cfg(any(
+        feature = "backend-mock",
+        feature = "backend-posix",
+        feature = "backend-freertos"
+    ))]
     pub use crate::backend::BinarySemaphore;
     #[cfg(any(
         feature = "backend-mock",
@@ -88,9 +92,17 @@ pub mod prelude {
         feature = "backend-freertos"
     ))]
     pub use crate::backend::Clock;
-    #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
+    #[cfg(any(
+        feature = "backend-mock",
+        feature = "backend-posix",
+        feature = "backend-freertos"
+    ))]
     pub use crate::backend::CountingSemaphore;
-    #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
+    #[cfg(any(
+        feature = "backend-mock",
+        feature = "backend-posix",
+        feature = "backend-freertos"
+    ))]
     pub use crate::backend::Mutex;
     #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
     pub use crate::backend::Queue;

@@ -24,6 +24,12 @@ pub use osal_backend_mock::mutex::MockMutex as Mutex;
 #[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
 pub use osal_backend_posix::mutex::PosixMutexImpl as Mutex;
 
+#[cfg(all(
+    feature = "backend-freertos",
+    not(any(feature = "backend-posix", feature = "backend-mock"))
+))]
+pub use osal_backend_freertos::mutex::FreeRtosMutex as Mutex;
+
 // ---------------------------------------------------------------------------
 // Semaphore
 // ---------------------------------------------------------------------------
@@ -34,11 +40,23 @@ pub use osal_backend_mock::semaphore::MockCountingSemaphore as CountingSemaphore
 #[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
 pub use osal_backend_posix::semaphore::PosixCountingSemaphore as CountingSemaphore;
 
+#[cfg(all(
+    feature = "backend-freertos",
+    not(any(feature = "backend-posix", feature = "backend-mock"))
+))]
+pub use osal_backend_freertos::semaphore::FreeRtosCountingSemaphore as CountingSemaphore;
+
 #[cfg(feature = "backend-mock")]
 pub use osal_backend_mock::semaphore::MockBinarySemaphore as BinarySemaphore;
 
 #[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
 pub use osal_backend_posix::semaphore::PosixBinarySemaphore as BinarySemaphore;
+
+#[cfg(all(
+    feature = "backend-freertos",
+    not(any(feature = "backend-posix", feature = "backend-mock"))
+))]
+pub use osal_backend_freertos::semaphore::FreeRtosBinarySemaphore as BinarySemaphore;
 
 // ---------------------------------------------------------------------------
 // Clock
