@@ -14,6 +14,7 @@
 #include "task.h"
 #include "portmacro.h"
 #include "portable.h"
+#include "semphr.h"
 
 // ---------------------------------------------------------------------------
 // Compile-time configuration checks (ADR 0021)
@@ -71,6 +72,14 @@ _Static_assert(configMAX_TASK_NAME_LEN > 0,
 #endif
 _Static_assert(configNUMBER_OF_CORES == 1,
                "P7B FreeRTOS backend requires configNUMBER_OF_CORES == 1");
+
+// P7C: mutex support (ADR 0026 §7)
+#ifndef configUSE_MUTEXES
+#error "FreeRTOSConfig.h must define configUSE_MUTEXES"
+#endif
+#if configUSE_MUTEXES != 1
+#error "ROUSSATL FreeRTOS backend requires configUSE_MUTEXES == 1"
+#endif
 
 // ---------------------------------------------------------------------------
 // Capability probe
@@ -172,4 +181,13 @@ void osal_freertos_enter_critical(void) {
 
 void osal_freertos_exit_critical(void) {
     taskEXIT_CRITICAL();
+}
+
+// ---------------------------------------------------------------------------
+// Synchronisation object support (ADR 0026)
+// ---------------------------------------------------------------------------
+
+uint64_t osal_freertos_max_semaphore_count(void) {
+    // UBaseType_t may be narrower than u64; return its maximum value.
+    return (uint64_t)(UBaseType_t)(~((UBaseType_t)0));
 }

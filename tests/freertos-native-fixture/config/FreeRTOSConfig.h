@@ -10,3 +10,4 @@
 #define configMAX_TASK_NAME_LEN           16
 #define INCLUDE_vTaskDelay                1
 #define configNUMBER_OF_CORES             1
+#define configUSE_MUTEXES                 1

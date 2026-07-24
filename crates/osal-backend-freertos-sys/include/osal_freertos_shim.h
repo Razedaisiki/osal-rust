@@ -81,6 +81,12 @@ uint64_t osal_freertos_heap_free(void);
 void osal_freertos_enter_critical(void);
 void osal_freertos_exit_critical(void);
 
+// ---------------------------------------------------------------------------
+// Semaphore range query (ADR 0026)
+// ---------------------------------------------------------------------------
+
+uint64_t osal_freertos_max_semaphore_count(void);
+
 #ifdef __cplusplus
 }
 #endif

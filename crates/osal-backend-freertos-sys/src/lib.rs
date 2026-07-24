@@ -112,6 +112,7 @@ unsafe extern "C" {
     fn osal_freertos_heap_free() -> u64;
     fn osal_freertos_enter_critical();
     fn osal_freertos_exit_critical();
+    fn osal_freertos_max_semaphore_count() -> u64;
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +323,26 @@ pub fn exit_critical() {
 #[cfg(feature = "test-fixture")]
 pub fn critical_depth() -> usize {
     CRITICAL_DEPTH_FIXTURE.load(core::sync::atomic::Ordering::Relaxed) as usize
+}
+
+// ---------------------------------------------------------------------------
+// Semaphore range query (ADR 0026)
+// ---------------------------------------------------------------------------
+
+/// Return the maximum semaphore count supported by the native `UBaseType_t`.
+///
+/// Counting semaphore parameters (`max_count`, `initial_count`) must not
+/// exceed this value.
+pub fn max_semaphore_count() -> u64 {
+    #[cfg(feature = "test-fixture")]
+    {
+        // Fixture: generous 32-bit range.
+        u32::MAX as u64
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        unsafe { osal_freertos_max_semaphore_count() }
+    }
 }
 
 // ---------------------------------------------------------------------------
