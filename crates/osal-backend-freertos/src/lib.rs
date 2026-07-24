@@ -17,3 +17,4 @@ extern crate alloc;
 pub mod clock;
 pub mod runtime;
 pub mod system;
+pub(crate) mod wait;
