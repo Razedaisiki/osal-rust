@@ -779,7 +779,9 @@ pub mod fixture {
     ///
     /// Use for test synchronization: poll until this reaches the
     /// expected value before performing a release/guard-drop.
-    pub fn waiter_count() -> u64 {
-        super::fixture_sync::WAITER_COUNT.load(Ordering::Relaxed)
+    /// Incremented atomically immediately before `wait_timeout`,
+    /// so a non-zero value guarantees the thread is actually blocked.
+    pub fn blocked_count() -> u64 {
+        super::fixture_sync::BLOCKED_COUNT.load(Ordering::Relaxed)
     }
 }

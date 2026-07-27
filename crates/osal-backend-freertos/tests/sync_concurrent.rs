@@ -5,12 +5,10 @@
 //! ordering.
 //!
 //! All tests use `std::sync::Barrier` for deterministic synchronization
-//! between the main thread and the worker thread, and **poll
-//! `fixture::waiter_count()`** (not `thread::sleep`) to confirm the
-//! worker has entered the Condvar before the main thread releases.
+//! and poll `fixture::blocked_count()` (not sleep) to confirm the worker
+//! has entered `cvar.wait_timeout` before the main thread releases.
 //!
-//! Forever tests use `mpsc::channel` + `recv_timeout` as a watchdog
-//! so a regression cannot hang CI indefinitely.
+//! Forever tests use `mpsc::channel` + `recv_timeout` as a watchdog.
 //!
 //! ```bash
 //! cargo test -p osal-backend-freertos --features testkit sync_concurrent -- --test-threads=1
@@ -36,48 +34,37 @@ use osal_backend_freertos_sys::fixture;
 
 fn setup() {
     fixture::reset();
-    // If the previous test failed to shut down, force a shutdown now.
-    // The runtime may be Running with stale leases — repeatedly
-    // attempt shutdown until it succeeds or returns NotInitialized.
-    for _ in 0..3 {
-        match runtime::shutdown() {
-            Ok(()) | Err(Error::NotInitialized) => break,
-            Err(_) => {
-                // Busy — wait for pending threads to release leases.
-                thread::sleep(Duration::from_millis(50));
-            }
-        }
-    }
+    let _ = runtime::shutdown();
     runtime::initialize().expect("initialize");
 }
 
+/// Tear down the runtime.  Panics if any leases are still held,
+/// so test leaks are caught immediately.
+/// Also calls `fixture::reset()` so the next test starts from a
+/// pristine global state regardless of what this test did to
+/// virtual ticks, scheduler state, etc.
 fn teardown() {
-    let _ = runtime::shutdown();
-    // Let OS thread resources settle before the next test.
-    thread::sleep(Duration::from_millis(50));
+    match runtime::shutdown() {
+        Ok(()) | Err(Error::NotInitialized) => {}
+        Err(e) => panic!("test leaked runtime lease or object: {e:?}"),
+    }
+    fixture::reset();
 }
 
-/// Poll until at least `expected` threads are inside a Condvar wait,
-/// or `timeout` expires.  After the count is reached, sleeps briefly
-/// to ensure the workers have entered `cvar.wait_timeout` before the
-/// caller sends `notify_one` — otherwise the signal can be lost.
-fn wait_until_waiter_count(expected: u64, timeout: Duration) {
+/// Poll `fixture::blocked_count()` until it reaches `expected` or
+/// `timeout` expires.  `blocked_count` is incremented atomically
+/// immediately before `cvar.wait_timeout`, so when it returns non-zero
+/// the worker is guaranteed to be inside the Condvar — no sleep needed.
+fn wait_until_blocked_count(expected: u64, timeout: Duration) {
     let deadline = Instant::now() + timeout;
-    while fixture::waiter_count() < expected {
+    while fixture::blocked_count() < expected {
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for {} waiter(s); got {}",
-            expected,
-            fixture::waiter_count()
+            "timed out waiting for {expected} blocked waiter(s); got {}",
+            fixture::blocked_count()
         );
         thread::yield_now();
     }
-    // Workers have incremented the counter but may not have called
-    // wait_timeout yet.  Yield a few times to let them reach the wait.
-    for _ in 0..10 {
-        thread::yield_now();
-    }
-    thread::sleep(Duration::from_millis(2));
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +92,7 @@ fn mutex_forever_woken_by_cross_thread_guard_drop() {
         });
 
         barrier.wait();
-        wait_until_waiter_count(1, Duration::from_secs(2));
+        wait_until_blocked_count(1, Duration::from_secs(2));
         drop(guard);
 
         let result = rx
@@ -142,7 +129,7 @@ fn counting_semaphore_forever_woken_by_cross_thread_release() {
         });
 
         barrier.wait();
-        wait_until_waiter_count(1, Duration::from_secs(2));
+        wait_until_blocked_count(1, Duration::from_secs(2));
         s.release().expect("release");
 
         let result = rx
@@ -176,13 +163,13 @@ fn binary_semaphore_after_early_release_wakes() {
         });
 
         barrier.wait();
-        wait_until_waiter_count(1, Duration::from_secs(2));
+        wait_until_blocked_count(1, Duration::from_secs(2));
         s.release().expect("release");
 
         let result = rx
             .recv_timeout(Duration::from_secs(2))
             .expect("worker did not complete");
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "expected acquire, got {result:?}");
 
         handle.join().expect("worker panicked");
     }
@@ -211,7 +198,7 @@ fn mutex_held_cross_thread_after_returns_timeout() {
         });
 
         barrier.wait();
-        wait_until_waiter_count(1, Duration::from_secs(2));
+        wait_until_blocked_count(1, Duration::from_secs(2));
 
         let result = rx
             .recv_timeout(Duration::from_secs(2))
@@ -248,14 +235,10 @@ fn mutex_held_cross_thread_nowait_returns_lock_failed() {
 
 // ---------------------------------------------------------------------------
 // CountingSemaphore — one release wakes at most one waiter
-//
-// NOTE: this test passes individually but can fail when run after
-// Forever-based tests due to global fixture Condvar interaction.
-// Run in isolation or first in sequence.
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "global fixture interaction: passes individually"]
+#[ignore = "passes individually; global Condvar interacts in sequence"]
 fn counting_semaphore_one_release_wakes_only_one_waiter() {
     setup();
     {
@@ -291,7 +274,7 @@ fn counting_semaphore_one_release_wakes_only_one_waiter() {
 
         // Wait for both workers to block.
         b.wait();
-        wait_until_waiter_count(2, Duration::from_secs(2));
+        wait_until_blocked_count(2, Duration::from_secs(2));
 
         // One release → exactly one waiter wakes.
         s.release().expect("release");
@@ -300,7 +283,6 @@ fn counting_semaphore_one_release_wakes_only_one_waiter() {
             .recv_timeout(Duration::from_secs(2))
             .expect("waiter 1 did not complete");
         assert!(r1.is_ok());
-
         assert_eq!(
             done.load(std::sync::atomic::Ordering::SeqCst),
             1,
@@ -314,7 +296,6 @@ fn counting_semaphore_one_release_wakes_only_one_waiter() {
             .recv_timeout(Duration::from_secs(2))
             .expect("waiter 2 did not complete");
         assert!(r2.is_ok());
-
         assert_eq!(done.load(std::sync::atomic::Ordering::SeqCst), 2);
 
         h1.join().expect("h1");
