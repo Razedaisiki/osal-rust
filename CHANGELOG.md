@@ -1,5 +1,115 @@
 # Changelog
 
+## P7C — FreeRTOS Mutex and Semaphore Foundation (2026-07-24) — Completed
+
+### Added
+
+- ADR 0025: FreeRTOS Blocking Wait Model (absolute-deadline loop,
+  per-chunk guard tick, Forever via finite-chunk loop, scheduler-state
+  preconditions).
+- ADR 0026: FreeRTOS Synchronization Object Model (native handle
+  ownership via `Arc`, lock order, guard Drop order, `Send + Sync`
+  conditions, native delete constraints).
+- `FreeRtosMutex<T>`: native priority-inheritance mutex with RAII
+  `FreeRtosMutexGuard<'a, T>` (`!Send + !Sync` via `PhantomData<Rc<()>>`).
+- `FreeRtosCountingSemaphore`, `FreeRtosBinarySemaphore`: native kernel
+  semaphores with kernel count as sole source of truth.
+- Unified blocking-wait engine (`wait.rs`): absolute-deadline loop with
+  per-chunk guard tick, shared by Mutex + Semaphore.
+- `MutexHandle`, `SemaphoreHandle`: opaque wrapper types in `-sys` crate.
+- `TakeStatus`, `GiveStatus` enums mapping native C status codes to
+  safe Rust.
+- Host synchronization fixture (`sync_fixture.rs`): `std::sync::Mutex` +
+  `Condvar` with `BLOCKED_COUNT` atomic for deterministic cross-thread
+  waiter tests.
+- `configUSE_MUTEXES` compile-time check in C shim.
+- `osal_freertos_max_semaphore_count()` native range probe.
+- 48 FreeRTOS tests: 6 cross-thread concurrent (Barrier + mpsc watchdog),
+  14 sync stabilisation, contract suites for Mutex + Semaphore +
+  Runtime + System + Clock.
+- Facade routing for `Mutex<T>`, `CountingSemaphore`, `BinarySemaphore`
+  under `backend-freertos`.
+
+### Changed
+
+- Capability matrix: Mutex/CountingSemaphore/BinarySemaphore → Implemented
+  (host-contract-verified; real FreeRTOS kernel tests deferred).
+- Architecture: FreeRTOS backend moved from Planned to Active.
+- Crate docs: P7A → P7C status with Implementation vs Validation boundary
+  documented.
+
+### Deferred
+
+- Real FreeRTOS kernel runtime tests (QEMU or physical MCU) needed for
+  Validated promotion.
+- Deterministic virtual-time fixture refactor (per-object Condvar).
+- ISR semaphore and mutex variants.
+- `RecursiveMutex`, static allocation, SMP, MPU.
+- Queue, Task, Timer primitives (P7D+).
+
+## P7B — FreeRTOS Tick/Time Model, Clock and System (2026-07-24) — Completed
+
+### Added
+
+- ADR 0023: FreeRTOS Tick and Time Model (coherent `vTaskSetTimeOutState`
+  snapshot, `u128` expanded tick, per-chunk guard tick, chunked delay).
+- ADR 0024: FreeRTOS System Mapping (`heap_free` via `xPortGetFreeHeapSize`,
+  critical sections via `taskENTER_CRITICAL`/`taskEXIT_CRITICAL`,
+  `!Send + !Sync` guard, `configNUMBER_OF_CORES==1` assertion).
+- `osal-portable::tick_time`: checked `TickConfig`/`TickSnapshot` ↔
+  `Duration` conversion, ceiling `duration_to_ticks_ceil`, `max_finite_ticks`,
+  18 unit tests covering wrap/saturation/overflow.
+- `FreeRtosClock`: `now()` via coherent tick+overflow snapshot, `delay()`
+  with per-chunk guard tick and absolute-deadline chunking.
+- `FreeRtosSystem`: `heap_free()` via `xPortGetFreeHeapSize`,
+  `enter_critical()` with nesting support.
+- `FreeRtosCriticalSectionGuard`: `!Send + !Sync` via `PhantomData<Rc<()>>`.
+- C shim: `osal_freertos_tick_snapshot_t`, `delay_ticks`,
+  `max_finite_delay_ticks`, `heap_free`, `enter_critical`, `exit_critical`.
+- Native fixture headers: `TimeOut_t`, `vTaskSetTimeOutState`, `vTaskDelay`,
+  `portMAX_DELAY`, `portable.h`.
+- Fixture: `AtomicU64` tick/overflow counters with configurable tick bits
+  for wrap simulation.
+- 8 backend-specific Clock stabilisation tests, 14 sync stabilisation tests.
+
+### Changed
+
+- Capability matrix: Clock → Implemented, System → Validated, Runtime
+  Lifecycle → Implemented.
+- Per-chunk guard tick algorithm corrected from single global guard to
+  per-native-call guard.
+
+### Fixed
+
+- Fixture tick wrap: modulo-based instead of saturating_add.
+- Fixture `max_finite_delay_ticks`: configurable for multi-chunk testing.
+- Native fixture `TimeOut_t` field order matches official FreeRTOS.
+
+## P7A — FreeRTOS Integration Boundary and Backend Skeleton (2026-07-25) — Completed
+
+### Added
+
+- ADR 0020: FreeRTOS Integration Boundary (scheduler owned by BSP/app,
+  backend is guest, `initialize()` does NOT start scheduler).
+- ADR 0021: FreeRTOS Configuration Contract (required `FreeRTOSConfig.h`
+  macros, C shim capability probe, compile-time `#error` enforcement).
+- ADR 0022: FreeRTOS FFI Boundary (three-layer: C shim → `-sys` → backend,
+  opaque handles, callback safety, platform `cfg` gate).
+- `osal-backend-freertos-sys` crate: C shim (`osal_freertos_shim.c/.h`),
+  build.rs with `ROUSSATL_FREERTOS_{KERNEL,CONFIG,PORT}_INCLUDE` env vars.
+- `osal-backend-freertos` crate: runtime lifecycle (`initialize`/`shutdown`/
+  `runtime_state`) with `spin::RwLock<Option<Capabilities>>` capability cache.
+- Feature separation: `backend-freertos` (native) vs `freertos-test-fixture`
+  (host CI).
+- Native smoke build with minimal FreeRTOS header stubs in
+  `tests/freertos-native-fixture/`.
+- 5 invalid feature combination tests in CI.
+
+### Changed
+
+- Facade feature exclusivity guard extended to three backends.
+- CI: FreeRTOS fixture compile, native facade smoke, feature-guard checks.
+
 ## P6D — POSIX Backend Conformance Closure (2026-07-22) — Completed
 
 ### Verified

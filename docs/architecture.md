@@ -38,12 +38,15 @@ osal-api (public traits and types)
 | shared |     | (helpers)     |
 +-------+     +---------------+
     ↓               ↓
-+-----------------------+
-| osal-backend-posix    |
-| osal-backend-mock     |
-+-----------------------+
++----------------------------+
+| osal-backend-posix         |
+| osal-backend-mock          |
+| osal-backend-freertos      |
+|   + osal-backend-freertos- |
+|       sys (C shim)         |
++----------------------------+
     ↓
-POSIX host / deterministic in-process model
+POSIX host / deterministic model / FreeRTOS (native)
 ```
 
 ### 3.2 Target extension (future)
@@ -53,32 +56,33 @@ osal-api
     ↓
 osal-shared + osal-portable
     ↓
-osal-backend-freertos        (future)
+osal-backend-*  (all current backends)
     ↓
 osal-bsp + board BSP         (future)
     ↓
-RTOS / hardware
+hardware-specific resources
 ```
 
 BSP crates (`osal-bsp`, `osal-bsp-linux`) currently exist as deferred
 workspace placeholders. They define a future responsibility boundary
-but are not part of the active POSIX/Mock MVP and do not yet provide
-production board-support functionality.
+but are not part of the active MVP and do not yet provide production
+board-support functionality.
 
 ### 3.3 Crate maturity
 
-| Crate                   | Status               |
-| ----------------------- | -------------------- |
-| `osal-api`              | Active               |
-| `osal-shared`           | Active / stabilizing |
-| `osal-portable`         | Active               |
-| `osal-backend-posix`    | Active               |
-| `osal-backend-mock`     | Active               |
-| `osal-testkit`          | Active               |
-| `osal` (facade)         | Active               |
-| `osal-bsp`              | Skeleton / deferred  |
-| `osal-bsp-linux`        | Skeleton / deferred  |
-| `osal-backend-freertos` | Planned              |
+| Crate                       | Status               |
+| --------------------------- | -------------------- |
+| `osal-api`                  | Active               |
+| `osal-shared`               | Active / stabilizing |
+| `osal-portable`             | Active               |
+| `osal-backend-posix`        | Active               |
+| `osal-backend-mock`         | Active               |
+| `osal-backend-freertos`     | Active               |
+| `osal-backend-freertos-sys` | Active               |
+| `osal-testkit`              | Active               |
+| `osal` (facade)             | Active               |
+| `osal-bsp`                  | Skeleton / deferred  |
+| `osal-bsp-linux`            | Skeleton / deferred  |
 
 ## 4. Crate Descriptions
 
@@ -137,7 +141,8 @@ platform:
 |-------|----------|----------|
 | `osal-backend-posix` | Linux, macOS, POSIX | Development, CI, simulation |
 | `osal-backend-mock` | In-process fake | Unit tests, contract verification |
-| `osal-backend-freertos` | FreeRTOS | ARM Cortex-M, RISC-V embedded (planned) |
+| `osal-backend-freertos` | FreeRTOS | ARM Cortex-M, RISC-V embedded |
+| `osal-backend-freertos-sys` | FreeRTOS (C shim) | FFI boundary — `unsafe` isolation layer |
 
 Backends depend on `osal-api`, `osal-shared`, and optionally
 `osal-portable`. They must not depend on each other. Each backend
@@ -199,10 +204,11 @@ This section is normative and must match
 
 ```
 osal-api  ←── osal-shared ←── osal-portable ←── osal-backend-posix
-    ↑              ↑
+    ↑              ↑                            osal-backend-freertos
     +── osal-bsp (skeleton) ←── osal-bsp-linux (skeleton)
     +── osal-testkit
     +── osal-backend-mock
+    +── osal-backend-freertos-sys ←── (C shim, no Rust deps)
     +── osal (facade)
 ```
 
@@ -217,12 +223,18 @@ No circular dependencies. Each crate depends only on crates below it.
 default = ["backend-posix"]
 backend-posix = ["dep:osal-backend-posix"]
 backend-mock = ["dep:osal-backend-mock"]
+backend-freertos = ["dep:osal-backend-freertos"]
+freertos-test-fixture = ["dep:osal-backend-freertos"]
 ```
 
 Rules:
 - Exactly one backend must be selected at compile time
 - `backend-posix` is the default for development convenience
 - `backend-mock` is used for testing
+- `backend-freertos` builds the native FreeRTOS path (requires
+  `ROUSSATL_FREERTOS_{KERNEL,CONFIG,PORT}_INCLUDE` env vars)
+- `freertos-test-fixture` builds the host-compilable fixture path
+  (no real FreeRTOS kernel; for CI and contract testing)
 
 ### 7.2 Environment features
 
