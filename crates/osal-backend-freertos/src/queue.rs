@@ -342,7 +342,10 @@ impl FreeRtosQueue {
         if state.receiver_waiters > state.receiver_wake_credits {
             match sys::semaphore_give(receiver_wake) {
                 sys::GiveStatus::Ok => {
-                    state.receiver_wake_credits += 1;
+                    state.receiver_wake_credits = state
+                        .receiver_wake_credits
+                        .checked_add(1)
+                        .expect("wake credit overflowed u32");
                 }
                 sys::GiveStatus::Full | sys::GiveStatus::Invalid => {
                     panic!(
@@ -361,7 +364,10 @@ impl FreeRtosQueue {
         if state.sender_waiters > state.sender_wake_credits {
             match sys::semaphore_give(sender_wake) {
                 sys::GiveStatus::Ok => {
-                    state.sender_wake_credits += 1;
+                    state.sender_wake_credits = state
+                        .sender_wake_credits
+                        .checked_add(1)
+                        .expect("wake credit overflowed u32");
                 }
                 sys::GiveStatus::Full | sys::GiveStatus::Invalid => {
                     panic!(
@@ -373,93 +379,31 @@ impl FreeRtosQueue {
         }
     }
 
-    /// Re-acquire the state mutex and unregister a sender waiter.
-    ///
-    /// Used when [`WaitBudget::wait_once`] returns an error (e.g.
-    /// scheduler NotStarted) after a sender has already been registered.
-    fn unregister_sender_waiter(inner: &QueueInner, state_mutex: &sys::MutexHandle) {
-        // Re-acquire state mutex.
-        loop {
-            match sys::mutex_take(state_mutex, 0) {
-                sys::TakeStatus::Acquired => break,
-                sys::TakeStatus::Timeout => {
-                    // Contention — block until available.
-                    if wait::wait_native(Timeout::Forever, |ticks| {
-                        sys::mutex_take(state_mutex, ticks)
-                    })
-                    .is_err()
-                    {
-                        continue;
-                    }
-                    break;
-                }
-                sys::TakeStatus::Invalid => {
-                    panic!("FreeRTOS queue state mutex invalid on live queue")
-                }
-            }
-        }
-        // SAFETY: we hold the state mutex.
-        let state = unsafe { &mut *inner.state.get() };
-        state.sender_waiters = state.sender_waiters.saturating_sub(1);
-        // Release the mutex.
-        if sys::mutex_give(state_mutex) != sys::GiveStatus::Ok {
-            panic!("FreeRTOS queue state mutex give failed — invariant violation");
-        }
-    }
-
-    /// Re-acquire the state mutex and unregister a receiver waiter.
-    fn unregister_receiver_waiter(inner: &QueueInner, state_mutex: &sys::MutexHandle) {
-        loop {
-            match sys::mutex_take(state_mutex, 0) {
-                sys::TakeStatus::Acquired => break,
-                sys::TakeStatus::Timeout => {
-                    if wait::wait_native(Timeout::Forever, |ticks| {
-                        sys::mutex_take(state_mutex, ticks)
-                    })
-                    .is_err()
-                    {
-                        continue;
-                    }
-                    break;
-                }
-                sys::TakeStatus::Invalid => {
-                    panic!("FreeRTOS queue state mutex invalid on live queue")
-                }
-            }
-        }
-        // SAFETY: we hold the state mutex.
-        let state = unsafe { &mut *inner.state.get() };
-        state.receiver_waiters = state.receiver_waiters.saturating_sub(1);
-        if sys::mutex_give(state_mutex) != sys::GiveStatus::Ok {
-            panic!("FreeRTOS queue state mutex give failed — invariant violation");
-        }
-    }
-
     /// Wake ALL registered waiters in a given direction.
     ///
     /// Uses the missing-credit count to avoid double-posting tokens
     /// that have already been emitted but not yet consumed (ADR 0027 §2).
     ///
     /// MUST be called while holding the state mutex.
+    ///
+    /// Returns `true` if all gives succeeded, `false` if any failed.
     fn broadcast_wake(
         waiters: u32,
         wake_credits: &mut u32,
         wake_handle: &sys::SemaphoreHandle,
-        direction: &str,
-    ) {
+    ) -> bool {
         let missing = waiters.saturating_sub(*wake_credits);
+        let mut all_ok = true;
         for _ in 0..missing {
             match sys::semaphore_give(wake_handle) {
                 sys::GiveStatus::Ok => {}
                 sys::GiveStatus::Full | sys::GiveStatus::Invalid => {
-                    panic!(
-                        "FreeRTOS queue: {direction} wake semaphore give failed \
-                         during close broadcast — invariant violation"
-                    );
+                    all_ok = false;
                 }
             }
         }
         *wake_credits = waiters;
+        all_ok
     }
 }
 
@@ -512,7 +456,10 @@ impl Queue for FreeRtosQueue {
                         WaitBudget::NoWait => return Err(Error::QueueFull),
                         WaitBudget::Zero => return Err(Error::Timeout),
                         WaitBudget::Finite { .. } | WaitBudget::Forever => {
-                            // Register as waiter and block.
+                            // Preflight: check scheduler state, compute
+                            // deadline — fails before any waiter state
+                            // is modified (ADR 0027 §5, review fix #2).
+                            budget.prepare_blocking()?;
                             state.sender_waiters += 1;
                         }
                     }
@@ -525,15 +472,9 @@ impl Queue for FreeRtosQueue {
             drop(state_guard);
 
             // Block on sender_wake semaphore.
-            let outcome = match budget.wait_once(|ticks| sys::semaphore_take(sender_wake, ticks)) {
-                Ok(o) => o,
-                Err(e) => {
-                    // Roll back waiter registration on error
-                    // (e.g. scheduler NotStarted / Busy).
-                    Self::unregister_sender_waiter(&self.inner, state_mutex_for_reacquire);
-                    return Err(e);
-                }
-            };
+            // After prepare_blocking() succeeded, wait_once is infallible
+            // (no configuration errors like NotInitialized or Overflow).
+            let outcome = budget.wait_once(|ticks| sys::semaphore_take(sender_wake, ticks))?;
 
             // Re-acquire state mutex.
             let mut state_guard = loop {
@@ -560,12 +501,16 @@ impl Queue for FreeRtosQueue {
 
             match outcome {
                 WaitOutcome::Acquired => {
-                    // Confirm the credit.
-                    if state.sender_wake_credits > 0 {
-                        state.sender_wake_credits -= 1;
-                    }
-                    // Unregister waiter.
-                    state.sender_waiters = state.sender_waiters.saturating_sub(1);
+                    // Confirm the credit — invariant guarantees credits > 0
+                    // when a token was consumed.
+                    state.sender_wake_credits = state
+                        .sender_wake_credits
+                        .checked_sub(1)
+                        .expect("wake token without credit");
+                    state.sender_waiters = state
+                        .sender_waiters
+                        .checked_sub(1)
+                        .expect("unregister without waiter");
                     // Loop back to re-check ByteQueue (may have been
                     // closed while we were waiting, or another sender
                     // may have filled the slot).
@@ -576,9 +521,23 @@ impl Queue for FreeRtosQueue {
                     // and re-acquiring the mutex.
                     let had_race_token =
                         sys::semaphore_take(sender_wake, 0) == sys::TakeStatus::Acquired;
-                    if had_race_token && state.sender_wake_credits > 0 {
-                        state.sender_wake_credits -= 1;
+                    if had_race_token {
+                        // A token arrived — consume the credit, unregister,
+                        // and loop back to re-check the queue.  Do NOT
+                        // return Timeout while a wake token exists; that
+                        // would strand another waiter (ADR 0027 §5, fix #3).
+                        state.sender_wake_credits = state
+                            .sender_wake_credits
+                            .checked_sub(1)
+                            .expect("wake token without credit");
+                        state.sender_waiters = state
+                            .sender_waiters
+                            .checked_sub(1)
+                            .expect("unregister without waiter");
+                        // Loop back to check whether the queue has space.
+                        continue;
                     }
+                    // No token — genuine timeout.
                     state.sender_waiters = state.sender_waiters.saturating_sub(1);
 
                     if state.buffer.is_closed() {
@@ -630,7 +589,10 @@ impl Queue for FreeRtosQueue {
                         WaitBudget::NoWait => return Err(Error::QueueEmpty),
                         WaitBudget::Zero => return Err(Error::Timeout),
                         WaitBudget::Finite { .. } | WaitBudget::Forever => {
-                            // Register as waiter and block.
+                            // Preflight: check scheduler state, compute
+                            // deadline — fails before any waiter state
+                            // is modified (ADR 0027 §5, review fix #2).
+                            budget.prepare_blocking()?;
                             state.receiver_waiters += 1;
                         }
                     }
@@ -643,15 +605,8 @@ impl Queue for FreeRtosQueue {
             drop(state_guard);
 
             // Block on receiver_wake semaphore.
-            let outcome = match budget.wait_once(|ticks| sys::semaphore_take(receiver_wake, ticks))
-            {
-                Ok(o) => o,
-                Err(e) => {
-                    // Roll back waiter registration on error.
-                    Self::unregister_receiver_waiter(&self.inner, state_mutex_for_reacquire);
-                    return Err(e);
-                }
-            };
+            // After prepare_blocking() succeeded, wait_once is infallible.
+            let outcome = budget.wait_once(|ticks| sys::semaphore_take(receiver_wake, ticks))?;
 
             // Re-acquire state mutex.
             let mut state_guard = loop {
@@ -678,21 +633,36 @@ impl Queue for FreeRtosQueue {
 
             match outcome {
                 WaitOutcome::Acquired => {
-                    // Confirm the credit.
-                    if state.receiver_wake_credits > 0 {
-                        state.receiver_wake_credits -= 1;
-                    }
-                    // Unregister waiter.
-                    state.receiver_waiters = state.receiver_waiters.saturating_sub(1);
+                    // Confirm the credit — invariant guarantees credits > 0
+                    // when a token was consumed.
+                    state.receiver_wake_credits = state
+                        .receiver_wake_credits
+                        .checked_sub(1)
+                        .expect("wake token without credit");
+                    state.receiver_waiters = state
+                        .receiver_waiters
+                        .checked_sub(1)
+                        .expect("unregister without waiter");
                     // Loop back to re-check ByteQueue.
                 }
                 WaitOutcome::Unavailable => {
                     // Timeout — reconcile race with close/wake.
                     let had_race_token =
                         sys::semaphore_take(receiver_wake, 0) == sys::TakeStatus::Acquired;
-                    if had_race_token && state.receiver_wake_credits > 0 {
-                        state.receiver_wake_credits -= 1;
+                    if had_race_token {
+                        // A token arrived — consume credit, unregister,
+                        // and loop back to re-check the queue.
+                        state.receiver_wake_credits = state
+                            .receiver_wake_credits
+                            .checked_sub(1)
+                            .expect("wake token without credit");
+                        state.receiver_waiters = state
+                            .receiver_waiters
+                            .checked_sub(1)
+                            .expect("unregister without waiter");
+                        continue;
                     }
+                    // No token — genuine timeout.
                     state.receiver_waiters = state.receiver_waiters.saturating_sub(1);
 
                     if state.buffer.is_closed() && state.buffer.is_empty() {
@@ -733,18 +703,27 @@ impl Queue for FreeRtosQueue {
         state.buffer.close();
 
         // Wake all registered waiters (ADR 0027 §11).
-        Self::broadcast_wake(
+        // Attempt BOTH directions before triggering any fatal —
+        // a failure in one direction must not prevent the other
+        // from being attempted (review fix #4).
+        let sender_ok = Self::broadcast_wake(
             state.sender_waiters,
             &mut state.sender_wake_credits,
             sender_wake,
-            "sender",
         );
-        Self::broadcast_wake(
+        let receiver_ok = Self::broadcast_wake(
             state.receiver_waiters,
             &mut state.receiver_wake_credits,
             receiver_wake,
-            "receiver",
         );
+
+        if !sender_ok || !receiver_ok {
+            panic!(
+                "FreeRTOS queue: wake semaphore give failed during close \
+                 broadcast — invariant violation (sender_ok={sender_ok}, \
+                 receiver_ok={receiver_ok})"
+            );
+        }
 
         Ok(())
     }

@@ -106,6 +106,36 @@ impl WaitBudget {
         }
     }
 
+    /// Validate that this budget can enter a blocking wait.
+    ///
+    /// Checks the scheduler state and eagerly computes the absolute
+    /// deadline for `Finite` budgets.  Call this **before** registering
+    /// as a waiter — if it returns `Err`, no waiter state has been
+    /// modified and the caller can propagate the error directly.
+    ///
+    /// After `prepare_blocking()` returns `Ok(())`, subsequent
+    /// [`wait_once`] calls are infallible (they will not return
+    /// configuration errors like `NotInitialized` or `Overflow`).
+    pub fn prepare_blocking(&mut self) -> Result<()> {
+        match self {
+            WaitBudget::NoWait | WaitBudget::Zero => {
+                // These never block — caller should not have called this.
+                Ok(())
+            }
+            WaitBudget::Finite { duration, deadline } => {
+                ensure_blocking_allowed()?;
+                if deadline.is_none() {
+                    let value = FreeRtosClock::now()
+                        .checked_add(*duration)
+                        .ok_or(Error::Overflow)?;
+                    *deadline = Some(value);
+                }
+                Ok(())
+            }
+            WaitBudget::Forever => ensure_blocking_allowed(),
+        }
+    }
+
     /// Execute one wait attempt using the supplied native `take` closure.
     ///
     /// `take(ticks)` must return `TakeStatus::Acquired` on success and
@@ -141,17 +171,22 @@ impl WaitBudget {
             },
             WaitBudget::Finite { duration, deadline } => {
                 // Lazily compute the absolute deadline on first blocking entry.
-                let dl = deadline.get_or_insert_with(|| {
-                    FreeRtosClock::now()
-                        .checked_add(*duration)
-                        .expect("deadline overflow for finite queue wait")
-                });
+                let dl = match deadline {
+                    Some(value) => *value,
+                    None => {
+                        let value = FreeRtosClock::now()
+                            .checked_add(*duration)
+                            .ok_or(Error::Overflow)?;
+                        *deadline = Some(value);
+                        value
+                    }
+                };
 
                 // Scheduler-state precondition — checked once, on first
                 // entry into the blocking path (ADR 0025 §4).
                 ensure_blocking_allowed()?;
 
-                wait_deadline_loop(*dl, take)
+                wait_deadline_loop(dl, take)
             }
             WaitBudget::Forever => {
                 // Scheduler-state precondition (ADR 0025 §4).
