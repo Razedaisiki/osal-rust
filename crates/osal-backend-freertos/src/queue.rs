@@ -695,17 +695,14 @@ impl Queue for FreeRtosQueue {
         let state = state_guard.state_mut();
 
         if state.buffer.is_closed() {
-            // Idempotent.
-            return Ok(());
+            return Ok(()); // Idempotent.
         }
 
         // Commit close first — ByteQueue::close is infallible.
         state.buffer.close();
 
         // Wake all registered waiters (ADR 0027 §11).
-        // Attempt BOTH directions before triggering any fatal —
-        // a failure in one direction must not prevent the other
-        // from being attempted (review fix #4).
+        // Attempt BOTH directions before triggering any fatal.
         let sender_ok = Self::broadcast_wake(
             state.sender_waiters,
             &mut state.sender_wake_credits,
