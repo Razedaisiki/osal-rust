@@ -4,7 +4,7 @@
 //! The scheduler is owned by the application / BSP; this backend
 //! is a guest of the kernel (ADR 0020).
 //!
-//! # Current status (P7C)
+//! # Current status (P7D)
 //!
 //! Capability status follows the terminology in
 //! `docs/documentation-policy.md`:
@@ -16,11 +16,13 @@
 //! - Mutex — native priority-inheritance, RAII guard, !Send+!Sync
 //! - CountingSemaphore — kernel count sole source of truth
 //! - BinarySemaphore — native binary semaphore, initial unsignaled
+//! - Queue — ByteQueue + native mutex + dual wake semaphore, waiter-credit
+//!   protocol, close-drain broadcast
 //!
 //! **Validated** (host + FreeRTOS kernel integration tested):
 //! - *(none yet — requires real FreeRTOS runtime tests)*
 //!
-//! **Deferred to P7D+:** Queue, Task, Timer, ISR extensions.
+//! **Deferred to P7E+:** Task, Timer, ISR extensions.
 //!
 //! ## Implementation vs Validation
 //!
@@ -37,6 +39,7 @@ extern crate alloc;
 
 pub mod clock;
 pub mod mutex;
+pub mod queue;
 pub mod runtime;
 pub mod semaphore;
 pub mod system;
