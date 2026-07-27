@@ -238,16 +238,17 @@ fn mutex_held_cross_thread_nowait_returns_lock_failed() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "passes individually; global Condvar interacts in sequence"]
 fn counting_semaphore_one_release_wakes_only_one_waiter() {
     setup();
     {
         let s = FreeRtosCountingSemaphore::new(2, 0).expect("create");
-        let (tx1, rx1) = mpsc::channel();
-        let (tx2, rx2) = mpsc::channel();
+        // Shared channel — either waiter can wake first.  The contract
+        // only requires that ONE waiter wakes per release, not which one.
+        let (tx, rx) = mpsc::channel();
         let b = Arc::new(Barrier::new(3));
         let done = Arc::new(AtomicUsize::new(0));
 
+        let tx1 = tx.clone();
         let s1 = s.clone();
         let b1 = Arc::clone(&b);
         let d1 = Arc::clone(&done);
@@ -260,6 +261,7 @@ fn counting_semaphore_one_release_wakes_only_one_waiter() {
             tx1.send(r).ok();
         });
 
+        let tx2 = tx.clone();
         let s2 = s.clone();
         let b2 = Arc::clone(&b);
         let d2 = Arc::clone(&done);
@@ -271,31 +273,37 @@ fn counting_semaphore_one_release_wakes_only_one_waiter() {
             }
             tx2.send(r).ok();
         });
+        // Drop the original tx so the receiver will see a
+        // disconnected sender after both workers complete.
+        drop(tx);
 
         // Wait for both workers to block.
         b.wait();
         wait_until_blocked_count(2, Duration::from_secs(2));
 
-        // One release → exactly one waiter wakes.
+        // One release → exactly one waiter wakes (whichever).
         s.release().expect("release");
 
-        let r1 = rx1
+        let first = rx
             .recv_timeout(Duration::from_secs(2))
-            .expect("waiter 1 did not complete");
-        assert!(r1.is_ok());
+            .expect("first waiter did not complete");
+        assert!(first.is_ok());
         assert_eq!(
             done.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "exactly one waiter should have acquired"
         );
 
-        // Second release wakes the second waiter.
+        // No second result yet.
+        assert!(rx.try_recv().is_err(), "second waiter woke too early");
+
+        // Second release wakes the remaining waiter.
         s.release().expect("release 2");
 
-        let r2 = rx2
+        let second = rx
             .recv_timeout(Duration::from_secs(2))
-            .expect("waiter 2 did not complete");
-        assert!(r2.is_ok());
+            .expect("second waiter did not complete");
+        assert!(second.is_ok());
         assert_eq!(done.load(std::sync::atomic::Ordering::SeqCst), 2);
 
         h1.join().expect("h1");
