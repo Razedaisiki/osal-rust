@@ -1,5 +1,60 @@
 # Changelog
 
+## P7D — FreeRTOS Queue Foundation (2026-07-27) — Completed
+
+### Added
+
+- ADR 0027: FreeRTOS Queue Object Model (ByteQueue + native mutex + dual
+  wake semaphore, waiter-credit protocol, WaitBudget, close broadcast).
+- `FreeRtosQueue`: bounded FIFO byte-message queue implementing the full
+  `Queue` trait (ADR 0027).
+- ByteQueue as sole data/close state (reused from `osal-portable`).
+- Native FreeRTOS mutex for state serialisation; two counting
+  semaphores (sender_wake, receiver_wake) for waiter signalling.
+- Waiter-credit protocol: per-direction `0 <= wake_credits <= waiters`
+  invariant prevents stale-token accumulation and semaphore overflow.
+- `WaitBudget`: stateful absolute-deadline budget preserving a single
+  deadline across repeated wait attempts within one API call.
+- Close-drain broadcast: `close()` wakes all registered senders and
+  receivers via missing-credit count; idempotent.
+- `QueueStateGuard`: `!Send + !Sync` mutex guard wrapper.
+- `NativeQueueResources`: RAII guard for constructor rollback.
+- Constructor validates params and allocates `ByteQueue` before native
+  objects (parameter errors don't require native-object rollback).
+- Lock order: MUST NOT block on wake semaphore while holding state
+  mutex (ADR 0027 §3).
+- 21 Queue contract tests: 18 QueueCoreContract + 3 clone lifetime.
+- Facade routing for `Queue` under `backend-freertos`.
+- `portmacro.h` for native FreeRTOS smoke build.
+- Per-object blocked waiter tracking in fixture (`blocked_count` per
+  mutex/semaphore entry).
+
+### Changed
+
+- Fixture: `notify_one` → `notify_all` to prevent lost wakeups across
+  objects sharing the global Condvar.
+- Wake semaphore `max_count` uses native max (UBaseType_t) instead of
+  queue capacity — required for close broadcast with more waiters than
+  capacity.
+- `wait.rs`: added `WaitBudget` enum with `wait_once()` for multi-wait
+  operations; existing `wait_native()` preserved as convenience wrapper.
+- Capability matrix: Queue Core → Implemented, Queue Blocking →
+  Implemented (host-contract-verified).
+- Crate docs: P7C → P7D.
+
+### Fixed
+
+- Waiter counter rollback on `WaitBudget` error (e.g. scheduler
+  NotStarted) — sender/receiver waiters unregistered before error
+  propagation.
+
+### Deferred
+
+- Real FreeRTOS kernel runtime tests for Validated promotion.
+- Per-object Condvar fixture (global `notify_all` is correct but noisy).
+- ISR queue variants (`IsrQueue`, `send_from_isr`, `recv_from_isr`).
+- Task, Timer primitives (P7E+).
+
 ## P7C — FreeRTOS Mutex and Semaphore Foundation (2026-07-24) — Completed
 
 ### Added

@@ -146,6 +146,15 @@ contract-validated. Current platforms:
 | `osal-backend-freertos` | FreeRTOS | ARM Cortex-M, RISC-V embedded |
 | `osal-backend-freertos-sys` | FreeRTOS (C shim) | FFI boundary — `unsafe` isolation layer |
 
+### FreeRTOS Queue data flow
+
+```
+FreeRtosQueue
+  → ByteQueue (portable ring buffer)
+  → native mutex (state serialisation)
+  → sender_wake + receiver_wake (counting semaphores)
+```
+
 Backends depend on `osal-api`, `osal-shared`, and optionally
 `osal-portable`. They must not depend on each other. Each backend
 owns its own `RuntimeLifecycle` instance (ADR 0019).

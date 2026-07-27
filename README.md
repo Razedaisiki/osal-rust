@@ -11,21 +11,23 @@ across different platforms by switching the backend.
 
 ## Project Status
 
-**Latest milestone: P7C — FreeRTOS Mutex and Semaphore Foundation.**
+**Latest milestone: P7D — FreeRTOS Queue Foundation.**
 
 The POSIX backend fully implements the current non-deferred `osal-api`
 trait surface. The Mock backend implements the same surface with the
 exception of blocking Queue contracts (deferred until a deterministic
 scheduler is implemented).
 
-FreeRTOS integration: ADRs 0020–0026 define scheduler ownership,
+FreeRTOS integration: ADRs 0020–0027 define scheduler ownership,
 configuration contract, FFI boundary, tick/time model, System mapping,
-blocking wait model, and sync object model. The `osal-backend-freertos`
-crate provides the full synchronization layer: Mutex (native
-priority-inheritance mutex with RAII guard), CountingSemaphore and
-BinarySemaphore (native kernel semaphores), Clock (tick-snapshot-based
-monotonic time), and System (heap introspection + nesting critical
-sections). Queue, Task, and Timer are deferred to P7D+.
+blocking wait model, sync object model, and queue object model. The
+`osal-backend-freertos` crate provides the full synchronization and
+messaging layer: Mutex (native priority-inheritance mutex with RAII
+guard), CountingSemaphore and BinarySemaphore (native kernel
+semaphores), Queue (ByteQueue + native mutex + dual wake semaphore
+with close-drain broadcast), Clock (tick-snapshot-based monotonic
+time), and System (heap introspection + nesting critical sections).
+Task and Timer are deferred to P7E+.
 
 Advanced task controls (cancellation, suspend/resume, real priority
 scheduling, stack watermark), ISR extension traits, and production
@@ -41,8 +43,8 @@ Public APIs may change before version 1.0.
 - POSIX backend (`backend-posix`)
 - Mock backend (`backend-mock`)
 - FreeRTOS backend foundation (`backend-freertos`): Runtime Lifecycle,
-  Clock, System, Mutex, CountingSemaphore, and BinarySemaphore
-  implemented and host-contract-verified
+  Clock, System, Mutex, CountingSemaphore, BinarySemaphore, and Queue
+  (core + blocking) implemented and host-contract-verified
 - Queue (core + blocking on POSIX)
 - Mutex (non-recursive, ADR 0007)
 - CountingSemaphore and BinarySemaphore
@@ -69,8 +71,8 @@ Public APIs may change before version 1.0.
 
 | Capability        | API       | Mock        | POSIX       | FreeRTOS   | Contract    | Facade    |
 |-------------------|-----------|-------------|-------------|------------|-------------|-----------|
-| Queue Core        | Validated | Validated   | Validated   | Planned    | Validated   | Validated |
-| Queue Blocking    | Validated | Deferred    | Validated   | Planned    | Validated¹  | Validated |
+| Queue Core        | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
+| Queue Blocking    | Validated | Deferred    | Validated   | Implemented| Validated¹  | Validated |
 | Queue ISR         | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
 | Mutex             | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
 | CountingSemaphore | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
@@ -189,6 +191,7 @@ the full authority model, update triggers, and status terminology.
 - [ADR 0024: FreeRTOS System Mapping](docs/adr/0024-freertos-system-mapping.md)
 - [ADR 0025: FreeRTOS Blocking Wait Model](docs/adr/0025-freertos-blocking-wait-model.md)
 - [ADR 0026: FreeRTOS Synchronization Object Model](docs/adr/0026-freertos-sync-object-model.md)
+- [ADR 0027: FreeRTOS Queue Object Model](docs/adr/0027-freertos-queue-object-model.md)
 
 > The English behavior contract (`docs/behavior-contract.md`) is the
 > source of truth for backend conformance. Chinese translations are
