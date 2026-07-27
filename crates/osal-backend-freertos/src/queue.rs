@@ -256,14 +256,18 @@ impl FreeRtosQueue {
         let state_mutex = sys::mutex_create().ok_or(Error::OutOfMemory)?;
         res.mutex = Some(state_mutex);
 
-        // Sender wake: max = capacity so up to `capacity` senders can
-        // be woken without Overflow.
+        // Wake semaphores are signalling channels, not capacity trackers.
+        // Their max_count must accommodate all possible waiters (close
+        // broadcasts wake every registered waiter).  Use the native max
+        // clamped to the semaphore count range.
+        let wake_max = sys::max_semaphore_count().min(u32::MAX as u64) as u32;
+
         let sender_wake =
-            sys::counting_semaphore_create(capacity as u32, 0).ok_or(Error::OutOfMemory)?;
+            sys::counting_semaphore_create(wake_max, 0).ok_or(Error::OutOfMemory)?;
         res.sender_wake = Some(sender_wake);
 
         let receiver_wake =
-            sys::counting_semaphore_create(capacity as u32, 0).ok_or(Error::OutOfMemory)?;
+            sys::counting_semaphore_create(wake_max, 0).ok_or(Error::OutOfMemory)?;
         res.receiver_wake = Some(receiver_wake);
 
         // 7. Success — transfer ownership out of the RAII guard.

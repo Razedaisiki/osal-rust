@@ -254,7 +254,7 @@ pub fn mutex_give(handle: &MutexHandle) -> GiveStatus {
 
     entry.locked = false;
     entry.owner = None;
-    cvar.notify_one();
+    cvar.notify_all();
     GiveStatus::Ok
 }
 
@@ -392,7 +392,7 @@ pub fn semaphore_give(handle: &SemaphoreHandle) -> GiveStatus {
     }
 
     entry.count += 1;
-    cvar.notify_one();
+    cvar.notify_all();
     GiveStatus::Ok
 }
 
