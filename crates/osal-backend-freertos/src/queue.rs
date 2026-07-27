@@ -374,6 +374,74 @@ impl FreeRtosQueue {
         }
     }
 
+    /// Re-acquire the state mutex and unregister a sender waiter.
+    ///
+    /// Used when [`WaitBudget::wait_once`] returns an error (e.g.
+    /// scheduler NotStarted) after a sender has already been registered.
+    fn unregister_sender_waiter(
+        inner: &QueueInner,
+        state_mutex: &sys::MutexHandle,
+    ) {
+        // Re-acquire state mutex.
+        loop {
+            match sys::mutex_take(state_mutex, 0) {
+                sys::TakeStatus::Acquired => break,
+                sys::TakeStatus::Timeout => {
+                    // Contention — block until available.
+                    if wait::wait_native(Timeout::Forever, |ticks| {
+                        sys::mutex_take(state_mutex, ticks)
+                    })
+                    .is_err()
+                    {
+                        continue;
+                    }
+                    break;
+                }
+                sys::TakeStatus::Invalid => {
+                    panic!("FreeRTOS queue state mutex invalid on live queue")
+                }
+            }
+        }
+        // SAFETY: we hold the state mutex.
+        let state = unsafe { &mut *inner.state.get() };
+        state.sender_waiters = state.sender_waiters.saturating_sub(1);
+        // Release the mutex.
+        if sys::mutex_give(state_mutex) != sys::GiveStatus::Ok {
+            panic!("FreeRTOS queue state mutex give failed — invariant violation");
+        }
+    }
+
+    /// Re-acquire the state mutex and unregister a receiver waiter.
+    fn unregister_receiver_waiter(
+        inner: &QueueInner,
+        state_mutex: &sys::MutexHandle,
+    ) {
+        loop {
+            match sys::mutex_take(state_mutex, 0) {
+                sys::TakeStatus::Acquired => break,
+                sys::TakeStatus::Timeout => {
+                    if wait::wait_native(Timeout::Forever, |ticks| {
+                        sys::mutex_take(state_mutex, ticks)
+                    })
+                    .is_err()
+                    {
+                        continue;
+                    }
+                    break;
+                }
+                sys::TakeStatus::Invalid => {
+                    panic!("FreeRTOS queue state mutex invalid on live queue")
+                }
+            }
+        }
+        // SAFETY: we hold the state mutex.
+        let state = unsafe { &mut *inner.state.get() };
+        state.receiver_waiters = state.receiver_waiters.saturating_sub(1);
+        if sys::mutex_give(state_mutex) != sys::GiveStatus::Ok {
+            panic!("FreeRTOS queue state mutex give failed — invariant violation");
+        }
+    }
+
     /// Wake ALL registered waiters in a given direction.
     ///
     /// Uses the missing-credit count to avoid double-posting tokens
@@ -464,7 +532,18 @@ impl Queue for FreeRtosQueue {
             drop(state_guard);
 
             // Block on sender_wake semaphore.
-            let outcome = budget.wait_once(|ticks| sys::semaphore_take(sender_wake, ticks))?;
+            let outcome = match budget.wait_once(|ticks| sys::semaphore_take(sender_wake, ticks)) {
+                Ok(o) => o,
+                Err(e) => {
+                    // Roll back waiter registration on error
+                    // (e.g. scheduler NotStarted / Busy).
+                    Self::unregister_sender_waiter(
+                        &self.inner,
+                        state_mutex_for_reacquire,
+                    );
+                    return Err(e);
+                }
+            };
 
             // Re-acquire state mutex.
             let mut state_guard = loop {
@@ -574,7 +653,17 @@ impl Queue for FreeRtosQueue {
             drop(state_guard);
 
             // Block on receiver_wake semaphore.
-            let outcome = budget.wait_once(|ticks| sys::semaphore_take(receiver_wake, ticks))?;
+            let outcome = match budget.wait_once(|ticks| sys::semaphore_take(receiver_wake, ticks)) {
+                Ok(o) => o,
+                Err(e) => {
+                    // Roll back waiter registration on error.
+                    Self::unregister_receiver_waiter(
+                        &self.inner,
+                        state_mutex_for_reacquire,
+                    );
+                    return Err(e);
+                }
+            };
 
             // Re-acquire state mutex.
             let mut state_guard = loop {
