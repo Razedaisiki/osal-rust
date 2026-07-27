@@ -687,7 +687,7 @@ fn stress_create_send_recv_close_drop_cycle() {
     setup();
     {
         for i in 0..100 {
-            let q = FreeRtosQueue::new(4, 4).expect(&format!("create {i}"));
+            let q = FreeRtosQueue::new(4, 4).unwrap_or_else(|_| panic!("create {i}"));
             q.send(&[1, 2, 3, 4], Timeout::NoWait).expect("send");
             let mut buf = [0u8; 4];
             q.recv(&mut buf, Timeout::NoWait).expect("recv");
