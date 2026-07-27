@@ -285,7 +285,43 @@ fn one_recv_wakes_one_sender() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. close wakes blocked sender
+// 7. close wakes blocked receiver
+// ---------------------------------------------------------------------------
+
+#[test]
+fn close_wakes_blocked_receiver() {
+    setup();
+    {
+        let q = FreeRtosQueue::new(1, 4).expect("create");
+        let qc = q.clone();
+        let (tx, rx) = mpsc::channel();
+        let barrier = Arc::new(Barrier::new(2));
+        let b = Arc::clone(&barrier);
+
+        let handle = thread::spawn(move || {
+            b.wait();
+            let mut buf = [0u8; 4];
+            let r = qc.recv(&mut buf, Timeout::Forever);
+            tx.send(r).ok();
+        });
+
+        barrier.wait();
+        wait_until_blocked_count(1, Duration::from_secs(2));
+
+        q.close().expect("close");
+
+        let result = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker did not complete");
+        assert_eq!(result, Err(Error::QueueClosed));
+
+        handle.join().expect("worker panicked");
+    }
+    teardown();
+}
+
+// ---------------------------------------------------------------------------
+// 8. close wakes blocked sender
 // ---------------------------------------------------------------------------
 
 #[test]

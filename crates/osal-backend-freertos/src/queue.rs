@@ -392,7 +392,9 @@ impl FreeRtosQueue {
         wake_credits: &mut u32,
         wake_handle: &sys::SemaphoreHandle,
     ) -> bool {
-        let missing = waiters.saturating_sub(*wake_credits);
+        let missing = waiters
+            .checked_sub(*wake_credits)
+            .expect("wake credits exceed waiter count — invariant violation");
         let mut all_ok = true;
         for _ in 0..missing {
             match sys::semaphore_give(wake_handle) {
@@ -455,12 +457,15 @@ impl Queue for FreeRtosQueue {
                     match budget {
                         WaitBudget::NoWait => return Err(Error::QueueFull),
                         WaitBudget::Zero => return Err(Error::Timeout),
-                        WaitBudget::Finite { .. } | WaitBudget::Forever => {
+                        WaitBudget::Finite { .. } | WaitBudget::Forever { .. } => {
                             // Preflight: check scheduler state, compute
                             // deadline — fails before any waiter state
                             // is modified (ADR 0027 §5, review fix #2).
                             budget.prepare_blocking()?;
-                            state.sender_waiters += 1;
+                            state.sender_waiters = state
+                                .sender_waiters
+                                .checked_add(1)
+                                .expect("sender waiter count overflowed u32");
                         }
                     }
                 }
@@ -538,7 +543,10 @@ impl Queue for FreeRtosQueue {
                         continue;
                     }
                     // No token — genuine timeout.
-                    state.sender_waiters = state.sender_waiters.saturating_sub(1);
+                    state.sender_waiters = state
+                        .sender_waiters
+                        .checked_sub(1)
+                        .expect("timeout unregister without sender waiter");
 
                     if state.buffer.is_closed() {
                         return Err(Error::QueueClosed);
@@ -588,12 +596,15 @@ impl Queue for FreeRtosQueue {
                     match budget {
                         WaitBudget::NoWait => return Err(Error::QueueEmpty),
                         WaitBudget::Zero => return Err(Error::Timeout),
-                        WaitBudget::Finite { .. } | WaitBudget::Forever => {
+                        WaitBudget::Finite { .. } | WaitBudget::Forever { .. } => {
                             // Preflight: check scheduler state, compute
                             // deadline — fails before any waiter state
                             // is modified (ADR 0027 §5, review fix #2).
                             budget.prepare_blocking()?;
-                            state.receiver_waiters += 1;
+                            state.receiver_waiters = state
+                                .receiver_waiters
+                                .checked_add(1)
+                                .expect("receiver waiter count overflowed u32");
                         }
                     }
                 }
@@ -663,7 +674,10 @@ impl Queue for FreeRtosQueue {
                         continue;
                     }
                     // No token — genuine timeout.
-                    state.receiver_waiters = state.receiver_waiters.saturating_sub(1);
+                    state.receiver_waiters = state
+                        .receiver_waiters
+                        .checked_sub(1)
+                        .expect("timeout unregister without receiver waiter");
 
                     if state.buffer.is_closed() && state.buffer.is_empty() {
                         return Err(Error::QueueClosed);

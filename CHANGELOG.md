@@ -23,10 +23,11 @@
   objects (parameter errors don't require native-object rollback).
 - Lock order: MUST NOT block on wake semaphore while holding state
   mutex (ADR 0027 §3).
-- 21 Queue contract tests: 18 QueueCoreContract + 3 clone lifetime.
-- 24 Queue concurrency tests: cross-thread wake, wake-one, timeout-race,
-  close broadcast, scheduler-state preconditions, multi-chunk finite,
-  stress cycle.
+- 2 Queue contract test functions running 21 shared contract cases
+  (18 QueueCoreContract + 3 clone lifetime).
+- 25 Queue concurrency tests: cross-thread wake, wake-one, timeout-race,
+  close broadcast (receiver + sender), scheduler-state preconditions,
+  multi-chunk finite, stress cycle.
 - Facade routing for `Queue` under `backend-freertos`.
 - `portmacro.h` for native FreeRTOS smoke build.
 - Per-object blocked waiter tracking in fixture (`blocked_count` per
@@ -47,13 +48,11 @@
   Implemented (host-contract-verified).
 - Crate docs: P7C → P7D.
 
-### Fixed (review cycle)
+### Fixed (review cycle, round 1)
 
 - WaitBudget deadline overflow restored to `Error::Overflow` (was panic).
 - Blocking preflight (`prepare_blocking()`) validates scheduler state
-  and computes deadline before waiter registration — removes the
-  post-registration error rollback that could violate the
-  `credits <= waiters` invariant.
+  and computes deadline before waiter registration.
 - Timeout-race token: when a wake token arrives between timeout and
   mutex re-acquisition, the waiter now loops back to re-check the queue
   instead of returning `Timeout` (preventing lost wakeups).
@@ -63,13 +62,28 @@
   `expect()` instead of `saturating_sub`/ambiguous `if credits > 0`
   — invariant violations surface immediately.
 
+### Fixed (review cycle, round 2)
+
+- `WaitBudget::prepared` flag: after `prepare_blocking()` succeeds,
+  `wait_once()` skips the scheduler-state check — a waiter registered
+  after preflight can no longer hit `NotInitialized`/`Busy` in the
+  blocking path.
+- All remaining `saturating_sub` calls in waiter-credit paths replaced
+  with `checked_sub().expect()`; waiter increments use `checked_add`.
+- Added `close_wakes_blocked_receiver` test (symmetric to sender).
+- Restored strict `BLOCKED_COUNT` assertion in fixture `sync_reset()`
+  (keep poison recovery, reject stranded threads).
+
 ### Known limitation
 
 - Multi-waiter close broadcast tests (close waking N>1 waiters
-  simultaneously) are deferred until the fixture supports per-object
-  Condvars.  The current shared-Condvar model is non-deterministic for
-  simultaneous cross-object wake scenarios.  The same code paths are
-  verified via single-waiter close tests and multi-waiter wake-one tests.
+  simultaneously) are deferred as a host-fixture coverage limitation.
+  The current shared-Condvar model is non-deterministic for simultaneous
+  cross-object wake scenarios; the implementation code paths are
+  identical to the single-waiter case.  Full coverage requires the
+  per-object Condvar fixture refactor, which is tracked as deferred.
+  Single-waiter close broadcast (both receiver and sender directions)
+  is fully tested.
 
 ### Deferred
 

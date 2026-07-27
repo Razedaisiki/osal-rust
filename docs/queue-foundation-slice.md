@@ -64,12 +64,13 @@ Total: 18 core contract tests across all backends.
 ### QueueBlockingContract
 
 POSIX: 6 blocking contract tests (full suite).
-FreeRTOS: 24 fixture-based concurrency tests covering cross-thread
-wake, wake-one, timeout-race, close broadcast (single-waiter),
-scheduler-state preconditions, and stress cycle.  Shared blocking
-contract suite integration deferred until testkit supports generic
-blocking Queue contracts.  Multi-waiter close broadcast tests deferred
-until per-object Condvar fixture refactor.
+FreeRTOS: 25 fixture-based concurrency tests covering cross-thread
+wake, wake-one, timeout-race, close broadcast (receiver + sender
+single-waiter), scheduler-state preconditions, multi-chunk finite,
+and stress cycle.  Shared blocking contract suite integration deferred
+until testkit supports generic blocking Queue contracts.  Multi-waiter
+close broadcast tests deferred as host-fixture coverage limitation
+(the implementation code paths are identical to single-waiter).
 
 ### Additional
 

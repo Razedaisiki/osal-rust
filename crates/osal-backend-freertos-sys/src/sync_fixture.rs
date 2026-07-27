@@ -443,13 +443,12 @@ pub fn sync_reset() {
     state.give_call_count = 0;
 
     // Defensive: no thread should be inside a Condvar wait at reset time.
-    // Downgraded from assert to logged warning — a poisoned fixture from a
-    // previous failing test must not prevent the next test from resetting.
     let blocked = BLOCKED_COUNT.load(Ordering::SeqCst);
-    if blocked != 0 {
-        // Force-reset the count so the next test can start clean.
-        BLOCKED_COUNT.store(0, Ordering::SeqCst);
-    }
+    assert_eq!(
+        blocked, 0,
+        "fixture reset while {blocked} thread(s) still blocked in Condvar — \
+         join all worker threads before reset"
+    );
 }
 
 pub fn sync_set_fail_next_mutex_create(fail: bool) {

@@ -81,10 +81,19 @@ pub(crate) enum WaitBudget {
     Finite {
         duration: Duration,
         deadline: Option<Duration>,
+        /// Set by [`prepare_blocking`](WaitBudget::prepare_blocking).
+        /// When true, `wait_once` skips the scheduler-state check
+        /// (already passed) and deadline computation (already done).
+        prepared: bool,
     },
 
     /// Block indefinitely (loops max-finite chunks, not `portMAX_DELAY`).
-    Forever,
+    Forever {
+        /// Set by [`prepare_blocking`](WaitBudget::prepare_blocking).
+        /// When true, `wait_once` skips the scheduler-state check
+        /// (already passed).
+        prepared: bool,
+    },
 }
 
 impl WaitBudget {
@@ -99,10 +108,11 @@ impl WaitBudget {
                     WaitBudget::Finite {
                         duration: d,
                         deadline: None,
+                        prepared: false,
                     }
                 }
             }
-            Timeout::Forever => WaitBudget::Forever,
+            Timeout::Forever => WaitBudget::Forever { prepared: false },
         }
     }
 
@@ -122,7 +132,11 @@ impl WaitBudget {
                 // These never block — caller should not have called this.
                 Ok(())
             }
-            WaitBudget::Finite { duration, deadline } => {
+            WaitBudget::Finite {
+                duration,
+                deadline,
+                prepared,
+            } => {
                 ensure_blocking_allowed()?;
                 if deadline.is_none() {
                     let value = FreeRtosClock::now()
@@ -130,9 +144,14 @@ impl WaitBudget {
                         .ok_or(Error::Overflow)?;
                     *deadline = Some(value);
                 }
+                *prepared = true;
                 Ok(())
             }
-            WaitBudget::Forever => ensure_blocking_allowed(),
+            WaitBudget::Forever { prepared } => {
+                ensure_blocking_allowed()?;
+                *prepared = true;
+                Ok(())
+            }
         }
     }
 
@@ -169,7 +188,16 @@ impl WaitBudget {
                     panic!("FreeRTOS take returned Invalid on a live handle")
                 }
             },
-            WaitBudget::Finite { duration, deadline } => {
+            WaitBudget::Finite {
+                duration,
+                deadline,
+                prepared,
+            } => {
+                // If prepare_blocking() was called, skip checks — they
+                // already passed (review fix #1).
+                if !*prepared {
+                    ensure_blocking_allowed()?;
+                }
                 // Lazily compute the absolute deadline on first blocking entry.
                 let dl = match deadline {
                     Some(value) => *value,
@@ -182,15 +210,12 @@ impl WaitBudget {
                     }
                 };
 
-                // Scheduler-state precondition — checked once, on first
-                // entry into the blocking path (ADR 0025 §4).
-                ensure_blocking_allowed()?;
-
                 wait_deadline_loop(dl, take)
             }
-            WaitBudget::Forever => {
-                // Scheduler-state precondition (ADR 0025 §4).
-                ensure_blocking_allowed()?;
+            WaitBudget::Forever { prepared } => {
+                if !*prepared {
+                    ensure_blocking_allowed()?;
+                }
                 wait_forever(take)
             }
         }
