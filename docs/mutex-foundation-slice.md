@@ -3,23 +3,24 @@
 ## Status
 
 Stabilized (P1.1) — Non-recursive Mutex with corrected memory safety,
-handle model, and monotonic clock. Mock and POSIX pass all core
-contracts. POSIX additionally passes the blocking and contention tests.
+handle model, and monotonic clock. Mock, POSIX, and FreeRTOS pass all
+core contracts. POSIX additionally passes the blocking and contention tests.
+FreeRTOS host fixture passes cross-thread blocking and wakeup tests.
 
 ## Architecture
 
 ```
                  osal (facade)
                      |
-         +-----------+-----------+
-         |                       |
-  osal-backend-posix    osal-backend-mock
-         |                       |
-  PosixMutexImpl<T>        MockMutex<T>
-         |                       |
-    PosixMutex              Rc + UnsafeCell
-  (PTHREAD_MUTEX_         + Cell<bool>
-   ERRORCHECK)
+         +-----------+-----------+-----------+
+         |                       |           |
+  osal-backend-posix    osal-backend-mock   osal-backend-freertos
+         |                       |           |
+  PosixMutexImpl<T>        MockMutex<T>   FreeRtosMutex<T>
+         |                       |           |
+    PosixMutex              Rc+UnsafeCell  native mutex
+  (PTHREAD_MUTEX_         + Cell<bool>    + spin::Mutex<T>
+   ERRORCHECK)                            (priority inheritance)
 ```
 
 ## Components
@@ -30,6 +31,9 @@ contracts. POSIX additionally passes the blocking and contention tests.
 | POSIX sys | `PosixMutex` (ERRORCHECK) | `crates/osal-backend-posix/src/sys/mutex.rs` |
 | POSIX backend | `PosixMutexImpl<T>` | `crates/osal-backend-posix/src/mutex.rs` |
 | Mock backend | `MockMutex<T>` | `crates/osal-backend-mock/src/mutex.rs` |
+| FreeRTOS backend | `FreeRtosMutex<T>` + Guard | `crates/osal-backend-freertos/src/mutex.rs` |
+| FreeRTOS sys | `MutexHandle`, take/give/delete | `crates/osal-backend-freertos-sys/src/lib.rs` |
+| FreeRTOS wait | `wait_native()` | `crates/osal-backend-freertos/src/wait.rs` |
 | Facade | `Mutex` alias | `crates/osal/src/backend.rs` |
 | Testkit | Mutex core contracts | `crates/osal-testkit/src/contract/mutex.rs` |
 | Examples | mock_mutex, posix_mutex | `crates/osal/examples/` |
@@ -73,10 +77,13 @@ contracts. POSIX additionally passes the blocking and contention tests.
 
 - Mock blocking/concurrency tests (single execution context; cross-task
   contention not simulated)
-- ISR mutex operations (requires FreeRTOS extension trait)
+- ISR mutex operations (requires extension trait; ADR 0003, ADR 0008)
+- Real FreeRTOS kernel runtime tests (QEMU or physical MCU) for
+  `Validated` promotion
 - `close()` on Mutex (requires ADR; not part of current trait)
 
 ## Next Steps
 
-1. Semaphore vertical slice (P2)
-2. Task and Timer foundation slices
+1. FreeRTOS Queue, Task, and Timer primitives (P7D+)
+2. Real FreeRTOS kernel validation channel (QEMU/MCU)
+3. `RecursiveMutex` trait

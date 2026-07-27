@@ -40,6 +40,9 @@ Public APIs may change before version 1.0.
 
 - POSIX backend (`backend-posix`)
 - Mock backend (`backend-mock`)
+- FreeRTOS backend foundation (`backend-freertos`): Runtime Lifecycle,
+  Clock, System, Mutex, CountingSemaphore, and BinarySemaphore
+  implemented and host-contract-verified
 - Queue (core + blocking on POSIX)
 - Mutex (non-recursive, ADR 0007)
 - CountingSemaphore and BinarySemaphore

@@ -134,8 +134,10 @@ These are **internal building blocks**, not part of the public API.
 
 ### 4.4 `osal-backend-*` — Platform Implementations
 
-Each backend crate implements all `osal-api` traits for a specific
-platform:
+Each backend crate implements the supported subset of `osal-api`
+traits recorded in the capability matrix. A backend reaches full
+conformance only after all non-deferred traits are implemented and
+contract-validated. Current platforms:
 
 | Crate | Platform | Use Case |
 |-------|----------|----------|
@@ -180,7 +182,7 @@ osal = "0.1"
 
 Responsibilities:
 - Re-export `osal-api` types
-- Select backend via facade Cargo features (`backend-posix`, `backend-mock`, future `backend-freertos`)
+- Select backend via facade Cargo features (`backend-posix`, `backend-mock`, `backend-freertos`)
 - Guard against multiple-backend selection at compile time
 - Provide `prelude` module for convenient imports
 - Expose `initialize()`, `shutdown()`, `runtime_state()` at crate root

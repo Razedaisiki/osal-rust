@@ -85,7 +85,7 @@
 - Fixture `max_finite_delay_ticks`: configurable for multi-chunk testing.
 - Native fixture `TimeOut_t` field order matches official FreeRTOS.
 
-## P7A — FreeRTOS Integration Boundary and Backend Skeleton (2026-07-25) — Completed
+## P7A — FreeRTOS Integration Boundary and Backend Skeleton (2026-07-23) — Completed
 
 ### Added
 

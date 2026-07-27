@@ -3,6 +3,8 @@
 ## Status
 
 Complete — Clock and Timer are implemented across the full stack.
+FreeRTOS Clock is implemented (host-contract-verified); FreeRTOS Timer
+remains Planned.
 
 ## Architecture
 
@@ -25,6 +27,7 @@ Complete — Clock and Timer are implemented across the full stack.
 |---------|--------|-----------|
 | POSIX | `clock_gettime(CLOCK_MONOTONIC)` | EINTR-loop `nanosleep` |
 | Mock | `MockTimeRuntime` virtual counter | Advance + dispatch timers |
+| FreeRTOS | `vTaskSetTimeOutState()` coherent snapshot | Per-chunk guard-tick `vTaskDelay` |
 
 ## Timer Service Model
 

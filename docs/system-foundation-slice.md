@@ -81,7 +81,7 @@ only after **all** nested guards have been dropped.
 |----------|---------------|
 | Mock     | `AtomicUsize` nesting counter — validates nesting contract, no thread-level mutual exclusion |
 | POSIX    | Process-local recursive `pthread_mutex_t` (`PTHREAD_MUTEX_RECURSIVE`), lazy-initialised via `pthread_once` |
-| FreeRTOS | Deferred to FreeRTOS phase |
+| FreeRTOS | `taskENTER_CRITICAL()` / `taskEXIT_CRITICAL()` (interrupt disable, nesting supported) |
 
 ### Guard hardening
 
@@ -146,14 +146,14 @@ System contract tests verify:
 
 ## Intentionally deferred
 
-- FreeRTOS critical-section mapping (interrupt disable / BASEPRI)
 - BSP heap/resource introspection
 - Scheduler control (`System::start()` / `System::stop()`)
 - ISR-specific system extension traits
-- `initialize()` / `shutdown()` lifecycle
+- SMP critical sections (`configNUMBER_OF_CORES > 1`)
+- Real FreeRTOS kernel runtime tests for `Validated` promotion
 
 ## Next steps
 
-1. Task Foundation Slice (P5)
-2. FreeRTOS backend with ISR extension traits
+1. FreeRTOS Queue, Task, and Timer primitives (P7D+)
+2. SMP support (multi-core critical sections)
 3. BSP resource phase (real heap introspection)
