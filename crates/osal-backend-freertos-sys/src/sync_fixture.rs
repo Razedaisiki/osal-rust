@@ -56,6 +56,8 @@ struct FixtureMutexEntry {
     owner: Option<ThreadId>,
     deleted: bool,
     waiters: usize,
+    /// Number of threads currently inside a Condvar wait on this mutex.
+    blocked_count: usize,
 }
 
 struct FixtureSemaphoreEntry {
@@ -63,6 +65,8 @@ struct FixtureSemaphoreEntry {
     max_count: u32,
     deleted: bool,
     waiters: usize,
+    /// Number of threads currently inside a Condvar wait on this semaphore.
+    blocked_count: usize,
 }
 
 struct FixtureState {
@@ -144,6 +148,7 @@ pub fn mutex_create() -> Option<MutexHandle> {
             owner: None,
             deleted: false,
             waiters: 0,
+            blocked_count: 0,
         },
     );
     Some(make_mutex_handle(id))
@@ -204,13 +209,15 @@ pub fn mutex_take(handle: &MutexHandle, ticks: u64) -> TakeStatus {
         // Increment blocked count RIGHT before wait_timeout so that
         // pollers never see the count elevated before the thread is
         // actually inside the Condvar (avoids lost-wakeup races).
+        entry.blocked_count += 1;
         BLOCKED_COUNT.fetch_add(1, Ordering::Relaxed);
         let (_state, wait_result) = cvar.wait_timeout(state, timeout).unwrap();
         BLOCKED_COUNT.fetch_sub(1, Ordering::Relaxed);
         state = _state;
 
-        // Decrement waiters.
+        // Re-fetch entry after wait and decrement.
         let entry = state.mutexes.get_mut(&id).unwrap();
+        entry.blocked_count = entry.blocked_count.saturating_sub(1);
         entry.waiters = entry.waiters.saturating_sub(1);
 
         if wait_result.timed_out() {
@@ -283,6 +290,7 @@ pub fn counting_semaphore_create(max: u32, initial: u32) -> Option<SemaphoreHand
             max_count: max,
             deleted: false,
             waiters: 0,
+            blocked_count: 0,
         },
     );
     Some(make_semaphore_handle(id))
@@ -304,6 +312,7 @@ pub fn binary_semaphore_create() -> Option<SemaphoreHandle> {
             max_count: 1,
             deleted: false,
             waiters: 0,
+            blocked_count: 0,
         },
     );
     Some(make_semaphore_handle(id))
@@ -342,13 +351,15 @@ pub fn semaphore_take(handle: &SemaphoreHandle, ticks: u64) -> TakeStatus {
         entry.waiters += 1;
 
         // Increment blocked count RIGHT before wait_timeout.
+        entry.blocked_count += 1;
         BLOCKED_COUNT.fetch_add(1, Ordering::Relaxed);
         let (_state, wait_result) = cvar.wait_timeout(state, timeout).unwrap();
         BLOCKED_COUNT.fetch_sub(1, Ordering::Relaxed);
         state = _state;
 
-        // Decrement waiters.
+        // Re-fetch entry after wait and decrement.
         let entry = state.semaphores.get_mut(&id).unwrap();
+        entry.blocked_count = entry.blocked_count.saturating_sub(1);
         entry.waiters = entry.waiters.saturating_sub(1);
 
         if wait_result.timed_out() {
@@ -497,5 +508,37 @@ pub fn sync_semaphore_waiters(handle: &SemaphoreHandle) -> usize {
         .semaphores
         .get(&id)
         .map(|e| e.waiters)
+        .unwrap_or(0)
+}
+
+/// Number of threads currently blocked on this specific mutex's Condvar.
+///
+/// Unlike the global [`BLOCKED_COUNT`], this tracks per-object blocked
+/// count — essential for Queue tests where sender and receiver wait on
+/// different semaphores.
+pub fn sync_mutex_blocked_count(handle: &MutexHandle) -> usize {
+    let id = id_from_mutex_handle(handle);
+    let (lock, _cvar) = &*FIXTURE;
+    lock.lock()
+        .unwrap()
+        .mutexes
+        .get(&id)
+        .map(|e| e.blocked_count)
+        .unwrap_or(0)
+}
+
+/// Number of threads currently blocked on this specific semaphore's Condvar.
+///
+/// Unlike the global [`BLOCKED_COUNT`], this tracks per-object blocked
+/// count — essential for Queue tests where sender and receiver wait on
+/// different semaphores.
+pub fn sync_semaphore_blocked_count(handle: &SemaphoreHandle) -> usize {
+    let id = id_from_semaphore_handle(handle);
+    let (lock, _cvar) = &*FIXTURE;
+    lock.lock()
+        .unwrap()
+        .semaphores
+        .get(&id)
+        .map(|e| e.blocked_count)
         .unwrap_or(0)
 }

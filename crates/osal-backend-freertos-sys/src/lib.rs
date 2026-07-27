@@ -784,4 +784,20 @@ pub mod fixture {
     pub fn blocked_count() -> u64 {
         super::fixture_sync::BLOCKED_COUNT.load(Ordering::Relaxed)
     }
+
+    /// Number of threads blocked on a specific mutex's Condvar.
+    ///
+    /// Per-object variant of [`blocked_count`] — essential for Queue
+    /// tests where multiple sync objects may have blocked waiters.
+    pub fn mutex_blocked_count(handle: &super::MutexHandle) -> usize {
+        super::fixture_sync::sync_mutex_blocked_count(handle)
+    }
+
+    /// Number of threads blocked on a specific semaphore's Condvar.
+    ///
+    /// Per-object variant of [`blocked_count`] — essential for Queue
+    /// tests where sender and receiver wait on different semaphores.
+    pub fn semaphore_blocked_count(handle: &super::SemaphoreHandle) -> usize {
+        super::fixture_sync::sync_semaphore_blocked_count(handle)
+    }
 }
