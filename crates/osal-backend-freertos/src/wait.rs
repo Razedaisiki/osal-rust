@@ -1,8 +1,17 @@
-//! Common blocking-wait engine for FreeRTOS mutex and semaphore.
+//! Common blocking-wait engine for FreeRTOS mutex, semaphore, and queue.
 //!
 //! Implements the absolute-deadline loop with per-chunk guard ticks
-//! defined in ADR 0025.  Shared by [`FreeRtosMutex`], [`FreeRtosCountingSemaphore`],
-//! and [`FreeRtosBinarySemaphore`] — no duplicated timeout logic.
+//! defined in ADR 0025, plus [`WaitBudget`] for operations that may
+//! require multiple wait attempts within one API call (Queue send/recv).
+//!
+//! # Core types
+//!
+//! - [`WaitOutcome`] — result of a wait attempt (`Acquired` or `Unavailable`).
+//! - [`WaitBudget`] — stateful budget that preserves a single absolute
+//!   deadline across repeated waits.  Used by Queue operations that may
+//!   experience spurious wakeups or condition changes.
+//! - [`wait_native`] — convenience wrapper that creates a one-shot
+//!   `WaitBudget`.  Used by Mutex and Semaphore (single-acquisition ops).
 //!
 //! # Algorithm (ADR 0025 §2-3)
 //!
@@ -44,49 +53,134 @@ pub enum WaitOutcome {
 }
 
 // ---------------------------------------------------------------------------
-// Core wait engine
+// WaitBudget — reusable across multiple wait attempts (ADR 0027 §5)
+// ---------------------------------------------------------------------------
+
+/// A stateful timeout budget that preserves a single absolute deadline
+/// across repeated wait attempts.
+///
+/// Queue operations may need to wait multiple times within one API call:
+/// a waiter wakes, reacquires the mutex, finds the condition has changed
+/// (another consumer took the message, or the queue was closed), and must
+/// wait again without resetting the original deadline.
+///
+/// The deadline is computed **lazily** on the first blocking call to
+/// [`wait_once`][WaitBudget::wait_once].  If the operation succeeds on
+/// the first opportunistic check (resource immediately available), no
+/// deadline is ever computed — avoiding spurious `Overflow` from
+/// `checked_add` on very large durations.
+#[derive(Debug)]
+pub(crate) enum WaitBudget {
+    /// Single attempt — never blocks.
+    NoWait,
+
+    /// Single attempt — never blocks; caller maps to `Error::Timeout`.
+    Zero,
+
+    /// Finite duration with optional lazily-computed absolute deadline.
+    Finite {
+        duration: Duration,
+        deadline: Option<Duration>,
+    },
+
+    /// Block indefinitely (loops max-finite chunks, not `portMAX_DELAY`).
+    Forever,
+}
+
+impl WaitBudget {
+    /// Create a budget from a [`Timeout`].
+    pub fn new(timeout: Timeout) -> Self {
+        match timeout {
+            Timeout::NoWait => WaitBudget::NoWait,
+            Timeout::After(d) => {
+                if d == Duration::ZERO {
+                    WaitBudget::Zero
+                } else {
+                    WaitBudget::Finite {
+                        duration: d,
+                        deadline: None,
+                    }
+                }
+            }
+            Timeout::Forever => WaitBudget::Forever,
+        }
+    }
+
+    /// Execute one wait attempt using the supplied native `take` closure.
+    ///
+    /// `take(ticks)` must return `TakeStatus::Acquired` on success and
+    /// `TakeStatus::Timeout` on failure.  `TakeStatus::Invalid` triggers
+    /// a fatal panic (invariant violation).
+    ///
+    /// # Budget consumption
+    ///
+    /// - `NoWait` / `Zero`: one attempt, returns immediately.
+    /// - `Finite`: lazily computes an absolute deadline on first call,
+    ///   then enters the ADR 0025 absolute-deadline loop.  Each subsequent
+    ///   call resumes with the same (remaining) deadline.
+    /// - `Forever`: enters the max-finite chunk loop; never returns
+    ///   `Unavailable`.
+    pub fn wait_once(
+        &mut self,
+        mut take: impl FnMut(u64) -> sys::TakeStatus,
+    ) -> Result<WaitOutcome> {
+        match self {
+            WaitBudget::NoWait => match take(0) {
+                sys::TakeStatus::Acquired => Ok(WaitOutcome::Acquired),
+                sys::TakeStatus::Timeout => Ok(WaitOutcome::Unavailable),
+                sys::TakeStatus::Invalid => {
+                    panic!("FreeRTOS take returned Invalid on a live handle")
+                }
+            },
+            WaitBudget::Zero => match take(0) {
+                sys::TakeStatus::Acquired => Ok(WaitOutcome::Acquired),
+                sys::TakeStatus::Timeout => Ok(WaitOutcome::Unavailable),
+                sys::TakeStatus::Invalid => {
+                    panic!("FreeRTOS take returned Invalid on a live handle")
+                }
+            },
+            WaitBudget::Finite { duration, deadline } => {
+                // Lazily compute the absolute deadline on first blocking entry.
+                let dl = deadline.get_or_insert_with(|| {
+                    FreeRtosClock::now()
+                        .checked_add(*duration)
+                        .expect("deadline overflow for finite queue wait")
+                });
+
+                // Scheduler-state precondition — checked once, on first
+                // entry into the blocking path (ADR 0025 §4).
+                ensure_blocking_allowed()?;
+
+                wait_deadline_loop(*dl, take)
+            }
+            WaitBudget::Forever => {
+                // Scheduler-state precondition (ADR 0025 §4).
+                ensure_blocking_allowed()?;
+                wait_forever(take)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Convenience wrapper — one-shot WaitBudget (P7C Mutex + Semaphore)
 // ---------------------------------------------------------------------------
 
 /// Run a blocking wait using the supplied native `take` closure.
 ///
-/// `take(ticks)` must return `TakeStatus::Acquired` on success and
-/// `TakeStatus::Timeout` on failure.  `TakeStatus::Invalid` triggers
-/// a fatal panic (invariant violation).
+/// Convenience wrapper that creates a one-shot [`WaitBudget`] and calls
+/// [`WaitBudget::wait_once`] once.  Suitable for single-acquisition
+/// operations (Mutex, Semaphore) where retry is not needed.
 ///
 /// The caller is responsible for mapping `WaitOutcome::Unavailable` to
 /// the appropriate error variant (`LockFailed` for mutex `NoWait`,
 /// `Timeout` for everything else).
 pub fn wait_native(
     timeout: Timeout,
-    mut take: impl FnMut(u64) -> sys::TakeStatus,
+    take: impl FnMut(u64) -> sys::TakeStatus,
 ) -> Result<WaitOutcome> {
-    match timeout {
-        Timeout::NoWait => match take(0) {
-            sys::TakeStatus::Acquired => Ok(WaitOutcome::Acquired),
-            sys::TakeStatus::Timeout => Ok(WaitOutcome::Unavailable),
-            sys::TakeStatus::Invalid => {
-                panic!("FreeRTOS take returned Invalid on a live handle")
-            }
-        },
-        Timeout::After(d) => {
-            if d == Duration::ZERO {
-                match take(0) {
-                    sys::TakeStatus::Acquired => Ok(WaitOutcome::Acquired),
-                    sys::TakeStatus::Timeout => Ok(WaitOutcome::Unavailable),
-                    sys::TakeStatus::Invalid => {
-                        panic!("FreeRTOS take returned Invalid on a live handle")
-                    }
-                }
-            } else {
-                ensure_blocking_allowed()?;
-                wait_absolute_deadline(d, take)
-            }
-        }
-        Timeout::Forever => {
-            ensure_blocking_allowed()?;
-            wait_forever(take)
-        }
-    }
+    let mut budget = WaitBudget::new(timeout);
+    budget.wait_once(take)
 }
 
 // ---------------------------------------------------------------------------
@@ -110,14 +204,13 @@ fn ensure_blocking_allowed() -> Result<()> {
 // Internal strategies
 // ---------------------------------------------------------------------------
 
-fn wait_absolute_deadline(
-    duration: Duration,
+/// Absolute-deadline loop with a pre-computed deadline.
+///
+/// Used by `WaitBudget::Finite` after the deadline has been resolved.
+fn wait_deadline_loop(
+    deadline: Duration,
     mut take: impl FnMut(u64) -> sys::TakeStatus,
 ) -> Result<WaitOutcome> {
-    let deadline = FreeRtosClock::now()
-        .checked_add(duration)
-        .ok_or(Error::Overflow)?;
-
     let caps = runtime::capabilities().expect("wait requires osal::initialize()");
     let tick_rate = caps.tick_rate_hz;
     let max_native = sys::max_finite_delay_ticks() as u128;
