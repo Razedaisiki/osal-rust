@@ -24,6 +24,9 @@
 - Lock order: MUST NOT block on wake semaphore while holding state
   mutex (ADR 0027 §3).
 - 21 Queue contract tests: 18 QueueCoreContract + 3 clone lifetime.
+- 24 Queue concurrency tests: cross-thread wake, wake-one, timeout-race,
+  close broadcast, scheduler-state preconditions, multi-chunk finite,
+  stress cycle.
 - Facade routing for `Queue` under `backend-freertos`.
 - `portmacro.h` for native FreeRTOS smoke build.
 - Per-object blocked waiter tracking in fixture (`blocked_count` per
@@ -32,26 +35,46 @@
 ### Changed
 
 - Fixture: `notify_one` → `notify_all` to prevent lost wakeups across
-  objects sharing the global Condvar.
+  objects sharing the global Condvar; `sync_reset` clears poison flag
+  to prevent cascading test failures.
 - Wake semaphore `max_count` uses native max (UBaseType_t) instead of
   queue capacity — required for close broadcast with more waiters than
   capacity.
 - `wait.rs`: added `WaitBudget` enum with `wait_once()` for multi-wait
-  operations; existing `wait_native()` preserved as convenience wrapper.
+  operations and `prepare_blocking()` preflight; existing
+  `wait_native()` preserved as convenience wrapper.
 - Capability matrix: Queue Core → Implemented, Queue Blocking →
   Implemented (host-contract-verified).
 - Crate docs: P7C → P7D.
 
-### Fixed
+### Fixed (review cycle)
 
-- Waiter counter rollback on `WaitBudget` error (e.g. scheduler
-  NotStarted) — sender/receiver waiters unregistered before error
-  propagation.
+- WaitBudget deadline overflow restored to `Error::Overflow` (was panic).
+- Blocking preflight (`prepare_blocking()`) validates scheduler state
+  and computes deadline before waiter registration — removes the
+  post-registration error rollback that could violate the
+  `credits <= waiters` invariant.
+- Timeout-race token: when a wake token arrives between timeout and
+  mutex re-acquisition, the waiter now loops back to re-check the queue
+  instead of returning `Timeout` (preventing lost wakeups).
+- Close broadcast: both sender and receiver directions are attempted
+  before any fatal panic (committed-state fatal policy).
+- Waiter/credit arithmetic uses `checked_add`/`checked_sub` with
+  `expect()` instead of `saturating_sub`/ambiguous `if credits > 0`
+  — invariant violations surface immediately.
+
+### Known limitation
+
+- Multi-waiter close broadcast tests (close waking N>1 waiters
+  simultaneously) are deferred until the fixture supports per-object
+  Condvars.  The current shared-Condvar model is non-deterministic for
+  simultaneous cross-object wake scenarios.  The same code paths are
+  verified via single-waiter close tests and multi-waiter wake-one tests.
 
 ### Deferred
 
 - Real FreeRTOS kernel runtime tests for Validated promotion.
-- Per-object Condvar fixture (global `notify_all` is correct but noisy).
+- Per-object Condvar fixture.
 - ISR queue variants (`IsrQueue`, `send_from_isr`, `recv_from_isr`).
 - Task, Timer primitives (P7E+).
 

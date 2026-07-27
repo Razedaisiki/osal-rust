@@ -61,13 +61,15 @@ suite. CI enforces format, clippy, tests, docs, and feature matrix checks.
 
 Total: 18 core contract tests across all backends.
 
-### QueueBlockingContract (POSIX + FreeRTOS)
+### QueueBlockingContract
 
 POSIX: 6 blocking contract tests (full suite).
-FreeRTOS: blocking semantics verified via fixture-based cross-thread
-tests (14 concurrency + stabilisation tests); shared blocking contract
-suite integration deferred until testkit supports generic blocking
-Queue contracts.
+FreeRTOS: 24 fixture-based concurrency tests covering cross-thread
+wake, wake-one, timeout-race, close broadcast (single-waiter),
+scheduler-state preconditions, and stress cycle.  Shared blocking
+contract suite integration deferred until testkit supports generic
+blocking Queue contracts.  Multi-waiter close broadcast tests deferred
+until per-object Condvar fixture refactor.
 
 ### Additional
 
