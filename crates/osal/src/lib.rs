@@ -104,7 +104,11 @@ pub mod prelude {
         feature = "backend-freertos"
     ))]
     pub use crate::backend::Mutex;
-    #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
+    #[cfg(any(
+        feature = "backend-mock",
+        feature = "backend-posix",
+        feature = "backend-freertos"
+    ))]
     pub use crate::backend::Queue;
     #[cfg(any(
         feature = "backend-mock",

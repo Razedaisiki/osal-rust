@@ -14,6 +14,12 @@ pub use osal_backend_mock::queue::MockQueue as Queue;
 #[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
 pub use osal_backend_posix::queue::PosixQueue as Queue;
 
+#[cfg(all(
+    feature = "backend-freertos",
+    not(any(feature = "backend-posix", feature = "backend-mock"))
+))]
+pub use osal_backend_freertos::queue::FreeRtosQueue as Queue;
+
 // ---------------------------------------------------------------------------
 // Mutex
 // ---------------------------------------------------------------------------

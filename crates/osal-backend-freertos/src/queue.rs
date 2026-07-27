@@ -262,8 +262,7 @@ impl FreeRtosQueue {
         // clamped to the semaphore count range.
         let wake_max = sys::max_semaphore_count().min(u32::MAX as u64) as u32;
 
-        let sender_wake =
-            sys::counting_semaphore_create(wake_max, 0).ok_or(Error::OutOfMemory)?;
+        let sender_wake = sys::counting_semaphore_create(wake_max, 0).ok_or(Error::OutOfMemory)?;
         res.sender_wake = Some(sender_wake);
 
         let receiver_wake =
@@ -378,10 +377,7 @@ impl FreeRtosQueue {
     ///
     /// Used when [`WaitBudget::wait_once`] returns an error (e.g.
     /// scheduler NotStarted) after a sender has already been registered.
-    fn unregister_sender_waiter(
-        inner: &QueueInner,
-        state_mutex: &sys::MutexHandle,
-    ) {
+    fn unregister_sender_waiter(inner: &QueueInner, state_mutex: &sys::MutexHandle) {
         // Re-acquire state mutex.
         loop {
             match sys::mutex_take(state_mutex, 0) {
@@ -412,10 +408,7 @@ impl FreeRtosQueue {
     }
 
     /// Re-acquire the state mutex and unregister a receiver waiter.
-    fn unregister_receiver_waiter(
-        inner: &QueueInner,
-        state_mutex: &sys::MutexHandle,
-    ) {
+    fn unregister_receiver_waiter(inner: &QueueInner, state_mutex: &sys::MutexHandle) {
         loop {
             match sys::mutex_take(state_mutex, 0) {
                 sys::TakeStatus::Acquired => break,
@@ -537,10 +530,7 @@ impl Queue for FreeRtosQueue {
                 Err(e) => {
                     // Roll back waiter registration on error
                     // (e.g. scheduler NotStarted / Busy).
-                    Self::unregister_sender_waiter(
-                        &self.inner,
-                        state_mutex_for_reacquire,
-                    );
+                    Self::unregister_sender_waiter(&self.inner, state_mutex_for_reacquire);
                     return Err(e);
                 }
             };
@@ -653,14 +643,12 @@ impl Queue for FreeRtosQueue {
             drop(state_guard);
 
             // Block on receiver_wake semaphore.
-            let outcome = match budget.wait_once(|ticks| sys::semaphore_take(receiver_wake, ticks)) {
+            let outcome = match budget.wait_once(|ticks| sys::semaphore_take(receiver_wake, ticks))
+            {
                 Ok(o) => o,
                 Err(e) => {
                     // Roll back waiter registration on error.
-                    Self::unregister_receiver_waiter(
-                        &self.inner,
-                        state_mutex_for_reacquire,
-                    );
+                    Self::unregister_receiver_waiter(&self.inner, state_mutex_for_reacquire);
                     return Err(e);
                 }
             };
