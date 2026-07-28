@@ -313,6 +313,30 @@ pub fn task_fixture_reset() {
     LAST_NATIVE_PRIORITY.store(0, Ordering::Relaxed);
 
     let (lock, _cvar) = &*TASK_FIXTURE;
+
+    // 1. Drain pending tasks and active thread handles under the lock.
+    let (threads, pending_count) = {
+        let mut state = match lock.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                lock.clear_poison();
+                e.into_inner()
+            }
+        };
+        let threads: Vec<_> = state.active_threads.drain(..).collect();
+        let pending = state.pending_tasks.len();
+        (threads, pending)
+    };
+    // Lock released here.
+
+    // 2. Join all task threads BEFORE clearing native object maps.
+    //    This ensures no thread is still accessing EventGroups or
+    //    task entries when we remove them.
+    for handle in threads {
+        let _ = handle.join();
+    }
+
+    // 3. Re-acquire the lock and clear state.
     let mut state = match lock.lock() {
         Ok(g) => g,
         Err(e) => {
@@ -321,8 +345,17 @@ pub fn task_fixture_reset() {
         }
     };
 
-    // Drain and join all active task threads before clearing state.
-    let threads: Vec<_> = state.active_threads.drain(..).collect();
+    assert_eq!(
+        pending_count, 0,
+        "task fixture reset with {pending_count} pending tasks"
+    );
+
+    let blocked = TASK_BLOCKED_COUNT.load(Ordering::SeqCst);
+    assert_eq!(
+        blocked, 0,
+        "task fixture reset while {blocked} thread(s) still blocked"
+    );
+
     state.event_groups.clear();
     state.tasks.clear();
     state.next_id = 1;
@@ -331,21 +364,9 @@ pub fn task_fixture_reset() {
     state.task_create_count = 0;
     state.pending_tasks.clear();
     state.scheduler_running = true;
-
-    // Assert no threads are still blocked.
-    let blocked = TASK_BLOCKED_COUNT.load(Ordering::SeqCst);
-    assert_eq!(
-        blocked, 0,
-        "task fixture reset while {blocked} thread(s) still blocked"
-    );
-
-    // Join all active task threads.
     drop(state);
-    for handle in threads {
-        let _ = handle.join();
-    }
 
-    // Clear TLS for the current (main) thread.
+    // 4. Clear TLS for the current (main) thread.
     CURRENT_CONTEXT.with(|cell| cell.set(core::ptr::null_mut()));
 }
 

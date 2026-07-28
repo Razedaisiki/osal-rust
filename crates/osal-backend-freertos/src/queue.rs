@@ -473,7 +473,6 @@ impl Queue for FreeRtosQueue {
             }
 
             // Release state mutex before blocking.
-            let state_mutex_for_reacquire = state_guard.native;
             drop(state_guard);
 
             // Block on sender_wake semaphore.
@@ -482,26 +481,9 @@ impl Queue for FreeRtosQueue {
             let outcome = budget.wait_once(|ticks| sys::semaphore_take(sender_wake, ticks))?;
 
             // Re-acquire state mutex.
-            let mut state_guard = loop {
-                match sys::mutex_take(state_mutex_for_reacquire, 0) {
-                    sys::TakeStatus::Acquired => {
-                        let state_ref = unsafe { &mut *self.inner.state.get() };
-                        break QueueStateGuard {
-                            native: state_mutex_for_reacquire,
-                            state: state_ref,
-                            _not_send: PhantomData,
-                        };
-                    }
-                    sys::TakeStatus::Timeout => {
-                        wait::wait_native(Timeout::Forever, |ticks| {
-                            sys::mutex_take(state_mutex_for_reacquire, ticks)
-                        })?;
-                    }
-                    sys::TakeStatus::Invalid => {
-                        panic!("FreeRTOS queue state mutex invalid on live queue")
-                    }
-                }
-            };
+            // Use lock_state() which handles immediate + blocking
+            // acquisition in one step — no double-acquire loop.
+            let mut state_guard = self.lock_state()?;
             let state = state_guard.state_mut();
 
             match outcome {
@@ -612,7 +594,6 @@ impl Queue for FreeRtosQueue {
             }
 
             // Release state mutex before blocking.
-            let state_mutex_for_reacquire = state_guard.native;
             drop(state_guard);
 
             // Block on receiver_wake semaphore.
@@ -620,26 +601,9 @@ impl Queue for FreeRtosQueue {
             let outcome = budget.wait_once(|ticks| sys::semaphore_take(receiver_wake, ticks))?;
 
             // Re-acquire state mutex.
-            let mut state_guard = loop {
-                match sys::mutex_take(state_mutex_for_reacquire, 0) {
-                    sys::TakeStatus::Acquired => {
-                        let state_ref = unsafe { &mut *self.inner.state.get() };
-                        break QueueStateGuard {
-                            native: state_mutex_for_reacquire,
-                            state: state_ref,
-                            _not_send: PhantomData,
-                        };
-                    }
-                    sys::TakeStatus::Timeout => {
-                        wait::wait_native(Timeout::Forever, |ticks| {
-                            sys::mutex_take(state_mutex_for_reacquire, ticks)
-                        })?;
-                    }
-                    sys::TakeStatus::Invalid => {
-                        panic!("FreeRTOS queue state mutex invalid on live queue")
-                    }
-                }
-            };
+            // Use lock_state() which handles immediate + blocking
+            // acquisition in one step — no double-acquire loop.
+            let mut state_guard = self.lock_state()?;
             let state = state_guard.state_mut();
 
             match outcome {

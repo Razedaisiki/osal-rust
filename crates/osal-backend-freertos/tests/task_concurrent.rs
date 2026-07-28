@@ -10,7 +10,7 @@
 #![cfg(feature = "testkit")]
 
 use core::time::Duration;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Barrier, Mutex};
 use std::thread;
 
 use osal_api::error::Error;
@@ -18,7 +18,7 @@ use osal_api::time::Timeout;
 use osal_api::traits::task::{Task, TaskBuilder};
 use osal_api::types::ExitCode;
 use osal_backend_freertos::runtime;
-use osal_backend_freertos::task::FreeRtosTaskBuilder;
+use osal_backend_freertos::task::{FreeRtosTask, FreeRtosTaskBuilder};
 use osal_backend_freertos_sys::fixture;
 
 fn setup() {
@@ -173,6 +173,73 @@ fn repeated_join_returns_cached_result() {
 }
 
 // ---------------------------------------------------------------------------
+// Concurrent joiners
+// ---------------------------------------------------------------------------
+
+#[test]
+fn two_joiners_receive_same_result() {
+    setup();
+    {
+        let task = FreeRtosTaskBuilder::new()
+            .spawn(|| { /* immediate */ })
+            .expect("spawn");
+
+        let t1 = task.clone();
+        let t2 = task.clone();
+        let barrier = Arc::new(Barrier::new(3));
+        let b1 = Arc::clone(&barrier);
+        let b2 = Arc::clone(&barrier);
+
+        let (tx, rx) = mpsc::channel();
+        let tx1 = tx.clone();
+        let tx2 = tx.clone();
+        drop(tx);
+
+        let h1 = thread::spawn(move || {
+            b1.wait();
+            tx1.send(t1.join(Timeout::Forever)).ok();
+        });
+        let h2 = thread::spawn(move || {
+            b2.wait();
+            tx2.send(t2.join(Timeout::Forever)).ok();
+        });
+
+        barrier.wait();
+
+        let r1 = rx.recv_timeout(Duration::from_secs(2)).expect("joiner 1");
+        let r2 = rx.recv_timeout(Duration::from_secs(2)).expect("joiner 2");
+        assert_eq!(r1, Ok(ExitCode::SUCCESS));
+        assert_eq!(r2, Ok(ExitCode::SUCCESS));
+
+        h1.join().expect("h1");
+        h2.join().expect("h2");
+    }
+    thread::sleep(Duration::from_millis(20));
+    teardown();
+}
+
+#[test]
+fn late_joiner_receives_cached_result() {
+    setup();
+    {
+        let task = FreeRtosTaskBuilder::new()
+            .spawn(|| { /* immediate */ })
+            .expect("spawn");
+
+        // First joiner completes.
+        task.join(Timeout::Forever).expect("first join");
+
+        // Late joiner (after task finished) gets cached result immediately.
+        let t2 = task.clone();
+        let handle = thread::spawn(move || t2.join(Timeout::NoWait));
+        let result = handle.join().expect("late joiner panicked");
+        assert_eq!(result, Ok(ExitCode::SUCCESS));
+    }
+    thread::sleep(Duration::from_millis(20));
+    teardown();
+}
+
+// ---------------------------------------------------------------------------
 // Self-join
 // ---------------------------------------------------------------------------
 
@@ -180,15 +247,35 @@ fn repeated_join_returns_cached_result() {
 fn self_join_returns_busy() {
     setup();
     {
-        let (tx, rx) = mpsc::channel();
-        let txc = tx.clone();
-        let task = FreeRtosTaskBuilder::new()
-            .spawn(move || {
-                txc.send(()).ok();
-            })
-            .expect("spawn");
-        rx.recv_timeout(Duration::from_secs(2))
-            .expect("task started");
+        let slot: Arc<Mutex<Option<FreeRtosTask>>> = Arc::new(Mutex::new(None));
+        let (result_tx, result_rx) = mpsc::channel();
+
+        let task = {
+            let slot = Arc::clone(&slot);
+            FreeRtosTaskBuilder::new()
+                .spawn(move || {
+                    // Wait for the main thread to give us our own handle.
+                    let own = loop {
+                        if let Some(t) = slot.lock().unwrap().clone() {
+                            break t;
+                        }
+                        thread::yield_now();
+                    };
+                    // Self-join must return Busy.
+                    result_tx.send(own.join(Timeout::Forever)).unwrap();
+                })
+                .expect("spawn")
+        };
+
+        // Give the task its own handle.
+        *slot.lock().unwrap() = Some(task.clone());
+
+        let self_join_result = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("self-join did not complete");
+        assert_eq!(self_join_result, Err(Error::Busy));
+
+        // Main thread can still join the task.
         task.join(Timeout::Forever).expect("join");
     }
     thread::sleep(Duration::from_millis(20));
