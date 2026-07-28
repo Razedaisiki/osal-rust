@@ -46,6 +46,9 @@ struct FixtureTaskState {
     /// queued and start when the scheduler transitions to Running.
     pending_tasks: Vec<(TaskEntry, u32, usize)>,
     scheduler_running: bool,
+    /// JoinHandles for threads spawned by the fixture.  Joined during
+    /// reset to ensure no stray threads from a previous test.
+    active_threads: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl Default for FixtureTaskState {
@@ -59,6 +62,7 @@ impl Default for FixtureTaskState {
             task_create_count: 0,
             pending_tasks: Vec::new(),
             scheduler_running: true,
+            active_threads: Vec::new(),
         }
     }
 }
@@ -174,6 +178,10 @@ pub fn event_group_wait_bits(
         let wait_ticks = ticks.min(max_ticks);
         let timeout = Duration::from_micros((wait_ticks as u128 * 1_000_000 / 1000) as u64);
 
+        // Advance virtual ticks so the clock progresses during the wait
+        // (required for WaitBudget deadline detection in the join path).
+        super::fixture_sync::advance_virtual_ticks(wait_ticks);
+
         entry.waiters += 1;
         entry.blocked_count += 1;
         TASK_BLOCKED_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -261,12 +269,17 @@ pub fn task_create(
 
     let entry_copy = entry;
     let param_addr = parameter as usize;
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let ptr = param_addr as *mut core::ffi::c_void;
         // Set TLS context before calling the entry.
         CURRENT_CONTEXT.with(|cell| cell.set(ptr));
         unsafe { entry_copy(ptr) };
     });
+
+    // Track the thread for cleanup during reset.
+    let mut state = lock.lock().unwrap();
+    state.active_threads.push(handle);
+    drop(state);
 
     TaskCreateStatus::Ok
 }
@@ -307,6 +320,9 @@ pub fn task_fixture_reset() {
             e.into_inner()
         }
     };
+
+    // Drain and join all active task threads before clearing state.
+    let threads: Vec<_> = state.active_threads.drain(..).collect();
     state.event_groups.clear();
     state.tasks.clear();
     state.next_id = 1;
@@ -320,9 +336,14 @@ pub fn task_fixture_reset() {
     let blocked = TASK_BLOCKED_COUNT.load(Ordering::SeqCst);
     assert_eq!(
         blocked, 0,
-        "task fixture reset while {blocked} thread(s) still blocked — \
-         join all worker threads before reset"
+        "task fixture reset while {blocked} thread(s) still blocked"
     );
+
+    // Join all active task threads.
+    drop(state);
+    for handle in threads {
+        let _ = handle.join();
+    }
 
     // Clear TLS for the current (main) thread.
     CURRENT_CONTEXT.with(|cell| cell.set(core::ptr::null_mut()));
@@ -338,15 +359,16 @@ pub fn task_fixture_notify_scheduler_state(running: bool) {
     if running {
         // Start all pending tasks.
         let pending: Vec<_> = state.pending_tasks.drain(..).collect();
-        drop(state);
+        let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
         for (entry, _id, param_addr) in pending {
-            std::thread::spawn(move || {
+            handles.push(std::thread::spawn(move || {
                 let ptr = param_addr as *mut core::ffi::c_void;
                 CURRENT_CONTEXT.with(|cell| cell.set(ptr));
                 unsafe { entry(ptr) };
-            });
+            }));
         }
+        state.active_threads.extend(handles);
     }
 }
 

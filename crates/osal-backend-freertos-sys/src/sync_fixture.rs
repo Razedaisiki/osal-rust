@@ -23,7 +23,7 @@ use super::{GiveStatus, MutexHandle, SemaphoreHandle, TakeStatus};
 
 /// Advance the fixture's virtual tick counter by `ticks`, respecting
 /// the configured tick width (modulo wrap).
-fn advance_virtual_ticks(ticks: u64) {
+pub(crate) fn advance_virtual_ticks(ticks: u64) {
     use super::{TICK_BITS_FIXTURE, TICK_COUNT_FIXTURE, TICK_OVERFLOW_FIXTURE};
     use core::sync::atomic::Ordering;
 
