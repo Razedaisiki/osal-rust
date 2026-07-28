@@ -172,13 +172,30 @@ differently. For example:
 ```
 POSIX Queue              FreeRTOS Queue
     ↓                         ↓
-pthread mutex             xQueueHandle
-pthread condvar
-ring buffer
+pthread mutex             ByteQueue (portable)
+pthread condvar           native mutex (state)
+ring buffer               counting semaphore (sender_wake)
+                          counting semaphore (receiver_wake)
 ```
 
 Different internal implementations are acceptable provided the
 externally observable semantics remain identical.
+
+### FreeRTOS Task lifetime (P7E)
+
+A `FreeRtosTask` handle owns two `Arc` references: `TaskIdentity` and
+`TaskCompletion`.  The trampoline holds its own `Arc` clones, which
+are dropped after the entry returns and the completion is published.
+
+- Dropping the last external handle does **not** cancel the task — the
+  trampoline's `Arc` references keep the identity and completion alive.
+- `TaskIdentity` carries a `RuntimeLease<'static>`.  `shutdown()` returns
+  `Busy` while any lease is alive (task running or handle held).
+- `TaskCompletion` owns the native EventGroup.  The EventGroup is
+  deleted only when the last `Arc<TaskCompletion>` is dropped.
+- `Task::count()` tracks executing entries (`LiveTaskToken` in the
+  trampoline), not handle references.  A finished task whose handle is
+  still held has `count() == 0` but `active_objects() >= 1`.
 
 ## 11. Conformance Requirement
 

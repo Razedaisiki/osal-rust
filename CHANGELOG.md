@@ -30,8 +30,9 @@
   TLS via `thread_local!`, scheduler-state gating, fault injection,
   parameter recording.
 - 17 TaskCoreContract cases passing via `FreeRtosTaskFactory`.
-- 19 Task concurrency tests: join variants, timeout/retry, self-join
-  guard, drop-without-cancel, scheduler-state preconditions, shutdown
+- 21 Task concurrency tests: join variants, timeout/retry, real
+  self-join (Busy), two concurrent joiners, late joiner cached,
+  drop-without-cancel, scheduler-state preconditions, shutdown
   lifecycle, stack/priority mapping, 50-cycle stress.
 - Facade routing for `Task`/`TaskBuilder` under `backend-freertos`.
 - Compile-time checks: `INCLUDE_vTaskDelete==1`, TLS slot availability.
@@ -45,6 +46,25 @@
   `max_stack_depth_words`, `tls_pointer_slots`, `task_tls_index`.
 - Crate docs: P7D → P7E.
 
+### Fixed (stabilization)
+
+- Queue state-mutex double acquisition after blocking reacquisition,
+  which could deadlock racing send/receive operations.  The custom
+  re-acquire loops were replaced with `lock_state()` which handles
+  immediate + blocking acquisition in one step with no re-loop.
+- Task fixture reset ordering: host task threads are now joined
+  before native fixture maps (EventGroup, task entries) are cleared.
+- Self-join test: replaced the ineffective test with a real in-task
+  self-join via a shared slot (`Arc<Mutex<Option<FreeRtosTask>>>`).
+- Added concurrent joiner coverage: two simultaneous joiners
+  (Barrier), late joiner after task completion.
+- Queue concurrency test stability: increased finite-timeout margins
+  (10 ms → 50 ms); added `wait_until_blocked_count` before second
+  wake in wake-one tests to prevent shared-Condvar lost wakeups.
+- Fixed CI: `pdPASS`/`pdFAIL` in kernel portmacro, clippy
+  `missing_const_for_thread_local` initializer, `unnecessary_cast`,
+  `never_loop`, `needless_return`.
+
 ### Deferred to P7F+
 
 - Task cancellation, suspend/resume.
@@ -54,6 +74,8 @@
 - ISR task operations.
 - Timer primitives.
 - Real FreeRTOS kernel runtime tests for Validated promotion.
+
+## P7D — FreeRTOS Queue Foundation (2026-07-27) — Completed
 
 ### Added
 

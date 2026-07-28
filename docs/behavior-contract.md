@@ -330,17 +330,31 @@ impl Task {
 - `entry` return: the entry function (`FnOnce() + Send + 'static`)
   returns `()`; normal return maps to `ExitCode::SUCCESS`.
 - `join(timeout)`: blocks until the task exits.
-  - Returns `Ok(ExitCode)` on successful join.
-  - Once the task has exited, the exit code is cached; subsequent
-    calls to `join` return it immediately without blocking.
-  - Returns `Error::Timeout` if the task does not exit within the
-    timeout. The caller retains the handle and may retry.
+
+  | Condition | Behaviour |
+  |-----------|-----------|
+  | Task finished | Returns cached `ExitCode` immediately (any timeout variant) |
+  | Running + `NoWait` | Returns `Error::Timeout` |
+  | Running + `After(Duration::ZERO)` | Returns `Error::Timeout` |
+  | Running + `After(d)` | Blocks up to `d`; returns `Error::Timeout` on expiry, handle remains valid for retry |
+  | Running + `Forever` | Blocks until task completion |
+  | Self-join | Returns `Error::Busy` |
+  | Finished task, scheduler not running | Returns cached code (no scheduler dependency) |
+  | Blocking join, scheduler `NotStarted` | Returns `Error::NotInitialized` (backend-specific: FreeRTOS) |
+  | Blocking join, scheduler `Suspended` | Returns `Error::Busy` (backend-specific: FreeRTOS) |
+
+- **Concurrent joiners**: multiple callers may join the same task
+  simultaneously. All joiners receive the same cached `ExitCode`.
+- **Late joiner**: a joiner that arrives after the task has finished
+  receives the cached result immediately without blocking.
 - `drop`: dropping a `Task` handle does **not** cancel the task or
   kill the thread. The task continues to run independently.
 - `handle()`: returns a non-zero `TaskHandle` uniquely identifying
   this task within the process.
 - `priority()`: returns the task's configured priority. Priority is
   stored and reported; scheduling effect is backend-specific.
+  Backends may map the requested priority to a native scheduling
+  priority (e.g. saturation to `configMAX_PRIORITIES - 1`).
 
 ### Static methods
 
@@ -353,7 +367,7 @@ impl Task {
 
 - `current()`: returns `Some(TaskHandle)` when called from within an
   OSAL-created task's entry function. Returns `None` from the main
-  thread or any non-OSAL pthread.
+  thread or any non-OSAL execution context.
 - `count()`: returns the number of OSAL tasks whose entry function
   has not yet completed. Finished tasks whose handle still exists are
   **not** counted. The value is a snapshot for diagnostics only; do
@@ -970,15 +984,15 @@ govern how unsupported capabilities must be handled:
 
 ### Known backend limitations
 
-| Capability | POSIX | Mock | Future FreeRTOS |
-|------------|-------|------|-----------------|
-| ISR operations | Not supported | Not supported | True ISR (extension trait) |
-| Task priority | Informational | Informational | Hardware priority |
-| Task current() | TLS-based | TLS-based | Backend-defined |
-| Stack watermark | Not tracked | Not tracked | Hardware tracked |
-| Scheduler start/stop | No-op | Deferred | Hardware scheduler |
+| Capability | POSIX | Mock | FreeRTOS |
+|------------|-------|------|----------|
+| ISR operations | Not supported | Not supported | True ISR (extension trait, deferred) |
+| Task priority | Informational | Informational | Saturation mapping |
+| Task current() | TLS-based | TLS-based | FreeRTOS TLS slot |
+| Stack watermark | Not tracked | Not tracked | Deferred |
+| Scheduler start/stop | No-op | Deferred | Application / BSP |
 | Critical section | Recursive mutex | Atomic counter | Interrupt disable |
-| Suspend/resume task | Not supported | Deferred | Supported |
+| Suspend/resume task | Not supported | Deferred | Deferred |
 
 ---
 
@@ -1008,8 +1022,9 @@ verification.
 Every backend-independent core behavioral requirement must be testable
 against Mock. Scheduler-dependent and true-concurrency requirements may
 be verified only by backends that provide those capabilities (POSIX,
-future FreeRTOS). Tests that pass on both Mock and POSIX are considered
-validated.
+future FreeRTOS). Tests that pass on Mock, POSIX, and FreeRTOS are considered
+validated for the core contract; concurrency and blocking tests
+apply to POSIX and FreeRTOS.
 
 ---
 
@@ -1066,31 +1081,34 @@ Backends must pass all non-skipped tests.
 - **M**: Mock only — tests fault injection or deterministic behavior
 - **S**: Skipped — backend declares this capability unsupported
 
-### Task tests — Core (Mock + POSIX)
+### Task tests — Core (Mock + POSIX + FreeRTOS)
 
-| Test | Requirement | POSIX | Mock |
-|------|-------------|-------|------|
-| Create with default config | Builder defaults compile and spawn | R | R |
-| Accept empty name | `""` is valid | R | R |
-| Reject name > 31 bytes | `Error::InvalidParameter` | R | R |
-| Reject embedded NUL | `Error::InvalidParameter` | R | R |
-| Reject zero stack size | `Error::InvalidParameter` | R | R |
-| Spawn and join successfully | Task runs, join returns ExitCode | R | R |
-| Repeated join returns cached | Subsequent joins return immediately | R | R |
-| Handle is non-zero | `TaskHandle` is unique and non-zero | R | R |
-| current() from within task | Returns `Some(TaskHandle)` | R | R |
-| current() from main thread | Returns `None` | R | R |
-| count() reflects live tasks | Entry running → count ≥ 1; returned → count back to baseline | R | R |
-| Priority preserved | `priority()` returns configured value | R | R |
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| Create with default config | Builder defaults compile and spawn | R | R | R |
+| Accept empty name | `""` is valid | R | R | R |
+| Reject name > 31 bytes | `Error::InvalidParameter` | R | R | R |
+| Reject embedded NUL | `Error::InvalidParameter` | R | R | R |
+| Reject zero stack size | `Error::InvalidParameter` | R | R | R |
+| Spawn and join successfully | Task runs, join returns ExitCode | R | R | R |
+| Repeated join returns cached | Subsequent joins return immediately | R | R | R |
+| Handle is non-zero | `TaskHandle` is unique and non-zero | R | R | R |
+| current() from within task | Returns `Some(TaskHandle)` | R | R | R |
+| current() from main thread | Returns `None` | R | R | R |
+| count() reflects live tasks | Entry running → count ≥ 1; returned → count back to baseline | R | R | R |
+| Priority preserved | `priority()` returns configured value | R | R | R |
 
-### Task tests — Concurrency (POSIX only)
+### Task tests — Concurrency (POSIX + FreeRTOS)
 
-| Test | Requirement | POSIX | Mock |
-|------|-------------|-------|------|
-| Multiple concurrent tasks | 3+ tasks run simultaneously | R | S |
-| Join with timeout | `Error::Timeout` on non-exiting task | R | S |
-| Timeout then retry | Timeout → retry Forever succeeds | R | S |
-| Drop without join | Task continues running after handle drop | R | S |
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| Multiple concurrent tasks | 3+ tasks run simultaneously | R | S | R |
+| Join with timeout | `Error::Timeout` on non-exiting task | R | S | R |
+| Timeout then retry | Timeout → retry Forever succeeds | R | S | R |
+| Drop without join | Task continues running after handle drop | R | S | R |
+| Self-join | Returns `Error::Busy` | R | S | R |
+| Concurrent joiners | Multiple joiners get same result | R | S | R |
+| Late joiner cached | Joiner after finish gets cached code | R | S | R |
 
 ### Task tests — Deferred (neither)
 

@@ -146,6 +146,22 @@ contract-validated. Current platforms:
 | `osal-backend-freertos` | FreeRTOS | ARM Cortex-M, RISC-V embedded |
 | `osal-backend-freertos-sys` | FreeRTOS (C shim) | FFI boundary — `unsafe` isolation layer |
 
+### FreeRTOS Task data flow
+
+```
+FreeRtosTask
+  ├── TaskIdentity
+  │    ├── TaskHandle
+  │    ├── requested Priority
+  │    └── RuntimeLease
+  ├── TaskCompletion
+  │    ├── EventGroup (sticky completion bit)
+  │    ├── atomic state (Running → Finished)
+  │    └── cached ExitCode
+  ├── FreeRTOS TLS slot → current()
+  └── LiveTaskToken → count()
+```
+
 ### FreeRTOS Queue data flow
 
 ```
@@ -359,7 +375,8 @@ To add a new backend:
 
 1. Create `crates/osal-backend-{name}/` with `Cargo.toml` depending on
    `osal-api` + `osal-shared`
-2. Implement all `osal-api` traits
+2. Implement the intended capability subset and pass all applicable
+   contract tests; full conformance requires every non-deferred trait
 3. Own a backend-local `RuntimeLifecycle` instance (ADR 0019)
 4. Add the feature flag to `crates/osal/Cargo.toml`
 5. Pass the contract test suite from `osal-testkit`

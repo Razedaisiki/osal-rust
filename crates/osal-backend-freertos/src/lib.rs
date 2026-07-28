@@ -19,7 +19,8 @@
 //! - Queue — ByteQueue + native mutex + dual wake semaphore, waiter-credit
 //!   protocol, close-drain broadcast
 //! - Task — xTaskCreate + EventGroup completion + TLS identity, cached
-//!   concurrent join, 17 core contract cases passing
+//!   concurrent join; 17 shared core contract cases and 21 FreeRTOS
+//!   concurrency/boundary tests passing
 //!
 //! **Validated** (host + FreeRTOS kernel integration tested):
 //! - *(none yet — requires real FreeRTOS runtime tests)*

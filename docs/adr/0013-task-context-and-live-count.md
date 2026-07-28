@@ -84,3 +84,12 @@ synchronous execution model.
 - `PosixTaskInner::drop()` no longer touches `TASK_COUNT`.
 - Behavior contract §8 and the test matrix must be updated.
 - `osal::prelude` must re-export `TaskHandle`.
+
+## Follow-up (P7E)
+
+ADR 0028 extends the backend-local TLS and concurrency decisions to
+the FreeRTOS backend.  Its FreeRTOS-specific blocking-join scheduler
+preconditions (`NotStarted` → `NotInitialized`, `Suspended` → `Busy`)
+supersede ADR 0013 decision 7 for that backend.  The common
+`TaskHandle`, `current()`, and `count()` semantics defined here remain
+unchanged across all three backends.

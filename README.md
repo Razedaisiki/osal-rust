@@ -101,8 +101,8 @@ Public APIs may change before version 1.0.
 | `Deferred`  | Explicitly deferred to a future phase |
 | `N/A`       | Not applicable to this layer |
 
-¹ Blocking Queue contracts currently apply to the POSIX backend only.
-Mock blocking is deferred until a deterministic task scheduler is
+¹ Blocking Queue contracts apply to POSIX and FreeRTOS.  Mock
+blocking remains deferred until a deterministic scheduler is
 implemented.
 
 ## Architecture
