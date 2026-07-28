@@ -48,7 +48,7 @@ Public APIs may change before version 1.0.
   Clock, System, Mutex, CountingSemaphore, BinarySemaphore, Queue,
   and Task (spawn + cached concurrent join) implemented and
   host-contract-verified
-- Queue (core + blocking on POSIX)
+- Queue (core + blocking on POSIX and FreeRTOS; Mock blocking deferred)
 - Mutex (non-recursive, ADR 0007)
 - CountingSemaphore and BinarySemaphore
 - Clock

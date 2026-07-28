@@ -29,7 +29,7 @@ Mutex<T>
 
 Queue
   ├── POSIX:    pthread_mutex_t + condvar pair + ring buffer
-  ├── FreeRTOS: QueueHandle_t
+  ├── FreeRTOS: ByteQueue + native mutex + dual wake semaphores
   └── Mock:     MockQueueState
 ```
 
@@ -45,7 +45,7 @@ OSAL distinguishes four layers of object representation:
 | **Handle** | Public API | `Queue`, `Mutex<T>`, `Timer` | User-controlled via `new()`/`clone()`/`Drop` |
 | **Backend Resource** | Private (backend crate) | `pthread_mutex_t`, ring buffer, condvar | Created by Handle, freed on last Handle drop |
 | **Guard** | Public API (returned by Handle) | `MutexGuard<'a, T>` | Borrows Handle; must not outlive Handle |
-| **Platform Native Object** | Private (sys layer) | `pthread_mutex_t` raw, `QueueHandle_t` | Wrapped by Backend Resource; never exposed to user |
+| **Platform Native Object** | Private (sys layer) | `pthread_mutex_t` raw, native mutex/semaphore handles | Wrapped by Backend Resource; never exposed to user |
 
 **Handle** is what the application holds. A Handle may be cloned;
 all clones share the same Backend Resource. Drop on a Handle releases

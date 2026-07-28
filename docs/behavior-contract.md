@@ -1021,8 +1021,7 @@ verification.
 
 Every backend-independent core behavioral requirement must be testable
 against Mock. Scheduler-dependent and true-concurrency requirements may
-be verified only by backends that provide those capabilities (POSIX,
-future FreeRTOS). Tests that pass on Mock, POSIX, and FreeRTOS are considered
+be verified only by backends that provide those capabilities (POSIX and FreeRTOS).. Tests that pass on Mock, POSIX, and FreeRTOS are considered
 validated for the core contract; concurrency and blocking tests
 apply to POSIX and FreeRTOS.
 
