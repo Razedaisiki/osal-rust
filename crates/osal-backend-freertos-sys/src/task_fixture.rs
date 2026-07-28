@@ -8,7 +8,7 @@
 
 extern crate std;
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::sync::{Condvar, LazyLock, Mutex};
 use std::time::Duration;
@@ -28,8 +28,10 @@ struct FixtureEventGroupEntry {
 }
 
 struct FixtureTaskEntry {
+    #[allow(dead_code)]
     running: bool,
     started: bool,
+    #[allow(dead_code)]
     deleted: bool,
 }
 
@@ -223,7 +225,7 @@ pub fn task_create(
     LAST_STACK_WORDS.store(stack_depth_words, Ordering::Relaxed);
     LAST_NATIVE_PRIORITY.store(priority, Ordering::Relaxed);
 
-    let (lock, cvar) = &*TASK_FIXTURE;
+    let (lock, _cvar) = &*TASK_FIXTURE;
     let mut state = lock.lock().unwrap();
     state.task_create_count += 1;
 
@@ -273,9 +275,9 @@ pub fn task_delete_current() -> ! {
     // In the fixture, we just kill the current thread.
     // The trampoline should call this after the entry returns.
     // We simulate the "never returns" semantics by aborting the thread.
-    std::thread::current(); // ensure we're on a real thread
-    // Use std::process::abort to simulate vTaskDelete(NULL)
-    // which never returns.
+    // Simulate vTaskDelete(NULL) — in the fixture, the trampoline
+    // returns normally (see cfg gate in task.rs).  This function
+    // should never be called in fixture mode.
     panic!("task_delete_current called in fixture — thread should exit");
 }
 
@@ -329,7 +331,7 @@ pub fn task_fixture_reset() {
 /// Notify the fixture that the scheduler state has changed.
 /// When transitioning to Running, any pending tasks are started.
 pub fn task_fixture_notify_scheduler_state(running: bool) {
-    let (lock, cvar) = &*TASK_FIXTURE;
+    let (lock, _cvar) = &*TASK_FIXTURE;
     let mut state = lock.lock().unwrap();
     state.scheduler_running = running;
 

@@ -26,7 +26,7 @@ use osal_api::types::{ExitCode, Priority, TaskHandle};
 use osal_shared::runtime::RuntimeLease;
 use osal_shared::validation;
 
-use crate::wait::{self, WaitBudget, WaitOutcome};
+use crate::wait::{WaitBudget, WaitOutcome};
 use osal_backend_freertos_sys as sys;
 
 // ---------------------------------------------------------------------------
@@ -209,7 +209,7 @@ unsafe extern "C" fn task_trampoline<F>(parameter: *mut c_void)
 where
     F: FnOnce() + Send + 'static,
 {
-    let mut start: Box<TaskStart<F>> = Box::from_raw(parameter.cast());
+    let mut start: Box<TaskStart<F>> = unsafe { Box::from_raw(parameter.cast()) };
 
     // 1. Install TLS current identity.
     sys::task_set_current_context(Arc::as_ptr(&start.identity).cast_mut().cast::<c_void>());
