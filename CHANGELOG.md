@@ -1,6 +1,55 @@
 # Changelog
 
-## P7D — FreeRTOS Queue Foundation (2026-07-27) — Completed
+## P7E — FreeRTOS Task Foundation (2026-07-28) — Completed
+
+### Added
+
+- ADR 0028: FreeRTOS Task Object Model (EventGroup sticky completion,
+  TLS identity, stack/priority mapping, self-delete trampoline).
+- `FreeRtosTask`, `FreeRtosTaskBuilder`: full `Task` and `TaskBuilder`
+  trait implementations via `xTaskCreate` + EventGroup.
+- EventGroup completion: sticky `TASK_COMPLETED_BIT` set once on exit;
+  multi-consumer without waiter-credit protocol.
+- TLS current-task identity via `vTaskSetThreadLocalStoragePointer`
+  at configurable `ROUSSATL_FREERTOS_TASK_TLS_INDEX`.
+- Simplified `Running → Finished` state machine (no `Joining` state).
+- Generic trampoline `task_trampoline<F>` with fixed completion publish
+  order: entry → count → TLS → exit code → Finished → EventGroup →
+  self-delete.
+- `stack_bytes_to_words()`: checked byte→FreeRTOS stack-word conversion
+  with rounding, minimum enforcement, overflow detection.
+- `map_native_priority()`: saturation to `configMAX_PRIORITIES-1`.
+- `LiveTaskToken` RAII for `Task::count()`.
+- Constructor order with full rollback on `xTaskCreate` failure
+  (reclaim Box, drop Arcs; no count/RuntimeLease leak).
+- `join()`: self-join detection (`Busy`), fast-path cached state,
+  `WaitBudget` blocking with EventGroup `wait_bits`.
+- Already-finished tasks can be joined without scheduler running.
+- Host fixture: `std::thread::spawn` task simulation, EventGroup
+  `Mutex<u32>`+`Condvar`, TLS via `thread_local!`, scheduler-state
+  gating, fault injection, parameter recording.
+- 17 TaskCoreContract cases passing via `FreeRtosTaskFactory`.
+- Facade routing for `Task`/`TaskBuilder` under `backend-freertos`.
+- Compile-time checks: `INCLUDE_vTaskDelete==1`, TLS slot availability.
+- Native fixture headers: `event_groups.h`, updated `task.h` and
+  `portmacro.h` with TLS/delete/stack-depth declarations.
+
+### Changed
+
+- Capability matrix: Task Foundation → Implemented (host-contract-verified).
+- `KernelCapabilities` extended: `minimal_stack_depth_words`,
+  `max_stack_depth_words`, `tls_pointer_slots`, `task_tls_index`.
+- Crate docs: P7D → P7E.
+
+### Deferred to P7F+
+
+- Task cancellation, suspend/resume.
+- Real priority scheduling enforcement.
+- Stack watermark, CPU affinity, SMP, MPU.
+- Static task allocation.
+- ISR task operations.
+- Timer primitives.
+- Real FreeRTOS kernel runtime tests for Validated promotion.
 
 ### Added
 

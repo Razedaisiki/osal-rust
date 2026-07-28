@@ -4,7 +4,7 @@
 //! The scheduler is owned by the application / BSP; this backend
 //! is a guest of the kernel (ADR 0020).
 //!
-//! # Current status (P7D)
+//! # Current status (P7E)
 //!
 //! Capability status follows the terminology in
 //! `docs/documentation-policy.md`:
@@ -18,11 +18,13 @@
 //! - BinarySemaphore — native binary semaphore, initial unsignaled
 //! - Queue — ByteQueue + native mutex + dual wake semaphore, waiter-credit
 //!   protocol, close-drain broadcast
+//! - Task — xTaskCreate + EventGroup completion + TLS identity, cached
+//!   concurrent join, 17 core contract cases passing
 //!
 //! **Validated** (host + FreeRTOS kernel integration tested):
 //! - *(none yet — requires real FreeRTOS runtime tests)*
 //!
-//! **Deferred to P7E+:** Task, Timer, ISR extensions.
+//! **Deferred to P7F+:** Timer, ISR extensions.
 //!
 //! ## Implementation vs Validation
 //!

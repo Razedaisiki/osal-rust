@@ -17,7 +17,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 use osal_api::error::{Error, Result};
 use osal_api::time::Timeout;
@@ -55,10 +55,7 @@ fn stack_bytes_to_words(
         return Err(Error::Internal("stack word size is zero"));
     }
 
-    let rounded = bytes
-        .checked_add(word_size - 1)
-        .ok_or(Error::Overflow)?
-        / word_size;
+    let rounded = bytes.checked_add(word_size - 1).ok_or(Error::Overflow)? / word_size;
 
     let words = rounded.max(minimal_words);
 
@@ -173,8 +170,7 @@ impl TaskCompletion {
         self.exit_code.store(code.code(), Ordering::Release);
 
         // 2. Publish Finished state.
-        self.state
-            .store(COMPLETION_FINISHED, Ordering::Release);
+        self.state.store(COMPLETION_FINISHED, Ordering::Release);
 
         // 3. Set the EventGroup completion bit — wakes all joiners.
         if let Some(ref eg) = self.event_group {
@@ -216,9 +212,7 @@ where
     let mut start: Box<TaskStart<F>> = Box::from_raw(parameter.cast());
 
     // 1. Install TLS current identity.
-    sys::task_set_current_context(
-        Arc::as_ptr(&start.identity).cast_mut().cast::<c_void>(),
-    );
+    sys::task_set_current_context(Arc::as_ptr(&start.identity).cast_mut().cast::<c_void>());
 
     // 2. Register live count.
     let live_token = LiveTaskToken::acquire();
@@ -300,8 +294,7 @@ impl TaskBuilder for FreeRtosTaskBuilder {
         let runtime = crate::runtime::acquire_object()?;
 
         // 3. Probe capabilities for stack conversion and priority mapping.
-        let caps = crate::runtime::capabilities()
-            .expect("spawn requires osal::initialize()");
+        let caps = crate::runtime::capabilities().expect("spawn requires osal::initialize()");
 
         let words = stack_bytes_to_words(
             self.stack_size,
@@ -313,8 +306,7 @@ impl TaskBuilder for FreeRtosTaskBuilder {
         let native_priority = map_native_priority(self.priority, caps.max_priorities);
 
         // 4. Create EventGroup (fallible — before the handle alloc).
-        let event_group =
-            sys::event_group_create().ok_or(Error::OutOfMemory)?;
+        let event_group = sys::event_group_create().ok_or(Error::OutOfMemory)?;
 
         // 5. Allocate OSAL TaskHandle.
         let handle = allocate_task_handle()?;
@@ -343,7 +335,11 @@ impl TaskBuilder for FreeRtosTaskBuilder {
 
         // 8. Prepare C-compatible name (NUL-terminated, truncated).
         let mut name_buf = [0u8; 32]; // max 31 chars + NUL
-        let name_len = self.name.len().min(caps.max_task_name_len as usize - 1).min(31);
+        let name_len = self
+            .name
+            .len()
+            .min(caps.max_task_name_len as usize - 1)
+            .min(31);
         name_buf[..name_len].copy_from_slice(&self.name.as_bytes()[..name_len]);
         // name_buf is zero-initialized, so NUL is guaranteed at name_len.
 
