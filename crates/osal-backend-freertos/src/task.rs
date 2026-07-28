@@ -177,9 +177,7 @@ impl TaskCompletion {
         // here is a fatal invariant violation (same committed-state
         // wake policy as Queue close broadcast and Semaphore give).
         if let Some(ref eg) = self.event_group {
-            if sys::event_group_set_bits(eg, TASK_COMPLETED_BIT)
-                != sys::EVENT_GROUP_OK
-            {
+            if sys::event_group_set_bits(eg, TASK_COMPLETED_BIT) != sys::EVENT_GROUP_OK {
                 panic!(
                     "live task completion EventGroup became invalid — \
                      invariant violation"

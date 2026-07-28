@@ -17,7 +17,7 @@
   order: entry → count → TLS → exit code → Finished → EventGroup →
   self-delete.
 - `stack_bytes_to_words()`: checked byte→FreeRTOS stack-word conversion
-  with rounding, minimum enforcement, overflow detection.
+  with rounding, minimum enforcement, native depth-type overflow detection.
 - `map_native_priority()`: saturation to `configMAX_PRIORITIES-1`.
 - `LiveTaskToken` RAII for `Task::count()`.
 - Constructor order with full rollback on `xTaskCreate` failure
@@ -25,10 +25,14 @@
 - `join()`: self-join detection (`Busy`), fast-path cached state,
   `WaitBudget` blocking with EventGroup `wait_bits`.
 - Already-finished tasks can be joined without scheduler running.
-- Host fixture: `std::thread::spawn` task simulation, EventGroup
-  `Mutex<u32>`+`Condvar`, TLS via `thread_local!`, scheduler-state
-  gating, fault injection, parameter recording.
+- Host fixture: `std::thread::spawn` task simulation with `JoinHandle`
+  tracking and drain-on-reset, EventGroup `Mutex<u32>`+`Condvar`,
+  TLS via `thread_local!`, scheduler-state gating, fault injection,
+  parameter recording.
 - 17 TaskCoreContract cases passing via `FreeRtosTaskFactory`.
+- 19 Task concurrency tests: join variants, timeout/retry, self-join
+  guard, drop-without-cancel, scheduler-state preconditions, shutdown
+  lifecycle, stack/priority mapping, 50-cycle stress.
 - Facade routing for `Task`/`TaskBuilder` under `backend-freertos`.
 - Compile-time checks: `INCLUDE_vTaskDelete==1`, TLS slot availability.
 - Native fixture headers: `event_groups.h`, updated `task.h` and

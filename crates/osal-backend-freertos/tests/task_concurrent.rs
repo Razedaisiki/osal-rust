@@ -50,7 +50,8 @@ fn join_no_wait_running_returns_timeout() {
                 thread::sleep(Duration::from_millis(50));
             })
             .expect("spawn");
-        rx.recv_timeout(Duration::from_secs(2)).expect("task started");
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("task started");
 
         assert_eq!(task.join(Timeout::NoWait), Err(Error::Timeout));
         task.join(Timeout::Forever).expect("join");
@@ -69,7 +70,8 @@ fn join_zero_running_returns_timeout() {
                 thread::sleep(Duration::from_millis(50));
             })
             .expect("spawn");
-        rx.recv_timeout(Duration::from_secs(2)).expect("task started");
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("task started");
 
         assert_eq!(
             task.join(Timeout::After(Duration::ZERO)),
@@ -112,7 +114,8 @@ fn finite_join_times_out() {
                 thread::sleep(Duration::from_millis(500));
             })
             .expect("spawn");
-        rx.recv_timeout(Duration::from_secs(2)).expect("task started");
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("task started");
 
         assert_eq!(
             task.join(Timeout::After(Duration::from_millis(10))),
@@ -134,7 +137,8 @@ fn finite_timeout_can_retry_forever() {
                 thread::sleep(Duration::from_millis(200));
             })
             .expect("spawn");
-        rx.recv_timeout(Duration::from_secs(2)).expect("task started");
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("task started");
 
         assert_eq!(
             task.join(Timeout::After(Duration::from_millis(10))),
@@ -160,7 +164,10 @@ fn repeated_join_returns_cached_result() {
         assert_eq!(task.join(Timeout::Forever), Ok(ExitCode::SUCCESS));
         assert_eq!(task.join(Timeout::NoWait), Ok(ExitCode::SUCCESS));
         assert_eq!(task.join(Timeout::Forever), Ok(ExitCode::SUCCESS));
-        assert_eq!(task.join(Timeout::After(Duration::ZERO)), Ok(ExitCode::SUCCESS));
+        assert_eq!(
+            task.join(Timeout::After(Duration::ZERO)),
+            Ok(ExitCode::SUCCESS)
+        );
     }
     teardown();
 }
@@ -180,7 +187,8 @@ fn self_join_returns_busy() {
                 txc.send(()).ok();
             })
             .expect("spawn");
-        rx.recv_timeout(Duration::from_secs(2)).expect("task started");
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("task started");
         task.join(Timeout::Forever).expect("join");
     }
     thread::sleep(Duration::from_millis(20));
@@ -255,14 +263,12 @@ fn blocking_join_not_started_returns_not_initialized() {
                 thread::sleep(Duration::from_millis(100));
             })
             .expect("spawn");
-        rx.recv_timeout(Duration::from_secs(2)).expect("task started");
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("task started");
 
         fixture::set_scheduler_state(osal_backend_freertos_sys::SchedulerState::NotStarted);
 
-        assert_eq!(
-            task.join(Timeout::Forever),
-            Err(Error::NotInitialized)
-        );
+        assert_eq!(task.join(Timeout::Forever), Err(Error::NotInitialized));
 
         fixture::set_scheduler_state(osal_backend_freertos_sys::SchedulerState::Running);
     }
@@ -286,7 +292,8 @@ fn shutdown_busy_while_task_running() {
                 thread::sleep(Duration::from_millis(100));
             })
             .expect("spawn");
-        rx.recv_timeout(Duration::from_secs(2)).expect("task started");
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("task started");
 
         assert_eq!(runtime::shutdown(), Err(Error::Busy));
 
@@ -431,9 +438,7 @@ fn native_priority_saturates() {
 fn zero_stack_rejected() {
     setup();
     {
-        let result = FreeRtosTaskBuilder::new()
-            .stack_size(0)
-            .spawn(|| {});
+        let result = FreeRtosTaskBuilder::new().stack_size(0).spawn(|| {});
         assert!(matches!(result, Err(Error::InvalidParameter)));
     }
     teardown();
@@ -448,9 +453,9 @@ fn task_stress_50_cycles() {
     setup();
     {
         for i in 0..50 {
-            let task = match FreeRtosTaskBuilder::new()
-                .spawn(move || { let _ = i; })
-            {
+            let task = match FreeRtosTaskBuilder::new().spawn(move || {
+                let _ = i;
+            }) {
                 Ok(t) => t,
                 Err(e) => panic!("spawn {i}: {e:?}"),
             };
