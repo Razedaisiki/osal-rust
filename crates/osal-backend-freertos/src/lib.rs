@@ -43,4 +43,5 @@ pub mod queue;
 pub mod runtime;
 pub mod semaphore;
 pub mod system;
+pub mod task;
 pub(crate) mod wait;
