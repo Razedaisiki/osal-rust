@@ -78,7 +78,7 @@ fn map_native_priority(requested: Priority, max_priorities: u32) -> u32 {
     if max_priorities <= 1 {
         return 0;
     }
-    (requested as u32).min(max_priorities - 1)
+    requested.min(max_priorities - 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -432,40 +432,38 @@ impl Task for FreeRtosTask {
             .as_ref()
             .expect("task completion event group already deleted");
 
-        loop {
-            // Re-check after any wake.
-            if let Some(code) = self.completion.finished_code() {
-                return Ok(code);
+        // The EventGroup bit is sticky — we wait once.  If the bit is
+        // not yet set, wait_once blocks; when it returns Acquired the
+        // task is Finished.  There is no retry loop because there are
+        // no spurious wakeups to handle (EventGroup wait is a single
+        // terminal event).
+        match budget.wait_once(|ticks| {
+            let status = sys::event_group_wait_bits(
+                event_group,
+                TASK_COMPLETED_BIT,
+                false, // clear_on_exit
+                true,  // wait_for_all
+                ticks,
+            );
+            match status {
+                sys::EventGroupWaitStatus::Ok => sys::TakeStatus::Acquired,
+                sys::EventGroupWaitStatus::Timeout => sys::TakeStatus::Timeout,
+                sys::EventGroupWaitStatus::Invalid => sys::TakeStatus::Invalid,
             }
-
-            match budget.wait_once(|ticks| {
-                let status = sys::event_group_wait_bits(
-                    event_group,
-                    TASK_COMPLETED_BIT,
-                    false, // clear_on_exit
-                    true,  // wait_for_all
-                    ticks,
-                );
-                match status {
-                    sys::EventGroupWaitStatus::Ok => sys::TakeStatus::Acquired,
-                    sys::EventGroupWaitStatus::Timeout => sys::TakeStatus::Timeout,
-                    sys::EventGroupWaitStatus::Invalid => sys::TakeStatus::Invalid,
+        })? {
+            WaitOutcome::Acquired => {
+                // EventGroup bit was set — Finished must be visible.
+                if let Some(code) = self.completion.finished_code() {
+                    return Ok(code);
                 }
-            })? {
-                WaitOutcome::Acquired => {
-                    // EventGroup bit was set — Finished must be visible.
-                    if let Some(code) = self.completion.finished_code() {
-                        return Ok(code);
-                    }
-                    panic!("completion bit set before Finished state");
+                panic!("completion bit set before Finished state");
+            }
+            WaitOutcome::Unavailable => {
+                // Timeout — check one last time in case of a race.
+                if let Some(code) = self.completion.finished_code() {
+                    return Ok(code);
                 }
-                WaitOutcome::Unavailable => {
-                    // Timeout — check one last time.
-                    if let Some(code) = self.completion.finished_code() {
-                        return Ok(code);
-                    }
-                    return Err(Error::Timeout);
-                }
+                Err(Error::Timeout)
             }
         }
     }

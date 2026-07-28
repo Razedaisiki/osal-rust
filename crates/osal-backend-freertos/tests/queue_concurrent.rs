@@ -152,7 +152,7 @@ fn recv_after_returns_timeout_when_empty() {
         let q = FreeRtosQueue::new(1, 4).expect("create");
         let mut buf = [0u8; 4];
         assert_eq!(
-            q.recv(&mut buf, Timeout::After(Duration::from_millis(10))),
+            q.recv(&mut buf, Timeout::After(Duration::from_millis(50))),
             Err(Error::Timeout)
         );
     }
@@ -166,7 +166,7 @@ fn send_after_returns_timeout_when_full() {
         let q = FreeRtosQueue::new(1, 4).expect("create");
         q.send(&[1, 2, 3, 4], Timeout::NoWait).expect("send");
         assert_eq!(
-            q.send(&[5, 6, 7, 8], Timeout::After(Duration::from_millis(10))),
+            q.send(&[5, 6, 7, 8], Timeout::After(Duration::from_millis(50))),
             Err(Error::Timeout)
         );
     }
@@ -216,6 +216,11 @@ fn one_send_wakes_one_receiver() {
             .expect("first receiver did not complete");
         assert!(first.is_ok());
         assert!(rx.try_recv().is_err(), "second receiver woke too early");
+
+        // Wait for the un-woken receiver to re-enter the blocked state
+        // before sending the second message.  Without this, the shared-Condvar
+        // fixture can lose the second wake-up.
+        wait_until_blocked_count(1, Duration::from_secs(2));
 
         q.send(&[5, 6, 7, 8], Timeout::NoWait).expect("send 2");
 
@@ -270,6 +275,9 @@ fn one_recv_wakes_one_sender() {
             .expect("first sender did not complete");
         assert!(first.is_ok());
         assert!(rx.try_recv().is_err(), "second sender woke too early");
+
+        // Wait for the un-woken sender to re-block before second recv.
+        wait_until_blocked_count(1, Duration::from_secs(2));
 
         q.recv(&mut buf, Timeout::NoWait).expect("recv 2");
 
