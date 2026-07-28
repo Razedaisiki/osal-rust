@@ -86,7 +86,7 @@ pub static LAST_NATIVE_PRIORITY: AtomicU32 = AtomicU32::new(0);
 
 std::thread_local! {
     static CURRENT_CONTEXT: std::cell::Cell<*mut core::ffi::c_void> =
-        std::cell::Cell::new(core::ptr::null_mut());
+        const { std::cell::Cell::new(core::ptr::null_mut()) };
 }
 
 // ---------------------------------------------------------------------------

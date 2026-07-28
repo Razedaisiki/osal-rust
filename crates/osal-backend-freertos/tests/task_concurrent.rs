@@ -316,6 +316,8 @@ fn shutdown_busy_while_finished_handle_alive() {
         // Task is finished but handle is alive — RuntimeLease is held.
         assert_eq!(runtime::shutdown(), Err(Error::Busy));
     }
+    // Allow the task trampoline thread to fully exit and release its Arcs.
+    thread::sleep(Duration::from_millis(50));
     assert!(runtime::shutdown().is_ok());
     fixture::reset();
 }

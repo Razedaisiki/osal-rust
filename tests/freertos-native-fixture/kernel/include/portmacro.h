@@ -19,6 +19,10 @@ typedef uint32_t StackType_t;
 // Stack depth type (ADR 0028 §8)
 typedef uint32_t configSTACK_DEPTH_TYPE;
 
+// Return values for FreeRTOS API functions (ADR 0028).
+#define pdPASS ((BaseType_t)1)
+#define pdFAIL ((BaseType_t)0)
+
 // Boolean constants used by semaphore/mutex API.
 #define pdTRUE  ((BaseType_t)1)
 #define pdFALSE ((BaseType_t)0)
