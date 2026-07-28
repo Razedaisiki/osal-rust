@@ -748,7 +748,9 @@ pub unsafe fn task_create(
     }
     #[cfg(not(feature = "test-fixture"))]
     {
-        let raw = osal_freertos_task_create(entry, name, stack_depth_words, parameter, priority);
+        let raw = unsafe {
+            osal_freertos_task_create(entry, name, stack_depth_words, parameter, priority)
+        };
         match raw {
             TASK_CREATE_OK => TaskCreateStatus::Ok,
             TASK_CREATE_OOM => TaskCreateStatus::OutOfMemory,
@@ -884,6 +886,7 @@ pub mod fixture {
         super::TICK_BITS_FIXTURE.store(32, Ordering::Relaxed);
         super::MAX_FINITE_DELAY_FIXTURE.store((1u64 << 32) - 2, Ordering::Relaxed);
         super::fixture_sync::sync_reset();
+        super::fixture_task::task_fixture_reset();
     }
 
     /// Set the tick snapshot that `tick_snapshot()` will return.
@@ -1036,5 +1039,64 @@ pub mod fixture {
     /// tests where sender and receiver wait on different semaphores.
     pub fn semaphore_blocked_count(handle: &super::SemaphoreHandle) -> usize {
         super::fixture_sync::sync_semaphore_blocked_count(handle)
+    }
+
+    // ------------------------------------------------------------------
+    // Task fixture controls (ADR 0028)
+    // ------------------------------------------------------------------
+
+    /// Reset the task fixture state (called by `fixture::reset()`).
+    pub fn task_fixture_reset() {
+        super::fixture_task::task_fixture_reset();
+    }
+
+    /// Notify the task fixture of a scheduler state change.
+    pub fn task_fixture_notify_scheduler_state(running: bool) {
+        super::fixture_task::task_fixture_notify_scheduler_state(running);
+    }
+
+    /// Make the next `event_group_create()` return `None`.
+    pub fn set_fail_next_event_group_create(fail: bool) {
+        super::fixture_task::task_fixture_set_fail_next_event_group_create(fail);
+    }
+
+    /// Make the next `task_create()` return `OutOfMemory`.
+    pub fn set_fail_next_task_create(fail: bool) {
+        super::fixture_task::task_fixture_set_fail_next_task_create(fail);
+    }
+
+    /// Number of event group creates since last reset.
+    pub fn event_group_create_count() -> usize {
+        super::fixture_task::task_fixture_eg_create_count()
+    }
+
+    /// Number of event group deletes since last reset.
+    pub fn event_group_delete_count() -> usize {
+        super::fixture_task::task_fixture_eg_delete_count()
+    }
+
+    /// Number of task creates since last reset.
+    pub fn task_create_count() -> usize {
+        super::fixture_task::task_fixture_task_create_count()
+    }
+
+    /// Number of threads currently blocked on event group waits.
+    pub fn task_blocked_count() -> u64 {
+        super::fixture_task::task_fixture_blocked_count()
+    }
+
+    /// Per-event-group blocked count.
+    pub fn event_group_blocked_count(handle: &super::EventGroupHandle) -> usize {
+        super::fixture_task::task_fixture_eg_blocked_count(handle)
+    }
+
+    /// Last stack depth (in words) passed to `task_create()`.
+    pub fn last_stack_depth_words() -> u32 {
+        super::fixture_task::LAST_STACK_WORDS.load(Ordering::Relaxed)
+    }
+
+    /// Last native priority passed to `task_create()`.
+    pub fn last_native_priority() -> u32 {
+        super::fixture_task::LAST_NATIVE_PRIORITY.load(Ordering::Relaxed)
     }
 }
