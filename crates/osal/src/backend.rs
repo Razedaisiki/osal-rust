@@ -121,3 +121,15 @@ pub use osal_backend_posix::task::PosixTask as Task;
 
 #[cfg(all(feature = "backend-posix", not(feature = "backend-mock")))]
 pub use osal_backend_posix::task::PosixTaskBuilder as TaskBuilder;
+
+#[cfg(all(
+    feature = "backend-freertos",
+    not(any(feature = "backend-posix", feature = "backend-mock"))
+))]
+pub use osal_backend_freertos::task::FreeRtosTask as Task;
+
+#[cfg(all(
+    feature = "backend-freertos",
+    not(any(feature = "backend-posix", feature = "backend-mock"))
+))]
+pub use osal_backend_freertos::task::FreeRtosTaskBuilder as TaskBuilder;

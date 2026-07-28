@@ -116,9 +116,17 @@ pub mod prelude {
         feature = "backend-freertos"
     ))]
     pub use crate::backend::System;
-    #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
+    #[cfg(any(
+        feature = "backend-mock",
+        feature = "backend-posix",
+        feature = "backend-freertos"
+    ))]
     pub use crate::backend::Task;
-    #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
+    #[cfg(any(
+        feature = "backend-mock",
+        feature = "backend-posix",
+        feature = "backend-freertos"
+    ))]
     pub use crate::backend::TaskBuilder;
     #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
     pub use crate::backend::Timer;

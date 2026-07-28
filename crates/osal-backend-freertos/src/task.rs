@@ -242,8 +242,13 @@ where
     // 8. Release task-owned Arcs.
     drop(start);
 
-    // 9. Self-delete — never returns (ADR 0028 §5).
-    sys::task_delete_current();
+    // 9. Self-delete (native) or return (fixture).
+    // vTaskDelete(NULL) never returns on real FreeRTOS.
+    // In the test fixture, the thread simply exits its closure.
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        sys::task_delete_current();
+    }
 }
 
 // ---------------------------------------------------------------------------
