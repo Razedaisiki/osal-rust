@@ -118,7 +118,15 @@ osal_freertos_capability_t osal_freertos_probe_capabilities(void) {
     cap.dynamic_allocation       = 1;  // enforced by #error above
     cap.software_timers          = 1;  // enforced by #error above
     cap.minimal_stack_depth_words = (uint32_t) configMINIMAL_STACK_SIZE;
-    cap.max_stack_depth_words     = (uint32_t) (~((uint32_t)0));
+    {
+        configSTACK_DEPTH_TYPE stack_max =
+            (configSTACK_DEPTH_TYPE)(~((configSTACK_DEPTH_TYPE)0));
+        if (stack_max > (configSTACK_DEPTH_TYPE)0xFFFFFFFFu) {
+            cap.max_stack_depth_words = 0xFFFFFFFFu;
+        } else {
+            cap.max_stack_depth_words = (uint32_t)stack_max;
+        }
+    }
     cap.tls_pointer_slots         = (uint8_t) configNUM_THREAD_LOCAL_STORAGE_POINTERS;
     cap.task_tls_index            = (uint8_t) ROUSSATL_FREERTOS_TASK_TLS_INDEX;
     cap.reserved[0] = 0;

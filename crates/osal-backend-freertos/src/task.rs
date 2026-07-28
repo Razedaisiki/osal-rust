@@ -173,8 +173,18 @@ impl TaskCompletion {
         self.state.store(COMPLETION_FINISHED, Ordering::Release);
 
         // 3. Set the EventGroup completion bit — wakes all joiners.
+        // A live TaskCompletion must have a valid EventGroup; failure
+        // here is a fatal invariant violation (same committed-state
+        // wake policy as Queue close broadcast and Semaphore give).
         if let Some(ref eg) = self.event_group {
-            sys::event_group_set_bits(eg, TASK_COMPLETED_BIT);
+            if sys::event_group_set_bits(eg, TASK_COMPLETED_BIT)
+                != sys::EVENT_GROUP_OK
+            {
+                panic!(
+                    "live task completion EventGroup became invalid — \
+                     invariant violation"
+                );
+            }
         }
     }
 }

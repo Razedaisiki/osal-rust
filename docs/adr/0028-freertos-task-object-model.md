@@ -89,18 +89,16 @@ _Static_assert(
 );
 ```
 
-### 4. `xTaskCreate` with NULL output handle
+### 4. `xTaskCreate` without retaining native handle
 
-FreeRTOS `xTaskCreate` can return a native `TaskHandle_t` that may be
-used with `vTaskDelete` and other task-control APIs. However, OSAL tasks
-self-delete (call `vTaskDelete(NULL)` at the end of the trampoline), so
-the native handle becomes dangling. Storing it would create a use-after-free
-risk if any code later tried to use it.
+FreeRTOS `xTaskCreate` requires a non-NULL output pointer for the native
+`TaskHandle_t`. The C shim passes a temporary local `TaskHandle_t` pointer,
+reads the result, and immediately discards it. The backend does NOT store
+the native handle — OSAL tasks self-delete (call `vTaskDelete(NULL)` at
+the end of the trampoline), so a stored native handle would become dangling.
 
-Decision: pass `NULL` as the output handle parameter to `xTaskCreate`.
 OSAL maintains its own stable `TaskHandle` (a monotonically-increasing
-`NonZeroUsize`, matching the POSIX/Mock backends). No native task handle
-is stored.
+`NonZeroUsize`, matching the POSIX/Mock backends).
 
 ### 5. Generic trampoline
 
@@ -302,8 +300,9 @@ the native scheduling priority is 7, but `priority()` still returns 100.
 
 Public API accepts up to 31 UTF-8 bytes (validated by `validate_task_config`).
 FreeRTOS `xTaskCreate` takes a `const char *` name for debugging, subject
-to `configMAX_TASK_NAME_LEN`. The C shim truncates the name to
-`configMAX_TASK_NAME_LEN - 1` bytes and ensures NUL termination.
+to `configMAX_TASK_NAME_LEN`. The backend pre-truncates the name to
+`min(31, configMAX_TASK_NAME_LEN - 1)` bytes in Rust before passing a
+NUL-terminated buffer to the C shim.
 
 OSAL does not provide a `name()` getter on `Task`, so native truncation
 has no observable effect on the public API.
