@@ -10,7 +10,7 @@
 #![cfg(feature = "testkit")]
 
 use core::time::Duration;
-use std::sync::{mpsc, Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::thread;
 
 use osal_api::error::Error;
