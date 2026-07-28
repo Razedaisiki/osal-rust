@@ -25,6 +25,12 @@ typedef struct {
     uint8_t  stack_word_size;    // sizeof(StackType_t)
     uint8_t  dynamic_allocation; // configSUPPORT_DYNAMIC_ALLOCATION != 0
     uint8_t  software_timers;    // configUSE_TIMERS != 0
+    // ---- Task support (ADR 0028) ----
+    uint32_t minimal_stack_depth_words;  // configMINIMAL_STACK_SIZE
+    uint32_t max_stack_depth_words;      // max value of stack-depth type
+    uint8_t  tls_pointer_slots;          // configNUM_THREAD_LOCAL_STORAGE_POINTERS
+    uint8_t  task_tls_index;             // ROUSSATL_FREERTOS_TASK_TLS_INDEX
+    uint8_t  reserved[2];                // align to 32-bit boundary
 } osal_freertos_capability_t;
 
 // ---------------------------------------------------------------------------
@@ -129,6 +135,73 @@ uint32_t osal_freertos_semaphore_take(osal_freertos_semaphore_handle_t handle,
 uint32_t osal_freertos_semaphore_give(osal_freertos_semaphore_handle_t handle);
 uint64_t osal_freertos_semaphore_count(osal_freertos_semaphore_handle_t handle);
 void osal_freertos_semaphore_delete(osal_freertos_semaphore_handle_t handle);
+
+// ---------------------------------------------------------------------------
+// Opaque handle types for EventGroup (ADR 0028 §1)
+// ---------------------------------------------------------------------------
+
+typedef void *osal_freertos_event_group_handle_t;
+
+// ---------------------------------------------------------------------------
+// EventGroup status codes (ADR 0028 §1)
+// ---------------------------------------------------------------------------
+
+#define OSAL_FREERTOS_EVENT_GROUP_OK         0u
+#define OSAL_FREERTOS_EVENT_GROUP_TIMEOUT    1u
+#define OSAL_FREERTOS_EVENT_GROUP_INVALID    2u
+
+// ---------------------------------------------------------------------------
+// EventGroup API (ADR 0028)
+// ---------------------------------------------------------------------------
+
+osal_freertos_event_group_handle_t osal_freertos_event_group_create(void);
+uint32_t osal_freertos_event_group_set_bits(
+    osal_freertos_event_group_handle_t handle,
+    uint32_t bits);
+uint32_t osal_freertos_event_group_wait_bits(
+    osal_freertos_event_group_handle_t handle,
+    uint32_t bits,
+    uint8_t  clear_on_exit,
+    uint8_t  wait_for_all,
+    uint64_t ticks);
+void osal_freertos_event_group_delete(
+    osal_freertos_event_group_handle_t handle);
+
+// ---------------------------------------------------------------------------
+// Task create status codes (ADR 0028 §4)
+// ---------------------------------------------------------------------------
+
+#define OSAL_FREERTOS_TASK_CREATE_OK          0u
+#define OSAL_FREERTOS_TASK_CREATE_OOM         1u
+#define OSAL_FREERTOS_TASK_CREATE_INVALID     2u
+
+// ---------------------------------------------------------------------------
+// Task entry type (ADR 0028 §5)
+// ---------------------------------------------------------------------------
+
+typedef void (*osal_freertos_task_entry_t)(void *parameter);
+
+// ---------------------------------------------------------------------------
+// Task API (ADR 0028)
+// ---------------------------------------------------------------------------
+
+uint32_t osal_freertos_task_create(
+    osal_freertos_task_entry_t entry,
+    const char *name,
+    uint32_t    stack_depth_words,
+    void       *parameter,
+    uint32_t    priority);
+void osal_freertos_task_delete_current(void);
+void osal_freertos_task_set_current_context(void *ptr);
+void *osal_freertos_task_get_current_context(void);
+
+// ---------------------------------------------------------------------------
+// Capability struct — extended for Task support (ADR 0028 §7, §9)
+
+// New fields appended after the existing ones.  The struct remains
+// ABI-compatible with earlier versions (new fields zero when compiled
+// against older headers, detected by the shim via sizeof checks).
+// ---------------------------------------------------------------------------
 
 #ifdef __cplusplus
 }

@@ -16,6 +16,9 @@ typedef uint32_t StackType_t;
 // portMAX_DELAY: all-bits-set for TickType_t (0xFFFFFFFF for 32-bit).
 #define portMAX_DELAY ((TickType_t)(~((TickType_t)0)))
 
+// Stack depth type (ADR 0028 §8)
+typedef uint32_t configSTACK_DEPTH_TYPE;
+
 // Boolean constants used by semaphore/mutex API.
 #define pdTRUE  ((BaseType_t)1)
 #define pdFALSE ((BaseType_t)0)

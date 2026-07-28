@@ -11,3 +11,7 @@
 #define INCLUDE_vTaskDelay                1
 #define configNUMBER_OF_CORES             1
 #define configUSE_MUTEXES                 1
+#define INCLUDE_vTaskDelete                1
+#define configNUM_THREAD_LOCAL_STORAGE_POINTERS 5
+#define ROUSSATL_FREERTOS_TASK_TLS_INDEX   0
+#define configMINIMAL_STACK_SIZE           64

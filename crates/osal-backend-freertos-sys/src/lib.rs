@@ -28,7 +28,16 @@ pub type QueueHandle = *mut core::ffi::c_void;
 pub type TimerHandle = *mut core::ffi::c_void;
 
 /// Opaque FreeRTOS event group handle.
-pub type EventGroupHandle = *mut core::ffi::c_void;
+///
+/// Created by `xEventGroupCreate()`.  Not `Copy` — the backend
+/// inner owns the handle; `Drop` deletes it exactly once.
+pub struct EventGroupHandle {
+    pub(crate) raw: core::ptr::NonNull<core::ffi::c_void>,
+}
+
+// Safety: FreeRTOS handles may be sent and shared across tasks.
+unsafe impl Send for EventGroupHandle {}
+unsafe impl Sync for EventGroupHandle {}
 
 // ---------------------------------------------------------------------------
 // Synchronisation handle types (ADR 0026 §1)
@@ -99,6 +108,22 @@ impl GiveStatus {
     }
 }
 
+/// Outcome of a native event-group wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventGroupWaitStatus {
+    Ok,
+    Timeout,
+    Invalid,
+}
+
+/// Outcome of a native task creation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskCreateStatus {
+    Ok,
+    OutOfMemory,
+    Invalid,
+}
+
 // Take / Give raw constants (matching C #defines).
 pub const TAKE_ACQUIRED: u32 = 0;
 pub const TAKE_TIMEOUT: u32 = 1;
@@ -107,6 +132,19 @@ pub const TAKE_INVALID: u32 = 2;
 pub const GIVE_OK: u32 = 0;
 pub const GIVE_FULL: u32 = 1;
 pub const GIVE_INVALID: u32 = 2;
+
+// EventGroup constants (matching C #defines).
+pub const EVENT_GROUP_OK: u32 = 0;
+pub const EVENT_GROUP_TIMEOUT: u32 = 1;
+pub const EVENT_GROUP_INVALID: u32 = 2;
+
+// Task create constants (matching C #defines).
+pub const TASK_CREATE_OK: u32 = 0;
+pub const TASK_CREATE_OOM: u32 = 1;
+pub const TASK_CREATE_INVALID: u32 = 2;
+
+/// Task entry function type — `extern "C"` function pointer.
+pub type TaskEntry = unsafe extern "C" fn(*mut core::ffi::c_void);
 
 // ---------------------------------------------------------------------------
 // Capability struct (ADR 0021 §2)
@@ -127,6 +165,12 @@ pub struct KernelCapabilities {
     pub stack_word_size: u8,
     pub dynamic_allocation: u8,
     pub software_timers: u8,
+    // Task support (ADR 0028)
+    pub minimal_stack_depth_words: u32,
+    pub max_stack_depth_words: u32,
+    pub tls_pointer_slots: u8,
+    pub task_tls_index: u8,
+    pub _reserved: [u8; 2],
 }
 
 /// Scheduler state constants.
@@ -200,6 +244,30 @@ unsafe extern "C" {
     fn osal_freertos_semaphore_give(handle: *mut core::ffi::c_void) -> u32;
     fn osal_freertos_semaphore_count(handle: *mut core::ffi::c_void) -> u64;
     fn osal_freertos_semaphore_delete(handle: *mut core::ffi::c_void);
+
+    // EventGroup (ADR 0028)
+    fn osal_freertos_event_group_create() -> *mut core::ffi::c_void;
+    fn osal_freertos_event_group_set_bits(handle: *mut core::ffi::c_void, bits: u32) -> u32;
+    fn osal_freertos_event_group_wait_bits(
+        handle: *mut core::ffi::c_void,
+        bits: u32,
+        clear_on_exit: u8,
+        wait_for_all: u8,
+        ticks: u64,
+    ) -> u32;
+    fn osal_freertos_event_group_delete(handle: *mut core::ffi::c_void);
+
+    // Task (ADR 0028)
+    fn osal_freertos_task_create(
+        entry: TaskEntry,
+        name: *const core::ffi::c_char,
+        stack_depth_words: u32,
+        parameter: *mut core::ffi::c_void,
+        priority: u32,
+    ) -> u32;
+    fn osal_freertos_task_delete_current();
+    fn osal_freertos_task_set_current_context(ptr: *mut core::ffi::c_void);
+    fn osal_freertos_task_get_current_context() -> *mut core::ffi::c_void;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +284,11 @@ pub struct Capabilities {
     pub stack_word_size: u8,
     pub dynamic_allocation: bool,
     pub software_timers: bool,
+    // Task support (ADR 0028)
+    pub minimal_stack_depth_words: u32,
+    pub max_stack_depth_words: u32,
+    pub tls_pointer_slots: u8,
+    pub task_tls_index: u8,
 }
 
 /// Probe kernel capabilities and return a Rust-friendly view.
@@ -229,6 +302,10 @@ pub fn capabilities() -> Capabilities {
         stack_word_size: raw.stack_word_size,
         dynamic_allocation: raw.dynamic_allocation != 0,
         software_timers: raw.software_timers != 0,
+        minimal_stack_depth_words: raw.minimal_stack_depth_words,
+        max_stack_depth_words: raw.max_stack_depth_words,
+        tls_pointer_slots: raw.tls_pointer_slots,
+        task_tls_index: raw.task_tls_index,
     }
 }
 
@@ -248,6 +325,11 @@ fn probe_capabilities() -> KernelCapabilities {
             stack_word_size: 4,
             dynamic_allocation: 1,
             software_timers: 1,
+            minimal_stack_depth_words: 64,
+            max_stack_depth_words: 0xFFFFFFFFu32,
+            tls_pointer_slots: 5,
+            task_tls_index: 0,
+            _reserved: [0; 2],
         }
     }
     #[cfg(not(feature = "test-fixture"))]
@@ -570,7 +652,153 @@ pub fn semaphore_delete(handle: SemaphoreHandle) {
 }
 
 // ---------------------------------------------------------------------------
-// Fixture sync module (test-fixture only)
+// EventGroup safe wrappers (ADR 0028)
+// ---------------------------------------------------------------------------
+
+/// Create a native FreeRTOS event group.
+///
+/// Returns `None` on allocation failure.
+pub fn event_group_create() -> Option<EventGroupHandle> {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_task::event_group_create()
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        let raw = unsafe { osal_freertos_event_group_create() };
+        core::ptr::NonNull::new(raw).map(|nn| EventGroupHandle { raw: nn })
+    }
+}
+
+/// Set bits in an event group.  Returns the status.
+pub fn event_group_set_bits(handle: &EventGroupHandle, bits: u32) -> u32 {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_task::event_group_set_bits(handle, bits)
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        unsafe { osal_freertos_event_group_set_bits(handle.raw.as_ptr(), bits) }
+    }
+}
+
+/// Wait for bits in an event group.
+pub fn event_group_wait_bits(
+    handle: &EventGroupHandle,
+    bits: u32,
+    clear_on_exit: bool,
+    wait_for_all: bool,
+    ticks: u64,
+) -> EventGroupWaitStatus {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_task::event_group_wait_bits(handle, bits, clear_on_exit, wait_for_all, ticks)
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        let raw = unsafe {
+            osal_freertos_event_group_wait_bits(
+                handle.raw.as_ptr(),
+                bits,
+                clear_on_exit as u8,
+                wait_for_all as u8,
+                ticks,
+            )
+        };
+        match raw {
+            EVENT_GROUP_OK => EventGroupWaitStatus::Ok,
+            EVENT_GROUP_TIMEOUT => EventGroupWaitStatus::Timeout,
+            _ => EventGroupWaitStatus::Invalid,
+        }
+    }
+}
+
+/// Delete an event group.
+pub fn event_group_delete(handle: EventGroupHandle) {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_task::event_group_delete(handle);
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        unsafe { osal_freertos_event_group_delete(handle.raw.as_ptr()) };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task safe wrappers (ADR 0028)
+// ---------------------------------------------------------------------------
+
+/// Create a FreeRTOS task.  Returns a status code.
+///
+/// # Safety
+///
+/// The caller must ensure `parameter` points to a valid, properly-aligned
+/// object that will remain alive for the duration of the task.
+pub unsafe fn task_create(
+    entry: TaskEntry,
+    name: *const core::ffi::c_char,
+    stack_depth_words: u32,
+    parameter: *mut core::ffi::c_void,
+    priority: u32,
+) -> TaskCreateStatus {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_task::task_create(entry, name, stack_depth_words, parameter, priority)
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        let raw = osal_freertos_task_create(entry, name, stack_depth_words, parameter, priority);
+        match raw {
+            TASK_CREATE_OK => TaskCreateStatus::Ok,
+            TASK_CREATE_OOM => TaskCreateStatus::OutOfMemory,
+            _ => TaskCreateStatus::Invalid,
+        }
+    }
+}
+
+/// Delete the current task.  Never returns.
+pub fn task_delete_current() -> ! {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_task::task_delete_current()
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        unsafe { osal_freertos_task_delete_current() };
+        // The C function loops forever after vTaskDelete(NULL).
+        loop {
+            unsafe { core::arch::asm!("") }; // prevent compiler from assuming unreachable
+        }
+    }
+}
+
+/// Set the per-task TLS context pointer for the current task.
+pub fn task_set_current_context(ptr: *mut core::ffi::c_void) {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_task::task_set_current_context(ptr);
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        unsafe { osal_freertos_task_set_current_context(ptr) };
+    }
+}
+
+/// Get the per-task TLS context pointer for the current task.
+pub fn task_current_context() -> *mut core::ffi::c_void {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_task::task_current_context()
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        unsafe { osal_freertos_task_get_current_context() }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fixture modules (test-fixture only)
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "test-fixture")]
@@ -579,6 +807,15 @@ mod fixture_sync;
 
 #[cfg(not(feature = "test-fixture"))]
 mod fixture_sync {
+    // Stub — never compiled; all callers are cfg-gated.
+}
+
+#[cfg(feature = "test-fixture")]
+#[path = "task_fixture.rs"]
+mod fixture_task;
+
+#[cfg(not(feature = "test-fixture"))]
+mod fixture_task {
     // Stub — never compiled; all callers are cfg-gated.
 }
 

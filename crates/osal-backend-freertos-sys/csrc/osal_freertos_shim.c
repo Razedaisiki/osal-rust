@@ -15,6 +15,7 @@
 #include "portmacro.h"
 #include "portable.h"
 #include "semphr.h"
+#include "event_groups.h"
 
 // ---------------------------------------------------------------------------
 // Compile-time configuration checks (ADR 0021)
@@ -81,19 +82,47 @@ _Static_assert(configNUMBER_OF_CORES == 1,
 #error "ROUSSATL FreeRTOS backend requires configUSE_MUTEXES == 1"
 #endif
 
+// P7E: task delete support (ADR 0028 §5)
+#ifndef INCLUDE_vTaskDelete
+#error "FreeRTOSConfig.h must define INCLUDE_vTaskDelete"
+#endif
+#if INCLUDE_vTaskDelete != 1
+#error "ROUSSATL FreeRTOS backend requires INCLUDE_vTaskDelete == 1"
+#endif
+
+// P7E: TLS pointer slots (ADR 0028 §3)
+#ifndef ROUSSATL_FREERTOS_TASK_TLS_INDEX
+// Default to slot 0 if the application does not specify.
+#define ROUSSATL_FREERTOS_TASK_TLS_INDEX 0
+#endif
+
+#ifndef configNUM_THREAD_LOCAL_STORAGE_POINTERS
+#error "FreeRTOSConfig.h must define configNUM_THREAD_LOCAL_STORAGE_POINTERS"
+#endif
+_Static_assert(
+    configNUM_THREAD_LOCAL_STORAGE_POINTERS > ROUSSATL_FREERTOS_TASK_TLS_INDEX,
+    "ROUSSATL_FREERTOS_TASK_TLS_INDEX exceeds configNUM_THREAD_LOCAL_STORAGE_POINTERS"
+);
+
 // ---------------------------------------------------------------------------
 // Capability probe
 // ---------------------------------------------------------------------------
 
 osal_freertos_capability_t osal_freertos_probe_capabilities(void) {
     osal_freertos_capability_t cap;
-    cap.tick_rate_hz      = (uint32_t) configTICK_RATE_HZ;
-    cap.max_priorities    = (uint32_t) configMAX_PRIORITIES;
-    cap.max_task_name_len = (uint32_t) configMAX_TASK_NAME_LEN;
-    cap.tick_bits         = (uint8_t) (sizeof(TickType_t) * 8);
-    cap.stack_word_size   = (uint8_t)  sizeof(StackType_t);
-    cap.dynamic_allocation = 1;  // enforced by #error above
-    cap.software_timers    = 1;  // enforced by #error above
+    cap.tick_rate_hz             = (uint32_t) configTICK_RATE_HZ;
+    cap.max_priorities           = (uint32_t) configMAX_PRIORITIES;
+    cap.max_task_name_len        = (uint32_t) configMAX_TASK_NAME_LEN;
+    cap.tick_bits                = (uint8_t) (sizeof(TickType_t) * 8);
+    cap.stack_word_size          = (uint8_t)  sizeof(StackType_t);
+    cap.dynamic_allocation       = 1;  // enforced by #error above
+    cap.software_timers          = 1;  // enforced by #error above
+    cap.minimal_stack_depth_words = (uint32_t) configMINIMAL_STACK_SIZE;
+    cap.max_stack_depth_words     = (uint32_t) (~((uint32_t)0));
+    cap.tls_pointer_slots         = (uint8_t) configNUM_THREAD_LOCAL_STORAGE_POINTERS;
+    cap.task_tls_index            = (uint8_t) ROUSSATL_FREERTOS_TASK_TLS_INDEX;
+    cap.reserved[0] = 0;
+    cap.reserved[1] = 0;
     return cap;
 }
 
@@ -285,4 +314,124 @@ void osal_freertos_semaphore_delete(osal_freertos_semaphore_handle_t handle) {
     if (handle != NULL) {
         vSemaphoreDelete((SemaphoreHandle_t)handle);
     }
+}
+
+// ---------------------------------------------------------------------------
+// EventGroup wrappers (ADR 0028 §1)
+// ---------------------------------------------------------------------------
+
+osal_freertos_event_group_handle_t osal_freertos_event_group_create(void) {
+    EventGroupHandle_t h = xEventGroupCreate();
+    return (osal_freertos_event_group_handle_t)h;
+}
+
+uint32_t osal_freertos_event_group_set_bits(
+    osal_freertos_event_group_handle_t handle,
+    uint32_t bits)
+{
+    if (handle == NULL) {
+        return OSAL_FREERTOS_EVENT_GROUP_INVALID;
+    }
+    (void)xEventGroupSetBits((EventGroupHandle_t)handle,
+                             (EventBits_t)bits);
+    // xEventGroupSetBits returns the new value; we ignore it.
+    return OSAL_FREERTOS_EVENT_GROUP_OK;
+}
+
+uint32_t osal_freertos_event_group_wait_bits(
+    osal_freertos_event_group_handle_t handle,
+    uint32_t bits,
+    uint8_t  clear_on_exit,
+    uint8_t  wait_for_all,
+    uint64_t ticks)
+{
+    EventBits_t result;
+    if (handle == NULL) {
+        return OSAL_FREERTOS_EVENT_GROUP_INVALID;
+    }
+
+    result = xEventGroupWaitBits(
+        (EventGroupHandle_t)handle,
+        (EventBits_t)bits,
+        (BaseType_t)clear_on_exit,
+        (BaseType_t)wait_for_all,
+        (TickType_t)ticks);
+
+    // xEventGroupWaitBits returns the EventBits value before the wait
+    // (or before clear if clear_on_exit).  We only care whether the
+    // requested bits were set.
+    if ((result & (EventBits_t)bits) == (EventBits_t)bits) {
+        return OSAL_FREERTOS_EVENT_GROUP_OK;
+    }
+    return OSAL_FREERTOS_EVENT_GROUP_TIMEOUT;
+}
+
+void osal_freertos_event_group_delete(
+    osal_freertos_event_group_handle_t handle)
+{
+    if (handle != NULL) {
+        vEventGroupDelete((EventGroupHandle_t)handle);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task wrappers (ADR 0028 §4-5)
+// ---------------------------------------------------------------------------
+
+uint32_t osal_freertos_task_create(
+    osal_freertos_task_entry_t entry,
+    const char *name,
+    uint32_t    stack_depth_words,
+    void       *parameter,
+    uint32_t    priority)
+{
+    BaseType_t result;
+    TaskHandle_t native_handle = NULL;
+
+    if (entry == NULL) {
+        return OSAL_FREERTOS_TASK_CREATE_INVALID;
+    }
+    if (stack_depth_words == 0) {
+        return OSAL_FREERTOS_TASK_CREATE_INVALID;
+    }
+
+    result = xTaskCreate(
+        (TaskFunction_t)entry,
+        name,
+        (configSTACK_DEPTH_TYPE)stack_depth_words,
+        parameter,
+        (UBaseType_t)priority,
+        &native_handle);
+
+    if (result != pdPASS) {
+        return OSAL_FREERTOS_TASK_CREATE_OOM;
+    }
+
+    // The native handle is intentionally not stored — OSAL tasks
+    // self-delete and the native handle would become dangling.
+    // xTaskCreate with a non-NULL output handle parameter is required
+    // by FreeRTOS (it does not accept NULL for the handle pointer),
+    // but we discard the value immediately (ADR 0028 §4).
+    (void)native_handle;
+
+    return OSAL_FREERTOS_TASK_CREATE_OK;
+}
+
+void osal_freertos_task_delete_current(void) {
+    vTaskDelete(NULL);
+    // vTaskDelete never returns.
+    for (;;) {}
+}
+
+void osal_freertos_task_set_current_context(void *ptr) {
+    vTaskSetThreadLocalStoragePointer(
+        NULL,
+        ROUSSATL_FREERTOS_TASK_TLS_INDEX,
+        ptr);
+}
+
+void *osal_freertos_task_get_current_context(void) {
+    return pvTaskGetThreadLocalStoragePointer(
+        NULL,
+        ROUSSATL_FREERTOS_TASK_TLS_INDEX);
 }

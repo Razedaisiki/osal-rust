@@ -33,4 +33,23 @@ void vTaskDelay(TickType_t xTicksToDelay);
 #define taskENTER_CRITICAL() do { /* raise mask */ } while (0)
 #define taskEXIT_CRITICAL()  do { /* restore mask */ } while (0)
 
+// Task creation / deletion (ADR 0028)
+typedef void (*TaskFunction_t)(void *);
+typedef void *TaskHandle_t;
+
+BaseType_t xTaskCreate(TaskFunction_t pxTaskCode,
+                       const char *pcName,
+                       configSTACK_DEPTH_TYPE usStackDepth,
+                       void *pvParameters,
+                       UBaseType_t uxPriority,
+                       TaskHandle_t *pxCreatedTask);
+void vTaskDelete(TaskHandle_t xTaskToDelete);
+
+// TLS support (ADR 0028 §3)
+void vTaskSetThreadLocalStoragePointer(TaskHandle_t xTaskToSet,
+                                       BaseType_t xIndex,
+                                       void *pvValue);
+void *pvTaskGetThreadLocalStoragePointer(TaskHandle_t xTaskToQuery,
+                                         BaseType_t xIndex);
+
 #endif
