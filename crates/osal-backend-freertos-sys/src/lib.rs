@@ -1237,4 +1237,34 @@ pub mod fixture {
     pub fn last_internal_priority() -> u32 {
         super::fixture_task::LAST_INTERNAL_PRIORITY.load(Ordering::Relaxed)
     }
+
+    // ------------------------------------------------------------------
+    // Virtual-tick wait mode controls (P7F-S2)
+    // ------------------------------------------------------------------
+
+    pub use super::fixture_sync::FixtureWaitMode;
+
+    /// Set the fixture wait mode — `Realtime` (default) or `Virtual`.
+    /// `Virtual` mode makes sync-object waits driven by virtual ticks
+    /// rather than wall-clock time.  `reset()` restores `Realtime`.
+    pub fn set_wait_mode(mode: FixtureWaitMode) {
+        super::fixture_sync::sync_set_wait_mode(mode);
+    }
+
+    /// Query the current fixture wait mode.
+    pub fn wait_mode() -> FixtureWaitMode {
+        super::fixture_sync::sync_wait_mode()
+    }
+
+    /// Advance virtual ticks and notify all blocked sync-object waiters.
+    /// In Virtual mode, blocked threads will recheck their conditions
+    /// (deadline, semaphore count) against the new tick value.
+    pub fn advance_ticks(ticks: u64) {
+        super::fixture_sync::advance_ticks_and_notify(ticks);
+    }
+
+    /// Return the current tick generation counter.
+    pub fn tick_generation() -> u64 {
+        super::fixture_sync::tick_generation()
+    }
 }

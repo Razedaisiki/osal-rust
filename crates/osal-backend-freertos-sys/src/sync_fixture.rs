@@ -8,7 +8,7 @@
 
 extern crate std;
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::sync::{Condvar, LazyLock, Mutex};
 use std::thread::ThreadId;
@@ -106,6 +106,80 @@ static FAIL_NEXT_SEM_CREATE: AtomicBool = AtomicBool::new(false);
 /// Count of threads currently inside a Condvar wait (incremented
 /// atomically just before the call, decremented just after).
 pub(super) static BLOCKED_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// ---------------------------------------------------------------------------
+// Virtual-tick wait mode (P7F-S2)
+// ---------------------------------------------------------------------------
+
+/// Selects the time domain for sync-object blocking waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixtureWaitMode {
+    /// Waits use wall-clock `Duration` timeouts (existing behaviour).
+    Realtime,
+    /// Waits use virtual ticks; timeout only when ticks are advanced
+    /// by a test via `advance_ticks_and_notify`.  A wall-clock watchdog
+    /// prevents CI hangs if the test forgets to advance ticks.
+    Virtual,
+}
+
+static WAIT_MODE: AtomicU8 = AtomicU8::new(WAIT_MODE_REALTIME);
+const WAIT_MODE_REALTIME: u8 = 0;
+const WAIT_MODE_VIRTUAL: u8 = 1;
+
+/// Tick generation counter — incremented every time the virtual tick
+/// snapshot changes (advance, set, reset).  Waiters record the
+/// generation before blocking and recheck after acquiring the fixture
+/// lock to detect lost wakeups.
+static TICK_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Wall-clock watchdog for virtual waits.  If a virtual wait lasts
+/// longer than this without the virtual deadline being reached, the
+/// fixture panics — the test forgot to advance ticks.
+const VIRTUAL_WAIT_WATCHDOG: Duration = Duration::from_secs(5);
+
+pub fn sync_set_wait_mode(mode: FixtureWaitMode) {
+    let val: u8 = match mode {
+        FixtureWaitMode::Realtime => WAIT_MODE_REALTIME,
+        FixtureWaitMode::Virtual => WAIT_MODE_VIRTUAL,
+    };
+    WAIT_MODE.store(val, Ordering::Relaxed);
+}
+
+pub fn sync_wait_mode() -> FixtureWaitMode {
+    match WAIT_MODE.load(Ordering::Relaxed) {
+        WAIT_MODE_VIRTUAL => FixtureWaitMode::Virtual,
+        _ => FixtureWaitMode::Realtime,
+    }
+}
+
+/// Advance virtual ticks and notify all sync-object waiters, under
+/// the fixture lock.  This is the single entry point for tick mutation
+/// that may need to wake blocked threads.
+///
+/// Must be called with the fixture lock NOT held (it acquires it
+/// internally).
+pub fn advance_ticks_and_notify(ticks: u64) {
+    let (lock, cvar) = &*FIXTURE;
+    let _guard = lock.lock().unwrap();
+    advance_virtual_ticks(ticks);
+    TICK_GENERATION.fetch_add(1, Ordering::SeqCst);
+    cvar.notify_all();
+}
+
+/// Return the current tick generation counter.
+pub fn tick_generation() -> u64 {
+    TICK_GENERATION.load(Ordering::SeqCst)
+}
+
+/// Compute a monotonic virtual tick value from the current snapshot.
+fn monotonic_virtual_ticks() -> u128 {
+    use super::{TICK_BITS_FIXTURE, TICK_COUNT_FIXTURE, TICK_OVERFLOW_FIXTURE};
+    let bits = TICK_BITS_FIXTURE.load(Ordering::Relaxed);
+    let modulus: u128 = 1u128 << (bits as u32);
+    let overflow = TICK_OVERFLOW_FIXTURE.load(Ordering::Relaxed) as u128;
+    let count = TICK_COUNT_FIXTURE.load(Ordering::Relaxed) as u128;
+    overflow * modulus + count
+}
 
 // ---------------------------------------------------------------------------
 // Handle tagging
@@ -319,6 +393,13 @@ pub fn binary_semaphore_create() -> Option<SemaphoreHandle> {
 }
 
 pub fn semaphore_take(handle: &SemaphoreHandle, ticks: u64) -> TakeStatus {
+    match sync_wait_mode() {
+        FixtureWaitMode::Realtime => semaphore_take_realtime(handle, ticks),
+        FixtureWaitMode::Virtual => semaphore_take_virtual(handle, ticks),
+    }
+}
+
+fn semaphore_take_realtime(handle: &SemaphoreHandle, ticks: u64) -> TakeStatus {
     let id = id_from_semaphore_handle(handle);
     let max_finite = MAX_FINITE_WAIT_TICKS.load(Ordering::Relaxed);
     let (lock, cvar) = &*FIXTURE;
@@ -376,6 +457,95 @@ pub fn semaphore_take(handle: &SemaphoreHandle, ticks: u64) -> TakeStatus {
     }
 }
 
+fn semaphore_take_virtual(handle: &SemaphoreHandle, ticks: u64) -> TakeStatus {
+    let id = id_from_semaphore_handle(handle);
+    let (lock, cvar) = &*FIXTURE;
+
+    // ticks == 0: single opportunistic check.
+    if ticks == 0 {
+        let mut state = lock.lock().unwrap();
+        state.take_call_ticks.push(0);
+        let entry = state.semaphores.get_mut(&id).expect("semaphore not found");
+        if entry.deleted {
+            return TakeStatus::Invalid;
+        }
+        if entry.count > 0 {
+            entry.count -= 1;
+            return TakeStatus::Acquired;
+        }
+        return TakeStatus::Timeout;
+    }
+
+    let start = monotonic_virtual_ticks();
+    let deadline = start
+        .checked_add(ticks as u128)
+        .expect("fixture virtual deadline overflow");
+
+    {
+        let mut state = lock.lock().unwrap();
+        state.take_call_ticks.push(ticks);
+    }
+
+    loop {
+        let mut state = lock.lock().unwrap();
+        let entry = state.semaphores.get_mut(&id).expect("semaphore not found");
+        if entry.deleted {
+            return TakeStatus::Invalid;
+        }
+
+        if entry.count > 0 {
+            entry.count -= 1;
+            return TakeStatus::Acquired;
+        }
+
+        if monotonic_virtual_ticks() >= deadline {
+            return TakeStatus::Timeout;
+        }
+
+        // Record generation BEFORE releasing the lock to check for
+        // lost notifications.
+        let prev_generation = tick_generation();
+
+        entry.waiters += 1;
+        entry.blocked_count += 1;
+        BLOCKED_COUNT.fetch_add(1, Ordering::Relaxed);
+
+        // Release lock and wait with wall-clock watchdog.
+        let (_state, wait_result) = cvar.wait_timeout(state, VIRTUAL_WAIT_WATCHDOG).unwrap();
+        state = _state;
+        BLOCKED_COUNT.fetch_sub(1, Ordering::Relaxed);
+
+        let entry = state.semaphores.get_mut(&id).unwrap();
+        entry.blocked_count = entry.blocked_count.saturating_sub(1);
+        entry.waiters = entry.waiters.saturating_sub(1);
+
+        if wait_result.timed_out() {
+            // Wall-clock watchdog expired — check if the virtual
+            // deadline has been reached.  If not, the test failed
+            // to advance ticks.
+            if monotonic_virtual_ticks() >= deadline || entry.count > 0 {
+                // Deadline reached or object available — recheck.
+                continue;
+            }
+            panic!(
+                "virtual semaphore wait stalled: \
+                 test did not advance ticks or signal the object \
+                 (id={id}, ticks={ticks})"
+            );
+        }
+
+        // Notified — check if generation changed (tick advance or
+        // semaphore_give).  Loop back to recheck conditions.
+        if tick_generation() != prev_generation
+            || monotonic_virtual_ticks() >= deadline
+            || entry.count > 0
+        {
+            continue;
+        }
+        // Spurious wakeup with no state change — wait again.
+    }
+}
+
 pub fn semaphore_give(handle: &SemaphoreHandle) -> GiveStatus {
     let id = id_from_semaphore_handle(handle);
     let (lock, cvar) = &*FIXTURE;
@@ -420,6 +590,10 @@ pub fn semaphore_delete(handle: SemaphoreHandle) {
 // ---------------------------------------------------------------------------
 
 pub fn sync_reset() {
+    // Restore default wait mode (real time).
+    sync_set_wait_mode(FixtureWaitMode::Realtime);
+    TICK_GENERATION.store(0, Ordering::Relaxed);
+
     FAIL_NEXT_MUTEX_CREATE.store(false, Ordering::Relaxed);
     FAIL_NEXT_SEM_CREATE.store(false, Ordering::Relaxed);
     MAX_FINITE_WAIT_TICKS.store((1u64 << 32) - 2, Ordering::Relaxed);
@@ -450,9 +624,17 @@ pub fn sync_reset() {
 
 /// Notify all sync object condition variables.  Used to unblock internal
 /// task threads (e.g. timer worker) before joining them during reset.
+/// Also bumps tick generation so virtual waiters recheck conditions.
 pub fn sync_notify_all() {
     let (_lock, cvar) = &*FIXTURE;
+    TICK_GENERATION.fetch_add(1, Ordering::SeqCst);
     cvar.notify_all();
+}
+
+/// Bump tick generation (called when tick snapshot is directly set).
+#[allow(dead_code)] // used via lib.rs fixture module
+pub fn tick_generation_inc() {
+    TICK_GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
 pub fn sync_set_fail_next_mutex_create(fail: bool) {
