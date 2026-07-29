@@ -741,8 +741,9 @@ impl Timer {
 ### Callback execution
 
 - Callbacks execute in a **timer service context** (Mock: synchronously
-  in `advance_clock`; POSIX: single background pthread). Callbacks are
-  **not** invoked from ISR context.
+  in `advance_clock`; POSIX: single background pthread; FreeRTOS:
+  dedicated ROUSSATL Timer Service Task). Callbacks are **not** invoked
+  from ISR context.
 - Callbacks execute **outside** the timer management lock; they may
   call other OSAL APIs including timer control operations.
 - A single timer's callback is **never** called concurrently with
@@ -756,13 +757,37 @@ impl Timer {
   callback fires; the next deadline advances to the first multiple of
   `period` strictly after `now`.
 
-### Generation and stale expiration
+### State mutation during callback and stale-expiration prevention
 
-Every state change (`start`, `stop`, `reset`, `change_period`,
-last-handle `drop`) increments a generation counter. When a callback
-completes, if the generation has changed, the timer's state was
-modified during callback execution and the old expiration logic
-(auto-reload for Periodic) is skipped.
+Backends must ensure that when a callback modifies its own timer's state
+(e.g. calling `stop()`, `reset()`, or `change_period()` from within the
+callback), the post-callback expiration logic does not overwrite the
+callback's modifications with a stale pre-callback state.
+
+**Observable requirements:**
+
+1. When a timer expires, its state (deadline, running/stopped) must be
+   advanced to reflect the expiration **before** the callback is invoked.
+2. If the callback calls `start()`, `stop()`, `reset()`, or
+   `change_period()` on the same timer, those operations directly
+   overwrite the pre-advanced state.
+3. After the callback returns, the backend must **not** re-apply any
+   state computed before the callback (no stale-state restore).
+
+Two valid implementation strategies satisfy these requirements:
+
+- **Generation counter** (POSIX): Each state change increments a
+  generation counter.  The worker compares the generation before and
+  after the callback; if it changed, the pre-callback auto-reload is
+  skipped.
+- **Pre-advance model** (Mock, FreeRTOS): The timer state is advanced
+  to its post-expiration state (`OneShot` → stopped; `Periodic` →
+  next deadline) before the callback executes.  Any callback-side
+  control operations directly overwrite this pre-advanced state, so
+  no post-callback correction is needed.
+
+Both strategies produce identical observable behavior.  Backends are
+free to choose either approach.
 
 ### Handle Clone and Drop
 
@@ -1169,17 +1194,18 @@ Backends must pass all non-skipped tests.
 
 ### Timer tests
 
-| Test | Requirement | POSIX | Mock |
-|------|-------------|-------|------|
-| Create one-shot timer | `Timer::new(... OneShot)` succeeds | R | R |
-| Create periodic timer | `Timer::new(... Periodic)` succeeds | R | R |
-| Reject zero period | `Error::InvalidParameter` | R | R |
-| One-shot fires once | Callback invoked exactly once | R | R |
-| Periodic fires multiple times | Callback invoked >= 2 times | R | R |
-| Stop prevents callback | Stopped timer does not fire | R | R |
-| Reset restarts countdown | Timer fires period after reset | R | R |
-| Change period updates timing | New period takes effect | R | R |
-| Callback outside lock | Nested timer operations in callback OK | R | R |
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| Create one-shot timer | `Timer::new(... OneShot)` succeeds | R | R | R |
+| Create periodic timer | `Timer::new(... Periodic)` succeeds | R | R | R |
+| Reject zero period | `Error::InvalidParameter` | R | R | R |
+| One-shot fires once | Callback invoked exactly once | R | R | R |
+| Periodic fires multiple times | Callback invoked >= 2 times | R | R | R |
+| Stop prevents callback | Stopped timer does not fire | R | R | R |
+| Reset restarts countdown | Timer fires period after reset | R | R | R |
+| Change period updates timing | New period takes effect | R | R | R |
+| Callback outside lock | Nested timer operations in callback OK | R | R | R |
+| Missed periods coalesced | N missed → 1 callback | R | R | R |
 
 ### Clock and System tests
 
