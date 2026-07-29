@@ -87,7 +87,7 @@ static DISPATCH_STARTED: AtomicU64 = AtomicU64::new(0);
 static DISPATCH_COMPLETED: AtomicU64 = AtomicU64::new(0);
 
 /// Signal the worker if the timer service is running.
-#[cfg(feature = "test-fixture")]
+#[cfg(feature = "testkit")]
 fn signal_worker_for_flush() {
     if let Ok(()) = crate::timer_control::with_slot(|slot| match slot {
         crate::timer_control::ServiceSlot::Running { service, .. } => {
@@ -231,12 +231,12 @@ unsafe impl Sync for TimerService {}
 // Worker loop
 // ---------------------------------------------------------------------------
 
-/// Acknowledge a pending flush request.  Called only at quiescent
-/// points — worker has scanned, found no due callbacks, and is about
-/// to wait or stop.  Never called on Dispatch or Rescan paths.
+/// Acknowledge a specific flush request value.  Called at quiescent
+/// points only — worker has scanned timers with the time that was
+/// current when `observed_flush` was captured.
 #[cfg(feature = "test-fixture")]
-fn ack_flush() {
-    FLUSH_ACK.store(FLUSH_REQUEST.load(Ordering::SeqCst), Ordering::SeqCst);
+fn ack_flush(observed: u64) {
+    FLUSH_ACK.store(observed, Ordering::SeqCst);
 }
 
 enum ServiceAction {
@@ -247,12 +247,28 @@ enum ServiceAction {
     Stop,
 }
 
+/// The flush-request value the worker captured before this scan.
+/// Carried through to ack_flush at quiescent points.
+#[cfg(feature = "test-fixture")]
+struct ScanContext {
+    observed_flush: u64,
+}
+
 impl TimerService {
     fn run(&self) {
         let wake_sem_ptr =
             self.wake_sem.as_ref().expect("wake sem missing") as *const sys::SemaphoreHandle;
 
         loop {
+            // Capture the flush-request value BEFORE scanning timers.
+            // Only this captured value may be acknowledged after the
+            // scan.  Requests arriving mid-scan must wait for the
+            // next scan iteration.
+            #[cfg(feature = "test-fixture")]
+            let scan_ctx = ScanContext {
+                observed_flush: FLUSH_REQUEST.load(Ordering::SeqCst),
+            };
+
             let action = self.with_lock(|state| {
                 state.timers.retain(|e| !e.deleted);
 
@@ -306,18 +322,18 @@ impl TimerService {
                 }
                 ServiceAction::WaitUntil(deadline) => {
                     #[cfg(feature = "test-fixture")]
-                    ack_flush();
+                    ack_flush(scan_ctx.observed_flush);
                     wait_until_deadline(wake_sem, deadline);
                 }
                 ServiceAction::WaitForever => {
                     #[cfg(feature = "test-fixture")]
-                    ack_flush();
+                    ack_flush(scan_ctx.observed_flush);
                     wait_forever(wake_sem);
                 }
                 ServiceAction::Rescan => {}
                 ServiceAction::Stop => {
                     #[cfg(feature = "test-fixture")]
-                    ack_flush();
+                    ack_flush(scan_ctx.observed_flush);
                     let eg = self.completion_eg.as_ref().expect("completion EG missing");
                     let status = sys::event_group_set_bits(eg, WORKER_COMPLETED_BIT);
                     assert_eq!(status, sys::EVENT_GROUP_OK, "completion EG invalid");
