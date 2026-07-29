@@ -7,8 +7,8 @@
 #![cfg(feature = "testkit")]
 
 use core::time::Duration;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
 
 use osal_api::traits::timer::Timer;
