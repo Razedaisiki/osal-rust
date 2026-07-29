@@ -486,7 +486,10 @@ fn semaphore_take_virtual(handle: &SemaphoreHandle, ticks: u64) -> TakeStatus {
         state.take_call_ticks.push(ticks);
     }
 
-    loop {
+    // Block once with a wall-clock watchdog, then return Timeout on
+    // any wakeup so the caller re-evaluates.  The caller's outer loop
+    // handles rechecking the deadline and re-entering this function.
+    {
         let mut state = lock.lock().unwrap();
         let entry = state.semaphores.get_mut(&id).expect("semaphore not found");
         if entry.deleted {
@@ -502,47 +505,23 @@ fn semaphore_take_virtual(handle: &SemaphoreHandle, ticks: u64) -> TakeStatus {
             return TakeStatus::Timeout;
         }
 
-        // Record generation BEFORE releasing the lock to check for
-        // lost notifications.
-        let prev_generation = tick_generation();
-
         entry.waiters += 1;
         entry.blocked_count += 1;
         BLOCKED_COUNT.fetch_add(1, Ordering::Relaxed);
 
-        // Release lock and wait with wall-clock watchdog.
-        let (_state, wait_result) = cvar.wait_timeout(state, VIRTUAL_WAIT_WATCHDOG).unwrap();
-        state = _state;
+        let (mut state_after, _) = cvar.wait_timeout(state, VIRTUAL_WAIT_WATCHDOG).unwrap();
         BLOCKED_COUNT.fetch_sub(1, Ordering::Relaxed);
 
-        let entry = state.semaphores.get_mut(&id).unwrap();
+        let entry = state_after
+            .semaphores
+            .get_mut(&id)
+            .expect("semaphore not found");
         entry.blocked_count = entry.blocked_count.saturating_sub(1);
         entry.waiters = entry.waiters.saturating_sub(1);
 
-        if wait_result.timed_out() {
-            // Wall-clock watchdog expired — check if the virtual
-            // deadline has been reached.  If not, the test failed
-            // to advance ticks.
-            if monotonic_virtual_ticks() >= deadline || entry.count > 0 {
-                // Deadline reached or object available — recheck.
-                continue;
-            }
-            panic!(
-                "virtual semaphore wait stalled: \
-                 test did not advance ticks or signal the object \
-                 (id={id}, ticks={ticks})"
-            );
-        }
-
-        // Notified — check if generation changed (tick advance or
-        // semaphore_give).  Loop back to recheck conditions.
-        if tick_generation() != prev_generation
-            || monotonic_virtual_ticks() >= deadline
-            || entry.count > 0
-        {
-            continue;
-        }
-        // Spurious wakeup with no state change — wait again.
+        // Timeout returned so the caller re-evaluates its condition
+        // and re-enters this function if needed.
+        TakeStatus::Timeout
     }
 }
 

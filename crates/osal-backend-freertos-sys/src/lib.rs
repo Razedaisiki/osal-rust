@@ -404,8 +404,16 @@ pub fn delay_ticks(ticks: u64) -> DelayStatus {
     #[cfg(feature = "test-fixture")]
     {
         use core::sync::atomic::Ordering;
-        // Fixture: advance virtual tick counter by `ticks`, simulating
-        // wrap at the configured tick width (modulo 2^bits).
+        // In Virtual mode, route through the notify bridge so blocked
+        // waiters (e.g. Timer Service worker) are woken to recheck
+        // deadlines against the new tick value.
+        if fixture_sync::sync_wait_mode() == fixture_sync::FixtureWaitMode::Virtual {
+            fixture_sync::advance_ticks_and_notify(ticks);
+            return DelayStatus::Ok;
+        }
+
+        // Realtime mode: advance virtual tick counter by `ticks`,
+        // simulating wrap at the configured tick width (modulo 2^bits).
         let bits = TICK_BITS_FIXTURE.load(Ordering::Relaxed);
         let modulus: u128 = 1u128 << (bits as u32);
 
@@ -1002,6 +1010,7 @@ pub mod fixture {
     pub fn set_tick_snapshot(overflow_count: u64, tick_count: u64) {
         super::TICK_OVERFLOW_FIXTURE.store(overflow_count, Ordering::Relaxed);
         super::TICK_COUNT_FIXTURE.store(tick_count, Ordering::Relaxed);
+        super::fixture_sync::tick_generation_inc();
     }
 
     /// Set the tick width (bits) for wrap simulation (16, 32, or 64).

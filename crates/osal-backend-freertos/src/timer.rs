@@ -131,5 +131,7 @@ impl osal_testkit::factory::ClockControl for FreeRtosTimerFactory {
         if ticks > 0 {
             osal_backend_freertos_sys::delay_ticks(ticks as u64);
         }
+        // Wait for the timer worker to process any due callbacks.
+        crate::timer_service::flush_timer_service();
     }
 }

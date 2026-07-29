@@ -1,38 +1,73 @@
-//! FreeRTOS Timer controlled contract tests — deferred pending fixture
-//! enhancement for virtual-tick-aware semaphore wait.
+//! FreeRTOS Timer controlled contract tests — deterministic virtual-tick
+//! timer verification via the fixture Virtual wait mode.
 //!
-//! The timer service's deadline waiting uses `semaphore_take(wake, ticks)`
-//! which in the fixture maps to `Condvar::wait_timeout` with a
-//! real-time-based timeout.  Advancing virtual ticks via `delay_ticks()`
-//! does not wake the blocked worker.  Full controlled-test support
-//! requires a fixture-level tick-to-Condvar notification bridge.
-//!
-//! Deferred controlled contracts:
-//! - oneshot_fires_once (timing-precise)
-//! - periodic_fires_multiple (timing-precise)
-//! - stop_prevents_callback (timing-precise)
-//! - reset_restarts_deadline (timing-precise)
-//! - missed_expiration_coalesced (timing-precise)
-//!
-//! Basic lifecycle verification (OneShot, Periodic, self-stop, clone,
-//! last-drop) is in `timer_lifecycle.rs` (real-time mpsc watchdog,
-//! no deterministic clock control).
-//!
-//! State-only tests (parameter validation, scheduler preconditions) are
-//! in `timer_concurrent.rs` (no worker started).
-//!
-//! Remaining gaps:
-//! - running timer change_period keeps current deadline
-//! - reset restarts deadline from now
-//! - fixed-rate (not fixed-delay) periodic reload
-//! - missed-period coalescing (N missed → 1 callback)
-//! - callback self-reset/restart/change-period
-//! - last drop during in-flight callback
-//! - callback capture lock-free destruction regression test
-//! - callback self-shutdown returns Busy
-//! - worker creation failure rollback
-//! - shutdown waits for slow in-flight callback
-//! - earliest-deadline dispatch order / starvation resistance
-//! - long-deadline multi-chunk wait
+//! ```bash
+//! cargo test -p osal-backend-freertos --features testkit timer_controlled -- --test-threads=1
+//! ```
 
 #![cfg(feature = "testkit")]
+
+use osal_backend_freertos::runtime;
+use osal_backend_freertos::timer::FreeRtosTimerFactory;
+use osal_backend_freertos_sys::fixture;
+use osal_backend_freertos_sys::fixture::FixtureWaitMode;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn setup_virtual() {
+    let _ = runtime::shutdown();
+    fixture::reset();
+    fixture::set_wait_mode(FixtureWaitMode::Virtual);
+    runtime::initialize().expect("initialize runtime");
+}
+
+fn teardown_virtual() {
+    let _ = runtime::shutdown();
+    fixture::set_wait_mode(FixtureWaitMode::Realtime);
+}
+
+// ---------------------------------------------------------------------------
+// Controlled contracts (5 tests) — Virtual wait mode, deterministic
+// ---------------------------------------------------------------------------
+
+#[test]
+fn controlled_oneshot_fires_once() {
+    setup_virtual();
+    let factory = FreeRtosTimerFactory;
+    osal_testkit::contract::timer::oneshot_fires_once(&factory);
+    teardown_virtual();
+}
+
+#[test]
+fn controlled_periodic_fires_multiple() {
+    setup_virtual();
+    let factory = FreeRtosTimerFactory;
+    osal_testkit::contract::timer::periodic_fires_multiple(&factory);
+    teardown_virtual();
+}
+
+#[test]
+fn controlled_stop_prevents_callback() {
+    setup_virtual();
+    let factory = FreeRtosTimerFactory;
+    osal_testkit::contract::timer::stop_prevents_callback(&factory);
+    teardown_virtual();
+}
+
+#[test]
+fn controlled_reset_restarts_deadline() {
+    setup_virtual();
+    let factory = FreeRtosTimerFactory;
+    osal_testkit::contract::timer::reset_restarts_deadline(&factory);
+    teardown_virtual();
+}
+
+#[test]
+fn controlled_missed_expiration_coalesced() {
+    setup_virtual();
+    let factory = FreeRtosTimerFactory;
+    osal_testkit::contract::timer::missed_expiration_coalesced(&factory);
+    teardown_virtual();
+}
