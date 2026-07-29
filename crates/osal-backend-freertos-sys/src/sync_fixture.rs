@@ -600,6 +600,18 @@ pub fn sync_reset() {
             e.into_inner()
         }
     };
+
+    // Check blocked count BEFORE clearing maps.  If a thread is still
+    // blocked in a Condvar, the maps must remain intact so the thread
+    // can safely unregister itself on wakeup.
+    let blocked = BLOCKED_COUNT.load(Ordering::SeqCst);
+    assert_eq!(
+        blocked, 0,
+        "sync_reset: {blocked} thread(s) still blocked in Condvar — \
+         call runtime::shutdown() before fixture::reset()"
+    );
+
+    // Only clear maps after confirming no blocked threads.
     state.mutexes.clear();
     state.semaphores.clear();
     state.next_id = 1;
@@ -609,17 +621,6 @@ pub fn sync_reset() {
     state.sem_delete_count = 0;
     state.take_call_ticks.clear();
     state.give_call_count = 0;
-
-    // Defensive: no thread should be inside a Condvar wait at reset time.
-    // Internal task threads (timer worker) must be joined before this
-    // assertion.  If a test's teardown did not properly shut down the
-    // runtime, blocked threads will be caught here.
-    let blocked = BLOCKED_COUNT.load(Ordering::SeqCst);
-    assert_eq!(
-        blocked, 0,
-        "sync_reset: {blocked} thread(s) still blocked in Condvar — \
-         call runtime::shutdown() before fixture::reset()"
-    );
 }
 
 /// Notify all sync object condition variables.  Used to unblock internal

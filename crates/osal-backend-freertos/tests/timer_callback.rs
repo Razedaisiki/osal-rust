@@ -8,10 +8,11 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
 use std::sync::{Arc, Mutex};
 
+use osal_api::error::Error;
 use osal_api::traits::timer::Timer;
 use osal_api::types::TimerMode;
 use osal_backend_freertos::runtime;
-use osal_backend_freertos::timer::{FreeRtosTimer, flush_request, flush_timer_service};
+use osal_backend_freertos::timer::{FreeRtosTimer, flush_timer_service, timer_flush_request};
 use osal_backend_freertos_sys::fixture;
 use osal_backend_freertos_sys::fixture::FixtureWaitMode;
 
@@ -23,7 +24,10 @@ struct TestGuard;
 
 impl TestGuard {
     fn new() -> Self {
-        let _ = runtime::shutdown();
+        match runtime::shutdown() {
+            Ok(()) | Err(Error::NotInitialized) => {}
+            Err(e) => panic!("dirty test setup: {e:?}"),
+        }
         fixture::reset();
         fixture::set_wait_mode(FixtureWaitMode::Virtual);
         runtime::initialize().expect("initialize");
@@ -33,16 +37,19 @@ impl TestGuard {
 
 impl Drop for TestGuard {
     fn drop(&mut self) {
-        let target = flush_request();
+        let target = timer_flush_request();
         flush_timer_service(target);
-        assert!(runtime::shutdown().is_ok(), "runtime shutdown failed");
+        match runtime::shutdown() {
+            Ok(()) | Err(Error::NotInitialized) => {}
+            Err(e) => panic!("dirty test teardown: {e:?}"),
+        }
         fixture::set_wait_mode(FixtureWaitMode::Realtime);
     }
 }
 
 fn advance_ms(ms: u64) {
-    let target = flush_request();
     fixture::advance_ticks(ms);
+    let target = timer_flush_request();
     flush_timer_service(target);
 }
 
@@ -338,7 +345,7 @@ fn callback_capture_dropped_outside_registry_lock() {
     // other.stop() which acquires the registry lock.  If the callback
     // were dropped INSIDE the registry lock, this would deadlock.
     drop(timer);
-    let target = flush_request();
+    let target = timer_flush_request();
     flush_timer_service(target);
 
     assert!(

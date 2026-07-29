@@ -97,7 +97,7 @@ impl Timer for FreeRtosTimer {
 
 // Re-export for integration tests.
 #[cfg(feature = "testkit")]
-pub use crate::timer_service::{flush_request, flush_timer_service};
+pub use crate::timer_service::{flush_timer_service, timer_flush_request};
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -132,12 +132,12 @@ impl osal_testkit::factory::ClockControl for FreeRtosTimerFactory {
             .expect("capabilities must be available for controlled tests");
         let ticks = osal_portable::tick_time::duration_to_ticks_ceil(duration, caps.tick_rate_hz)
             .expect("tick overflow in advance_clock");
-        // Bump the flush request counter BEFORE advancing ticks so the
-        // worker acknowledges the request after observing the new time.
-        let target = crate::timer_service::flush_request();
+        // Advance ticks first, then request flush (signals worker to
+        // scan and acknowledge at a quiescent point).
         if ticks > 0 {
             osal_backend_freertos_sys::delay_ticks(ticks as u64);
         }
+        let target = crate::timer_service::timer_flush_request();
         crate::timer_service::flush_timer_service(target);
     }
 }

@@ -19,6 +19,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::ffi::c_void;
+#[cfg(feature = "test-fixture")]
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 
@@ -65,11 +66,13 @@ const WORKER_COMPLETED_BIT: u32 = 1;
 // Fixture progress tracking (P7F-S2)
 // ---------------------------------------------------------------------------
 
-/// Request/ack generation for deterministic flush.  The test bumps
-/// FLUSH_REQUEST before advancing ticks; the worker sets FLUSH_ACK
-/// to the request value after completing a scan that observes the
-/// new tick time.  `flush_timer_service()` waits for ack >= request
-/// AND no in-flight dispatch.
+/// Request/ack protocol for deterministic flush.
+///
+/// The test advances ticks, then calls `timer_flush_request()` to wake
+/// the worker and obtain a target.  The worker acknowledges the target
+/// when it reaches a quiescent state: no due callbacks, about to enter
+/// a waiting state.  `flush_timer_service(target)` blocks until the
+/// ack is observed and no dispatch is in flight.
 #[cfg(feature = "test-fixture")]
 static FLUSH_REQUEST: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-fixture")]
@@ -83,22 +86,46 @@ static DISPATCH_STARTED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-fixture")]
 static DISPATCH_COMPLETED: AtomicU64 = AtomicU64::new(0);
 
-/// Bump the flush request counter and return the new target value.
-/// The caller advances ticks, then calls `flush_timer_service(target)`.
-#[cfg(feature = "testkit")]
-pub fn flush_request() -> u64 {
-    FLUSH_REQUEST.fetch_add(1, Ordering::SeqCst) + 1
+/// Signal the worker if the timer service is running.
+#[cfg(feature = "test-fixture")]
+fn signal_worker_for_flush() {
+    if let Ok(()) = crate::timer_control::with_slot(|slot| match slot {
+        crate::timer_control::ServiceSlot::Running { service, .. } => {
+            service.signal_wake();
+            Ok(())
+        }
+        _ => Ok(()),
+    }) {}
 }
 
-/// Block until the worker has acknowledged the given flush request
-/// (completed a scan with the latest tick time) and no callback
-/// dispatch is in flight.
+/// Bump the flush request counter, signal the worker to wake up and
+/// scan, and return the new target value.  The caller must have
+/// already advanced ticks before calling this.
 ///
-/// The caller MUST have advanced ticks before calling this, so the
-/// worker's next scan sees the updated time.
+/// Call `flush_timer_service(target)` to wait for the worker to
+/// acknowledge.
+#[cfg(feature = "testkit")]
+pub fn timer_flush_request() -> u64 {
+    let target = FLUSH_REQUEST.fetch_add(1, Ordering::SeqCst) + 1;
+    signal_worker_for_flush();
+    target
+}
+
+/// Block until the worker has acknowledged the given flush target
+/// AND no callback dispatch is in flight.
 #[cfg(feature = "testkit")]
 pub fn flush_timer_service(target: u64) {
     extern crate std;
+    // If there's no worker, there's nothing to flush — return immediately.
+    let has_worker = crate::timer_control::with_slot(|slot| match slot {
+        crate::timer_control::ServiceSlot::Running { worker, .. } => Ok(worker.is_some()),
+        _ => Ok(false),
+    })
+    .unwrap_or(false);
+    if !has_worker {
+        return;
+    }
+
     let start = std::time::Instant::now();
     let watchdog = core::time::Duration::from_secs(2);
     loop {
@@ -204,6 +231,14 @@ unsafe impl Sync for TimerService {}
 // Worker loop
 // ---------------------------------------------------------------------------
 
+/// Acknowledge a pending flush request.  Called only at quiescent
+/// points — worker has scanned, found no due callbacks, and is about
+/// to wait or stop.  Never called on Dispatch or Rescan paths.
+#[cfg(feature = "test-fixture")]
+fn ack_flush() {
+    FLUSH_ACK.store(FLUSH_REQUEST.load(Ordering::SeqCst), Ordering::SeqCst);
+}
+
 enum ServiceAction {
     Dispatch { id: u64, callback: TimerCallback },
     WaitUntil(Duration),
@@ -219,12 +254,6 @@ impl TimerService {
 
         loop {
             let action = self.with_lock(|state| {
-                // Acknowledge any pending flush request after completing
-                // a full scan (the worker has observed the latest time).
-                #[cfg(feature = "test-fixture")]
-                {
-                    FLUSH_ACK.store(FLUSH_REQUEST.load(Ordering::SeqCst), Ordering::SeqCst);
-                }
                 state.timers.retain(|e| !e.deleted);
 
                 if state.stop_requested {
@@ -276,13 +305,19 @@ impl TimerService {
                     self.dispatch_one(id, callback);
                 }
                 ServiceAction::WaitUntil(deadline) => {
+                    #[cfg(feature = "test-fixture")]
+                    ack_flush();
                     wait_until_deadline(wake_sem, deadline);
                 }
                 ServiceAction::WaitForever => {
+                    #[cfg(feature = "test-fixture")]
+                    ack_flush();
                     wait_forever(wake_sem);
                 }
                 ServiceAction::Rescan => {}
                 ServiceAction::Stop => {
+                    #[cfg(feature = "test-fixture")]
+                    ack_flush();
                     let eg = self.completion_eg.as_ref().expect("completion EG missing");
                     let status = sys::event_group_set_bits(eg, WORKER_COMPLETED_BIT);
                     assert_eq!(status, sys::EVENT_GROUP_OK, "completion EG invalid");

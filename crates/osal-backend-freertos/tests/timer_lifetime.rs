@@ -13,7 +13,7 @@ use osal_api::error::Error;
 use osal_api::traits::timer::Timer;
 use osal_api::types::TimerMode;
 use osal_backend_freertos::runtime;
-use osal_backend_freertos::timer::{FreeRtosTimer, flush_request, flush_timer_service};
+use osal_backend_freertos::timer::{FreeRtosTimer, flush_timer_service, timer_flush_request};
 use osal_backend_freertos_sys::fixture;
 use osal_backend_freertos_sys::fixture::FixtureWaitMode;
 
@@ -25,7 +25,10 @@ struct TestGuard;
 
 impl TestGuard {
     fn new() -> Self {
-        let _ = runtime::shutdown();
+        match runtime::shutdown() {
+            Ok(()) | Err(Error::NotInitialized) => {}
+            Err(e) => panic!("dirty test setup: {e:?}"),
+        }
         fixture::reset();
         fixture::set_wait_mode(FixtureWaitMode::Virtual);
         runtime::initialize().expect("initialize");
@@ -36,9 +39,12 @@ impl TestGuard {
 impl Drop for TestGuard {
     fn drop(&mut self) {
         if runtime::state() == osal_api::runtime::RuntimeState::Running {
-            let target = flush_request();
+            let target = timer_flush_request();
             flush_timer_service(target);
-            assert!(runtime::shutdown().is_ok(), "runtime shutdown failed");
+            match runtime::shutdown() {
+                Ok(()) | Err(Error::NotInitialized) => {}
+                Err(e) => panic!("dirty test teardown: {e:?}"),
+            }
         }
         fixture::set_wait_mode(FixtureWaitMode::Realtime);
     }
@@ -49,8 +55,8 @@ fn advance_ticks_no_flush(ticks: u64) {
 }
 
 fn advance_ms(ms: u64) {
-    let target = flush_request();
     fixture::advance_ticks(ms);
+    let target = timer_flush_request();
     flush_timer_service(target);
 }
 
@@ -98,7 +104,7 @@ fn last_drop_during_callback_does_not_wait() {
     // Release the callback.
     release.wait();
     std::thread::sleep(Duration::from_millis(10));
-    let target = flush_request();
+    let target = timer_flush_request();
     flush_timer_service(target);
 }
 
