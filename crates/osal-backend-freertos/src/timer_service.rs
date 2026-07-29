@@ -419,24 +419,31 @@ pub fn shutdown() -> Result<()> {
     })?;
 
     // Phase 2: wait for worker completion (if one existed).
+    // Once stop_requested is committed, this must not fail — the worker
+    // is guaranteed to observe the flag and signal completion.  We wait
+    // in finite chunks (never portMAX_DELAY) and retry on Timeout, so a
+    // long-running in-flight callback cannot cause a spurious panic.
     if has_worker {
         let eg = service
             .completion_eg
             .as_ref()
             .expect("completion EG missing");
-        // In the fixture, use a finite timeout with retry to avoid
-        // blocking forever on a stale EventGroup.
-        #[cfg(feature = "test-fixture")]
-        let max_wait = 10_000; // 10 seconds in fixture ticks
-        #[cfg(not(feature = "test-fixture"))]
-        let max_wait = sys::max_finite_delay_ticks() + 1;
 
-        let status = sys::event_group_wait_bits(eg, WORKER_COMPLETED_BIT, false, true, max_wait);
-        assert_eq!(
-            status,
-            sys::EventGroupWaitStatus::Ok,
-            "timer worker did not signal completion"
-        );
+        loop {
+            match sys::event_group_wait_bits(
+                eg,
+                WORKER_COMPLETED_BIT,
+                false, // don't clear
+                true,  // wait for all bits
+                sys::max_finite_delay_ticks(),
+            ) {
+                sys::EventGroupWaitStatus::Ok => break,
+                sys::EventGroupWaitStatus::Timeout => continue,
+                sys::EventGroupWaitStatus::Invalid => {
+                    panic!("live timer completion EventGroup became invalid");
+                }
+            }
+        }
     }
 
     // Phase 3: clean up.
