@@ -486,10 +486,11 @@ fn semaphore_take_virtual(handle: &SemaphoreHandle, ticks: u64) -> TakeStatus {
         state.take_call_ticks.push(ticks);
     }
 
-    // Block once with a wall-clock watchdog, then return Timeout on
-    // any wakeup so the caller re-evaluates.  The caller's outer loop
-    // handles rechecking the deadline and re-entering this function.
-    {
+    // Loop: recheck count/deadline/generation on every wakeup.
+    // The wall-clock watchdog only panics if the virtual deadline
+    // hasn't been reached AND the semaphore hasn't been signalled
+    // AND ticks haven't advanced — i.e. the test forgot to advance.
+    loop {
         let mut state = lock.lock().unwrap();
         let entry = state.semaphores.get_mut(&id).expect("semaphore not found");
         if entry.deleted {
@@ -505,11 +506,14 @@ fn semaphore_take_virtual(handle: &SemaphoreHandle, ticks: u64) -> TakeStatus {
             return TakeStatus::Timeout;
         }
 
+        let gen_before = tick_generation();
+
         entry.waiters += 1;
         entry.blocked_count += 1;
         BLOCKED_COUNT.fetch_add(1, Ordering::Relaxed);
 
-        let (mut state_after, _) = cvar.wait_timeout(state, VIRTUAL_WAIT_WATCHDOG).unwrap();
+        let (mut state_after, wait_result) =
+            cvar.wait_timeout(state, VIRTUAL_WAIT_WATCHDOG).unwrap();
         BLOCKED_COUNT.fetch_sub(1, Ordering::Relaxed);
 
         let entry = state_after
@@ -519,9 +523,20 @@ fn semaphore_take_virtual(handle: &SemaphoreHandle, ticks: u64) -> TakeStatus {
         entry.blocked_count = entry.blocked_count.saturating_sub(1);
         entry.waiters = entry.waiters.saturating_sub(1);
 
-        // Timeout returned so the caller re-evaluates its condition
-        // and re-enters this function if needed.
-        TakeStatus::Timeout
+        if wait_result.timed_out()
+            && monotonic_virtual_ticks() < deadline
+            && entry.count == 0
+            && tick_generation() == gen_before
+        {
+            panic!(
+                "virtual semaphore wait stalled: \
+                 test did not advance ticks or signal the semaphore \
+                 (id={id}, ticks={ticks})"
+            );
+        }
+
+        // Notified, generation changed, or deadline reached —
+        // loop and recheck conditions.
     }
 }
 
@@ -596,9 +611,15 @@ pub fn sync_reset() {
     state.give_call_count = 0;
 
     // Defensive: no thread should be inside a Condvar wait at reset time.
-    // Allow non-zero blocked count — internal tasks are joined by
-    // task_fixture_reset (which calls internal_task_fixture_reset) before
-    // this function runs.
+    // Internal task threads (timer worker) must be joined before this
+    // assertion.  If a test's teardown did not properly shut down the
+    // runtime, blocked threads will be caught here.
+    let blocked = BLOCKED_COUNT.load(Ordering::SeqCst);
+    assert_eq!(
+        blocked, 0,
+        "sync_reset: {blocked} thread(s) still blocked in Condvar — \
+         call runtime::shutdown() before fixture::reset()"
+    );
 }
 
 /// Notify all sync object condition variables.  Used to unblock internal

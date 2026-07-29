@@ -13,7 +13,7 @@ use osal_api::error::Error;
 use osal_api::traits::timer::Timer;
 use osal_api::types::TimerMode;
 use osal_backend_freertos::runtime;
-use osal_backend_freertos::timer::{FreeRtosTimer, flush_timer_service};
+use osal_backend_freertos::timer::{FreeRtosTimer, flush_request, flush_timer_service};
 use osal_backend_freertos_sys::fixture;
 use osal_backend_freertos_sys::fixture::FixtureWaitMode;
 
@@ -35,10 +35,10 @@ impl TestGuard {
 
 impl Drop for TestGuard {
     fn drop(&mut self) {
-        // Only flush if runtime is still Running.
         if runtime::state() == osal_api::runtime::RuntimeState::Running {
-            flush_timer_service();
-            let _ = runtime::shutdown();
+            let target = flush_request();
+            flush_timer_service(target);
+            assert!(runtime::shutdown().is_ok(), "runtime shutdown failed");
         }
         fixture::set_wait_mode(FixtureWaitMode::Realtime);
     }
@@ -49,8 +49,9 @@ fn advance_ticks_no_flush(ticks: u64) {
 }
 
 fn advance_ms(ms: u64) {
+    let target = flush_request();
     fixture::advance_ticks(ms);
-    flush_timer_service();
+    flush_timer_service(target);
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +98,8 @@ fn last_drop_during_callback_does_not_wait() {
     // Release the callback.
     release.wait();
     std::thread::sleep(Duration::from_millis(10));
-    flush_timer_service();
+    let target = flush_request();
+    flush_timer_service(target);
 }
 
 // ---------------------------------------------------------------------------

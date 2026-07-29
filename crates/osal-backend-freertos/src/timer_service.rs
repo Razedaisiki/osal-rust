@@ -65,17 +65,15 @@ const WORKER_COMPLETED_BIT: u32 = 1;
 // Fixture progress tracking (P7F-S2)
 // ---------------------------------------------------------------------------
 
-/// Number of complete worker loop scans since startup.  Incremented each
-/// time the worker finishes a full iteration (scan all timers, decide
-/// next action, execute/release).
+/// Request/ack generation for deterministic flush.  The test bumps
+/// FLUSH_REQUEST before advancing ticks; the worker sets FLUSH_ACK
+/// to the request value after completing a scan that observes the
+/// new tick time.  `flush_timer_service()` waits for ack >= request
+/// AND no in-flight dispatch.
 #[cfg(feature = "test-fixture")]
-static SCAN_GENERATION: AtomicU64 = AtomicU64::new(0);
-
-/// Bumped by the worker each time it observes a tick advance or signal
-/// without a callback being dispatched.  Used by `flush_timer_service()`
-/// to detect that the worker has processed tick changes.
+static FLUSH_REQUEST: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-fixture")]
-static RECHECK_GENERATION: AtomicU64 = AtomicU64::new(0);
+static FLUSH_ACK: AtomicU64 = AtomicU64::new(0);
 
 /// Number of dispatched callbacks since startup.
 #[cfg(feature = "test-fixture")]
@@ -85,54 +83,36 @@ static DISPATCH_STARTED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-fixture")]
 static DISPATCH_COMPLETED: AtomicU64 = AtomicU64::new(0);
 
-/// Call from the worker loop body whenever it observes a state change
-/// (tick advance, signal) without dispatching.  Lets flush detect
-/// forward progress even when no callback fires.
-#[cfg(feature = "test-fixture")]
-fn bump_recheck() {
-    RECHECK_GENERATION.fetch_add(1, Ordering::SeqCst);
-}
-
-/// Return the current scan generation counter (fixture only).
+/// Bump the flush request counter and return the new target value.
+/// The caller advances ticks, then calls `flush_timer_service(target)`.
 #[cfg(feature = "testkit")]
-#[allow(dead_code)]
-pub fn timer_service_scan_generation() -> u64 {
-    SCAN_GENERATION.load(Ordering::SeqCst)
+pub fn flush_request() -> u64 {
+    FLUSH_REQUEST.fetch_add(1, Ordering::SeqCst) + 1
 }
 
-/// Return (started, completed) dispatch counts (fixture only).
-#[cfg(feature = "testkit")]
-#[allow(dead_code)]
-pub fn timer_service_dispatch_counts() -> (u64, u64) {
-    (
-        DISPATCH_STARTED.load(Ordering::SeqCst),
-        DISPATCH_COMPLETED.load(Ordering::SeqCst),
-    )
-}
-
-/// Block until the timer service has completed at least one full scan
-/// after being woken, and all due callbacks have been dispatched.
+/// Block until the worker has acknowledged the given flush request
+/// (completed a scan with the latest tick time) and no callback
+/// dispatch is in flight.
 ///
-/// In Virtual mode, the test advances ticks with `fixture::advance_ticks()`
-/// before calling this, so the worker's deadline check sees the new time.
+/// The caller MUST have advanced ticks before calling this, so the
+/// worker's next scan sees the updated time.
 #[cfg(feature = "testkit")]
-pub fn flush_timer_service() {
+pub fn flush_timer_service(target: u64) {
     extern crate std;
-    // Brief initial sleep so the worker thread can react to a tick
-    // advance that just happened (advance_ticks_and_notify notifies
-    // the Condvar but the worker may not have been scheduled yet).
-    std::thread::sleep(core::time::Duration::from_millis(1));
-
     let start = std::time::Instant::now();
     let watchdog = core::time::Duration::from_secs(2);
     loop {
+        let ack = FLUSH_ACK.load(Ordering::SeqCst);
         let started = DISPATCH_STARTED.load(Ordering::SeqCst);
         let completed = DISPATCH_COMPLETED.load(Ordering::SeqCst);
-        if started == completed {
+        if ack >= target && started == completed {
             return;
         }
         if start.elapsed() > watchdog {
-            panic!("flush_timer_service stalled: dispatched={started}/{completed}");
+            panic!(
+                "flush_timer_service stalled: ack={ack} target={target} \
+                 dispatched={started}/{completed}"
+            );
         }
         std::thread::sleep(core::time::Duration::from_micros(100));
     }
@@ -239,10 +219,11 @@ impl TimerService {
 
         loop {
             let action = self.with_lock(|state| {
-                // Bump scan generation on each full iteration (fixture progress).
+                // Acknowledge any pending flush request after completing
+                // a full scan (the worker has observed the latest time).
                 #[cfg(feature = "test-fixture")]
                 {
-                    SCAN_GENERATION.fetch_add(1, Ordering::SeqCst);
+                    FLUSH_ACK.store(FLUSH_REQUEST.load(Ordering::SeqCst), Ordering::SeqCst);
                 }
                 state.timers.retain(|e| !e.deleted);
 
@@ -296,18 +277,11 @@ impl TimerService {
                 }
                 ServiceAction::WaitUntil(deadline) => {
                     wait_until_deadline(wake_sem, deadline);
-                    #[cfg(feature = "test-fixture")]
-                    bump_recheck();
                 }
                 ServiceAction::WaitForever => {
                     wait_forever(wake_sem);
-                    #[cfg(feature = "test-fixture")]
-                    bump_recheck();
                 }
-                ServiceAction::Rescan => {
-                    #[cfg(feature = "test-fixture")]
-                    bump_recheck();
-                }
+                ServiceAction::Rescan => {}
                 ServiceAction::Stop => {
                     let eg = self.completion_eg.as_ref().expect("completion EG missing");
                     let status = sys::event_group_set_bits(eg, WORKER_COMPLETED_BIT);
@@ -379,8 +353,6 @@ fn wait_until_deadline(wake_sem: &sys::SemaphoreHandle, deadline: Duration) {
         match sys::semaphore_take(wake_sem, wait_ticks) {
             sys::TakeStatus::Acquired => return,
             sys::TakeStatus::Timeout => {
-                #[cfg(feature = "test-fixture")]
-                bump_recheck();
                 continue;
             }
             sys::TakeStatus::Invalid => panic!("wake sem invalid"),
@@ -393,8 +365,6 @@ fn wait_forever(wake_sem: &sys::SemaphoreHandle) {
         match sys::semaphore_take(wake_sem, sys::max_finite_delay_ticks() + 1) {
             sys::TakeStatus::Acquired => return,
             sys::TakeStatus::Timeout => {
-                #[cfg(feature = "test-fixture")]
-                bump_recheck();
                 continue;
             }
             sys::TakeStatus::Invalid => panic!("wake sem invalid"),

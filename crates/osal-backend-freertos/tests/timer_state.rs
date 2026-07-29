@@ -12,7 +12,7 @@ use std::sync::Arc;
 use osal_api::traits::timer::Timer;
 use osal_api::types::TimerMode;
 use osal_backend_freertos::runtime;
-use osal_backend_freertos::timer::{FreeRtosTimer, flush_timer_service};
+use osal_backend_freertos::timer::{FreeRtosTimer, flush_request, flush_timer_service};
 use osal_backend_freertos_sys::fixture;
 use osal_backend_freertos_sys::fixture::FixtureWaitMode;
 
@@ -34,25 +34,20 @@ impl TestGuard {
 
 impl Drop for TestGuard {
     fn drop(&mut self) {
-        flush_timer_service();
-        match runtime::shutdown() {
-            Ok(()) | Err(osal_api::error::Error::NotInitialized) => {}
-            Err(_) => {
-                std::thread::sleep(Duration::from_millis(20));
-                flush_timer_service();
-                assert!(
-                    runtime::shutdown().is_ok(),
-                    "TestGuard: runtime shutdown failed — leaked timer or stuck worker"
-                );
-            }
-        }
+        let target = flush_request();
+        flush_timer_service(target);
+        assert!(
+            runtime::shutdown().is_ok(),
+            "TestGuard: runtime shutdown failed — leaked timer or stuck worker"
+        );
         fixture::set_wait_mode(FixtureWaitMode::Realtime);
     }
 }
 
 fn advance_ms(ms: u64) {
+    let target = flush_request();
     fixture::advance_ticks(ms); // 1000 Hz → 1 tick = 1 ms
-    flush_timer_service();
+    flush_timer_service(target);
 }
 
 // ---------------------------------------------------------------------------

@@ -49,8 +49,8 @@ Public APIs may change before version 1.0.
 - FreeRTOS backend foundation (`backend-freertos`): Runtime Lifecycle,
   Clock, System, Mutex, CountingSemaphore, BinarySemaphore, Queue,
   Task (spawn + cached concurrent join), and Timer (custom Timer Service
-  Task + TimerState, lazy worker, take-execute-restore dispatch)
-  implemented and host-contract-verified
+  Task + TimerState; 5 deterministic controlled contracts passing;
+  lifecycle and edge-case stabilization ongoing)
 - Queue (core + blocking on POSIX and FreeRTOS; Mock blocking deferred)
 - Mutex (non-recursive, ADR 0007)
 - CountingSemaphore and BinarySemaphore
