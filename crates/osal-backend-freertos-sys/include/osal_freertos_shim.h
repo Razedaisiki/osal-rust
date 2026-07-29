@@ -137,6 +137,12 @@ uint64_t osal_freertos_semaphore_count(osal_freertos_semaphore_handle_t handle);
 void osal_freertos_semaphore_delete(osal_freertos_semaphore_handle_t handle);
 
 // ---------------------------------------------------------------------------
+// Opaque handle type for native task identity
+// ---------------------------------------------------------------------------
+
+typedef void *osal_freertos_task_handle_t;
+
+// ---------------------------------------------------------------------------
 // Opaque handle types for EventGroup (ADR 0028 §1)
 // ---------------------------------------------------------------------------
 
@@ -194,6 +200,13 @@ uint32_t osal_freertos_task_create(
 void osal_freertos_task_delete_current(void);
 void osal_freertos_task_set_current_context(void *ptr);
 void *osal_freertos_task_get_current_context(void);
+osal_freertos_task_handle_t osal_freertos_task_get_current_handle(void);
+osal_freertos_task_handle_t osal_freertos_internal_task_create(
+    osal_freertos_task_entry_t entry,
+    const char *name,
+    uint32_t    stack_depth_words,
+    void       *parameter,
+    uint32_t    priority);
 
 // ---------------------------------------------------------------------------
 // Capability struct — extended for Task support (ADR 0028 §7, §9)

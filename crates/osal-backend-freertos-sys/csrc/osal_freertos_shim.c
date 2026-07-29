@@ -443,3 +443,36 @@ void *osal_freertos_task_get_current_context(void) {
         NULL,
         ROUSSATL_FREERTOS_TASK_TLS_INDEX);
 }
+
+osal_freertos_task_handle_t osal_freertos_task_get_current_handle(void) {
+    return (osal_freertos_task_handle_t)xTaskGetCurrentTaskHandle();
+}
+
+osal_freertos_task_handle_t osal_freertos_internal_task_create(
+    osal_freertos_task_entry_t entry,
+    const char *name,
+    uint32_t    stack_depth_words,
+    void       *parameter,
+    uint32_t    priority)
+{
+    TaskHandle_t native_handle = NULL;
+    BaseType_t  result;
+
+    if (entry == NULL || stack_depth_words == 0) {
+        return NULL;
+    }
+
+    result = xTaskCreate(
+        (TaskFunction_t)entry,
+        name,
+        (configSTACK_DEPTH_TYPE)stack_depth_words,
+        parameter,
+        (UBaseType_t)priority,
+        &native_handle);
+
+    if (result != pdPASS) {
+        return NULL;
+    }
+
+    return (osal_freertos_task_handle_t)native_handle;
+}

@@ -268,6 +268,16 @@ unsafe extern "C" {
     fn osal_freertos_task_delete_current();
     fn osal_freertos_task_set_current_context(ptr: *mut core::ffi::c_void);
     fn osal_freertos_task_get_current_context() -> *mut core::ffi::c_void;
+
+    // Internal task (P7F — Timer Service)
+    fn osal_freertos_internal_task_create(
+        entry: TaskEntry,
+        name: *const core::ffi::c_char,
+        stack_depth_words: u32,
+        parameter: *mut core::ffi::c_void,
+        priority: u32,
+    ) -> *mut core::ffi::c_void;
+    fn osal_freertos_task_get_current_handle() -> *mut core::ffi::c_void;
 }
 
 // ---------------------------------------------------------------------------
@@ -800,6 +810,91 @@ pub fn task_current_context() -> *mut core::ffi::c_void {
 }
 
 // ---------------------------------------------------------------------------
+// Internal task handle (P7F — Timer Service)
+// ---------------------------------------------------------------------------
+
+/// Opaque handle for a FreeRTOS task created by the OSAL runtime for
+/// internal services (Timer Service, etc.).
+///
+/// Unlike public `FreeRtosTask`, internal tasks do NOT acquire a
+/// `RuntimeLease`, do NOT set OSAL TLS identity, and do NOT increment
+/// `Task::count()`.  They are invisible to the public `Task` API.
+pub struct InternalTaskHandle {
+    #[allow(dead_code)] // used by backend timer service
+    pub(crate) raw: core::ptr::NonNull<core::ffi::c_void>,
+}
+
+// Safety: FreeRTOS task handles may be sent and shared across tasks.
+unsafe impl Send for InternalTaskHandle {}
+unsafe impl Sync for InternalTaskHandle {}
+
+/// Opaque token identifying the current native FreeRTOS task.
+///
+/// Obtained from `xTaskGetCurrentTaskHandle()`.  Used for identity
+/// comparison only (e.g. detecting self-shutdown in the Timer Service).
+#[derive(Clone, Copy)]
+pub struct NativeTaskHandle {
+    raw: *mut core::ffi::c_void,
+}
+
+impl PartialEq for NativeTaskHandle {
+    fn eq(&self, other: &Self) -> bool {
+        core::ptr::eq(self.raw, other.raw)
+    }
+}
+
+/// Create an internal FreeRTOS task.
+///
+/// Returns the native task handle on success, `None` on allocation
+/// failure or invalid parameters.  The task is created via
+/// `xTaskCreate` — identical to the public task path but without
+/// RuntimeLease, TLS, or `Task::count()` side effects.
+///
+/// # Safety
+///
+/// The caller must ensure `parameter` points to a valid, properly-aligned
+/// object that remains alive for the duration of the task.
+pub unsafe fn internal_task_create(
+    entry: TaskEntry,
+    name: *const core::ffi::c_char,
+    stack_depth_words: u32,
+    parameter: *mut core::ffi::c_void,
+    priority: u32,
+) -> Option<InternalTaskHandle> {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_task::internal_task_create(entry, name, stack_depth_words, parameter, priority)
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        let raw = unsafe {
+            osal_freertos_internal_task_create(entry, name, stack_depth_words, parameter, priority)
+        };
+        core::ptr::NonNull::new(raw).map(|nn| InternalTaskHandle { raw: nn })
+    }
+}
+
+/// Return the current task's native FreeRTOS handle.
+///
+/// Returns `None` if called before the scheduler is started or from
+/// a non-task context (e.g. an ISR).
+pub fn current_native_task_handle() -> Option<NativeTaskHandle> {
+    #[cfg(feature = "test-fixture")]
+    {
+        fixture_task::current_native_task_handle()
+    }
+    #[cfg(not(feature = "test-fixture"))]
+    {
+        let raw = unsafe { osal_freertos_task_get_current_handle() };
+        if raw.is_null() {
+            None
+        } else {
+            Some(NativeTaskHandle { raw })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Fixture modules (test-fixture only)
 // ---------------------------------------------------------------------------
 
@@ -1098,5 +1193,34 @@ pub mod fixture {
     /// Last native priority passed to `task_create()`.
     pub fn last_native_priority() -> u32 {
         super::fixture_task::LAST_NATIVE_PRIORITY.load(Ordering::Relaxed)
+    }
+
+    // ------------------------------------------------------------------
+    // Internal task fixture controls (P7F)
+    // ------------------------------------------------------------------
+
+    /// Reset internal task fixture state.
+    pub fn internal_task_fixture_reset() {
+        super::fixture_task::internal_task_fixture_reset();
+    }
+
+    /// Make the next `internal_task_create()` return `None`.
+    pub fn set_fail_next_internal_task_create(fail: bool) {
+        super::fixture_task::set_fail_next_internal_task_create(fail);
+    }
+
+    /// Number of active internal task threads.
+    pub fn active_internal_task_count() -> usize {
+        super::fixture_task::active_internal_task_count()
+    }
+
+    /// Last stack depth (in words) passed to `internal_task_create()`.
+    pub fn last_internal_stack_words() -> u32 {
+        super::fixture_task::LAST_INTERNAL_STACK_WORDS.load(Ordering::Relaxed)
+    }
+
+    /// Last native priority passed to `internal_task_create()`.
+    pub fn last_internal_priority() -> u32 {
+        super::fixture_task::LAST_INTERNAL_PRIORITY.load(Ordering::Relaxed)
     }
 }

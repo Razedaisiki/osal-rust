@@ -14,7 +14,7 @@ use std::sync::{Condvar, LazyLock, Mutex};
 use std::time::Duration;
 use std::vec::Vec;
 
-use super::{EventGroupHandle, TaskCreateStatus, TaskEntry};
+use super::{EventGroupHandle, InternalTaskHandle, NativeTaskHandle, TaskCreateStatus, TaskEntry};
 
 // ---------------------------------------------------------------------------
 // Global fixture state
@@ -307,6 +307,10 @@ pub fn task_current_context() -> *mut core::ffi::c_void {
 // ---------------------------------------------------------------------------
 
 pub fn task_fixture_reset() {
+    // 0. Reset internal tasks FIRST (before joining public task threads,
+    //    since internal tasks may interact with public resources).
+    internal_task_fixture_reset();
+
     FAIL_NEXT_EG_CREATE.store(false, Ordering::Relaxed);
     FAIL_NEXT_TASK_CREATE.store(false, Ordering::Relaxed);
     LAST_STACK_WORDS.store(0, Ordering::Relaxed);
@@ -435,4 +439,121 @@ pub fn task_fixture_eg_blocked_count(handle: &EventGroupHandle) -> usize {
         .get(&id)
         .map(|e| e.blocked_count)
         .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Internal task fixture (P7F — Timer Service)
+// ---------------------------------------------------------------------------
+
+/// Fault injection: make the next `internal_task_create` return `None`.
+static FAIL_NEXT_INTERNAL_TASK_CREATE: AtomicBool = AtomicBool::new(false);
+
+// Thread-local native task handle — set by the trampoline for each
+// spawned thread, read by `current_native_task_handle()`.
+std::thread_local! {
+    static NATIVE_TASK_IDENTITY: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Separate map for internal tasks.  Internal tasks do not go through
+/// the public `task_create` path (no TLS, no RuntimeLease tracking).
+struct InternalTaskData {
+    #[allow(dead_code)]
+    id: usize,
+    handle: std::thread::JoinHandle<()>,
+}
+
+/// Internal task threads — joined during reset, separate from `active_threads`.
+static INTERNAL_TASK_FIXTURE: LazyLock<(Mutex<Vec<InternalTaskData>>,)> =
+    LazyLock::new(|| (Mutex::new(Vec::new()),));
+
+/// Last recorded parameters for internal task create.
+pub static LAST_INTERNAL_STACK_WORDS: AtomicU32 = AtomicU32::new(0);
+pub static LAST_INTERNAL_PRIORITY: AtomicU32 = AtomicU32::new(0);
+
+pub fn internal_task_create(
+    entry: TaskEntry,
+    _name: *const core::ffi::c_char,
+    stack_depth_words: u32,
+    parameter: *mut core::ffi::c_void,
+    _priority: u32,
+) -> Option<InternalTaskHandle> {
+    if FAIL_NEXT_INTERNAL_TASK_CREATE.swap(false, Ordering::Relaxed) {
+        return None;
+    }
+
+    LAST_INTERNAL_STACK_WORDS.store(stack_depth_words, Ordering::Relaxed);
+    LAST_INTERNAL_PRIORITY.store(_priority, Ordering::Relaxed);
+
+    // Allocate a synthetic handle ID for the new task.
+    let id = {
+        let (lock, _cvar) = &*TASK_FIXTURE;
+        let mut state = lock.lock().unwrap();
+        let id = state.next_id;
+        state.next_id += 1;
+        id
+    };
+
+    let param_addr = parameter as usize;
+    let handle = std::thread::spawn(move || {
+        // Set thread-local native identity BEFORE calling the entry.
+        NATIVE_TASK_IDENTITY.with(|cell| cell.set(id));
+        let ptr = param_addr as *mut core::ffi::c_void;
+        unsafe { entry(ptr) };
+        // Clear identity on exit.
+        NATIVE_TASK_IDENTITY.with(|cell| cell.set(0));
+    });
+
+    // Track the thread for cleanup during reset.
+    let (lock,) = &*INTERNAL_TASK_FIXTURE;
+    lock.lock().unwrap().push(InternalTaskData { id, handle });
+
+    // Return a handle wrapping the synthetic ID.
+    Some(InternalTaskHandle {
+        raw: unsafe { core::ptr::NonNull::new_unchecked(id as *mut core::ffi::c_void) },
+    })
+}
+
+pub fn current_native_task_handle() -> Option<NativeTaskHandle> {
+    let id = NATIVE_TASK_IDENTITY.with(|cell| cell.get());
+    if id == 0 {
+        None
+    } else {
+        Some(NativeTaskHandle {
+            raw: id as *mut core::ffi::c_void,
+        })
+    }
+}
+
+/// Reset internal task fixture state — MUST be called before clearing
+/// the public `active_threads` to avoid joining threads that may access
+/// shared state.
+pub fn internal_task_fixture_reset() {
+    FAIL_NEXT_INTERNAL_TASK_CREATE.store(false, Ordering::Relaxed);
+    LAST_INTERNAL_STACK_WORDS.store(0, Ordering::Relaxed);
+    LAST_INTERNAL_PRIORITY.store(0, Ordering::Relaxed);
+
+    // 1. Drain and join all internal task threads.
+    let threads = {
+        let (lock,) = &*INTERNAL_TASK_FIXTURE;
+        let mut data = lock.lock().unwrap();
+        core::mem::take(&mut *data)
+    };
+
+    // 2. Join threads OUTSIDE the lock.
+    for data in threads {
+        let _ = data.handle.join();
+    }
+}
+
+/// Number of active internal task threads.
+pub fn active_internal_task_count() -> usize {
+    let (lock,) = &*INTERNAL_TASK_FIXTURE;
+    lock.lock().unwrap().len()
+}
+
+// --- Fault injection ---
+
+pub fn set_fail_next_internal_task_create(fail: bool) {
+    FAIL_NEXT_INTERNAL_TASK_CREATE.store(fail, Ordering::Relaxed);
 }
