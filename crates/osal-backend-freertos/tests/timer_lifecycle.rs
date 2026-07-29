@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
 
+use osal_api::error::Error;
 use osal_api::traits::timer::Timer;
 use osal_api::types::TimerMode;
 use osal_backend_freertos::runtime;
@@ -24,9 +25,18 @@ fn setup() {
 }
 
 fn teardown() {
-    let _ = runtime::shutdown();
-    // Give the worker a moment to process the stop signal and exit.
-    thread::sleep(Duration::from_millis(10));
+    // Shutdown must succeed — all timers were dropped and the
+    // worker should have processed all deregistrations.
+    match runtime::shutdown() {
+        Ok(()) | Err(Error::NotInitialized) => {}
+        Err(_) => {
+            thread::sleep(Duration::from_millis(20));
+            assert!(
+                runtime::shutdown().is_ok(),
+                "runtime shutdown failed after timer lifecycle test"
+            );
+        }
+    }
 }
 
 fn oneshot_tx(period_ms: u64, tx: mpsc::Sender<u64>, value: u64) -> FreeRtosTimer {
@@ -104,6 +114,9 @@ fn timer_lifecycle_and_callbacks() {
         *timer_slot.lock().unwrap() = Some(timer.clone());
         timer.start().unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_millis(500)).unwrap(), 1);
+        // Break the reference cycle: callback→Arc→Option<Timer>→RuntimeLease
+        // would prevent the last Timer handle from ever dropping.
+        timer_slot.lock().unwrap().take();
         thread::sleep(Duration::from_millis(50));
         assert!(rx.try_recv().is_err());
     }

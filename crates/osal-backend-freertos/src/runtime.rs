@@ -35,13 +35,17 @@ static CAPABILITIES: spin::RwLock<Option<Capabilities>> = spin::RwLock::new(None
 pub fn initialize() -> Result<()> {
     let transition = RUNTIME.begin_initialize()?;
 
-    // Probe and cache kernel capabilities.
+    // Probe kernel capabilities (cheap — just reads compile-time constants).
     let caps = osal_backend_freertos_sys::capabilities();
-    *CAPABILITIES.write() = Some(caps);
 
-    // Initialize the timer service (creates mutex, semaphore, EventGroup;
-    // worker task is lazily created on first start()/reset()).
+    // Initialize the timer service BEFORE caching capabilities.
+    // If timer init fails, the transition rolls back and capabilities
+    // must not be visible (they get cleared during shutdown which won't
+    // be called on init failure).
     crate::timer_service::initialize()?;
+
+    // Cache capabilities only after all fallible initialization succeeds.
+    *CAPABILITIES.write() = Some(caps);
 
     transition.commit();
     Ok(())

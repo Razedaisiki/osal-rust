@@ -42,12 +42,10 @@
 #error "OSAL FreeRTOS backend requires INCLUDE_vTaskDelay = 1"
 #endif
 
-#ifndef configUSE_TIMERS
-#error "FreeRTOSConfig.h must define configUSE_TIMERS"
-#endif
-#if configUSE_TIMERS != 1
-#error "OSAL FreeRTOS backend requires configUSE_TIMERS = 1"
-#endif
+// P7F: ROUSSATL provides its own Timer Service Task.  Native FreeRTOS
+// software timers (timers.c, xTimerCreate, the timer daemon task) are
+// not required.  configUSE_TIMERS is still probed for capability
+// reporting but may be 0.
 
 #ifndef configTICK_RATE_HZ
 #error "FreeRTOSConfig.h must define configTICK_RATE_HZ"
@@ -116,7 +114,11 @@ osal_freertos_capability_t osal_freertos_probe_capabilities(void) {
     cap.tick_bits                = (uint8_t) (sizeof(TickType_t) * 8);
     cap.stack_word_size          = (uint8_t)  sizeof(StackType_t);
     cap.dynamic_allocation       = 1;  // enforced by #error above
-    cap.software_timers          = 1;  // enforced by #error above
+#ifdef configUSE_TIMERS
+    cap.software_timers          = (configUSE_TIMERS != 0) ? (uint8_t)1 : (uint8_t)0;
+#else
+    cap.software_timers          = 0;
+#endif
     cap.minimal_stack_depth_words = (uint32_t) configMINIMAL_STACK_SIZE;
     {
         configSTACK_DEPTH_TYPE stack_max =

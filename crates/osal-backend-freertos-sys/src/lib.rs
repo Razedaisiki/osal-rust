@@ -828,6 +828,16 @@ pub struct InternalTaskHandle {
 unsafe impl Send for InternalTaskHandle {}
 unsafe impl Sync for InternalTaskHandle {}
 
+impl InternalTaskHandle {
+    /// Return `true` if `other` identifies the same native task.
+    ///
+    /// Used for self-shutdown detection: compare the stored worker
+    /// handle with `current_native_task_handle()`.
+    pub fn matches(&self, other: &NativeTaskHandle) -> bool {
+        core::ptr::eq(self.raw.as_ptr(), other.raw)
+    }
+}
+
 /// Opaque token identifying the current native FreeRTOS task.
 ///
 /// Obtained from `xTaskGetCurrentTaskHandle()`.  Used for identity

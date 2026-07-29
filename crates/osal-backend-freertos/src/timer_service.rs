@@ -222,11 +222,7 @@ impl TimerService {
                     let eg = self.completion_eg.as_ref().expect("completion EG missing");
                     let status = sys::event_group_set_bits(eg, WORKER_COMPLETED_BIT);
                     assert_eq!(status, sys::EVENT_GROUP_OK, "completion EG invalid");
-                    // In the fixture, task_delete_current panics — we just
-                    // return from run() instead.  The worker's JoinHandle
-                    // is cleaned up during fixture reset.
-                    #[cfg(not(feature = "test-fixture"))]
-                    sys::task_delete_current();
+                    // Trampoline handles drop(service) and task_delete_current.
                     return;
                 }
             }
@@ -236,17 +232,21 @@ impl TimerService {
     fn dispatch_one(&self, id: u64, mut callback: TimerCallback) {
         callback();
 
-        // Restore callback unless deleted during execution.
-        self.with_lock(|state| {
+        // Try to restore callback; if the entry was deleted during
+        // execution, the callback must be dropped OUTSIDE the registry
+        // lock to avoid deadlock (captured Timer handles may call back
+        // into the registry on drop).
+        let callback_to_drop = self.with_lock(|state| {
             if let Some(entry) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
                 if entry.callback.is_none() {
                     entry.callback = Some(callback);
-                    return;
+                    return None;
                 }
             }
-            // Entry deleted — drop outside lock.
-            drop(callback);
+            Some(callback)
         });
+
+        drop(callback_to_drop);
     }
 }
 
@@ -257,6 +257,7 @@ impl TimerService {
 fn wait_until_deadline(wake_sem: &sys::SemaphoreHandle, deadline: Duration) {
     let max_payload = sys::max_finite_delay_ticks();
     let guard_tick: u64 = 1;
+    let max_payload_u128 = max_payload as u128;
 
     loop {
         let now = FreeRtosClock::now();
@@ -268,15 +269,13 @@ fn wait_until_deadline(wake_sem: &sys::SemaphoreHandle, deadline: Duration) {
         let caps = crate::runtime::capabilities().expect("capabilities missing");
         let remaining_ticks = duration_to_ticks_ceil(remaining, caps.tick_rate_hz);
 
-        let Ok(remaining_ticks) = remaining_ticks else {
-            return; // overflow → treat as expired
-        };
-
-        let max_payload_u128 = max_payload as u128;
-        let chunk = if remaining_ticks == 0 {
-            0u128
-        } else {
-            remaining_ticks.min(max_payload_u128.saturating_sub(guard_tick as u128))
+        // On overflow, wait the max payload and re-read now — don't
+        // hot-loop treating overflow as "expired".
+        let chunk = match remaining_ticks {
+            Ok(0) => 0u128,
+            Ok(t) => t.min(max_payload_u128.saturating_sub(guard_tick as u128)),
+            Err(Error::Overflow) => max_payload_u128.saturating_sub(guard_tick as u128),
+            Err(_) => 0u128, // defensive: shouldn't happen
         };
         let wait_ticks: u64 =
             (chunk.saturating_add(guard_tick as u128)).min(u64::MAX as u128) as u64;
@@ -306,7 +305,14 @@ fn wait_forever(wake_sem: &sys::SemaphoreHandle) {
 unsafe extern "C" fn timer_worker(param: *mut c_void) {
     let service = unsafe { Arc::from_raw(param.cast::<TimerService>()) };
     service.run();
+    // Drop the worker-owned Arc BEFORE self-deleting.  On real FreeRTOS
+    // this runs TimerService::drop (deletes mutex/semaphore/EventGroup).
+    // In the fixture, the thread returns normally and the JoinHandle is
+    // cleaned up by internal_task_fixture_reset.
     drop(service);
+
+    #[cfg(not(feature = "test-fixture"))]
+    sys::task_delete_current();
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +354,26 @@ pub fn initialize() -> Result<()> {
 }
 
 pub fn shutdown() -> Result<()> {
+    // Scheduler preflight — checked BEFORE any state mutation to
+    // guarantee failure-atomicity.  Only relevant when a worker task
+    // exists (needs the scheduler to process the stop signal).
+    let has_worker = timer_control::with_slot(|slot| match slot {
+        ServiceSlot::Running { worker, .. } => Ok(worker.is_some()),
+        ServiceSlot::Stopped => Ok(false),
+        ServiceSlot::Stopping => Err(Error::Busy),
+    })?;
+
+    if has_worker {
+        match sys::scheduler_state() {
+            sys::SchedulerState::Running => {}
+            sys::SchedulerState::NotStarted => return Err(Error::NotInitialized),
+            sys::SchedulerState::Suspended => return Err(Error::Busy),
+            sys::SchedulerState::Unknown(_) => {
+                return Err(Error::Internal("unknown scheduler state"));
+            }
+        }
+    }
+
     // Phase 1: request stop under registry lock.
     let (has_worker, service) = timer_control::with_slot(|slot| {
         let (has_worker, service) = match slot {
@@ -356,10 +382,24 @@ pub fn shutdown() -> Result<()> {
             ServiceSlot::Running { service, worker } => (worker.is_some(), Arc::clone(service)),
         };
 
-        // FIXME(P7F): self-shutdown detection — compare stored worker
-        // handle with current native task handle and return Busy if
-        // the caller is the timer worker.  Requires exposing raw
-        // pointers from InternalTaskHandle/NativeTaskHandle for comparison.
+        // Self-shutdown detection: if the caller IS the timer worker,
+        // reject with Busy to avoid deadlock (worker waiting for its
+        // own completion EventGroup).
+        let is_self = match slot {
+            ServiceSlot::Running {
+                worker: Some(w), ..
+            } => {
+                if let Some(current) = sys::current_native_task_handle() {
+                    w.matches(&current)
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+        if is_self {
+            return Err(Error::Busy);
+        }
 
         // Check live timers.
         service.with_lock(|state| {
@@ -444,15 +484,26 @@ pub fn ensure_worker() -> Result<()> {
             let priority = caps.max_priorities.saturating_sub(1);
 
             // Arc::into_raw for passing to the worker trampoline.
+            // If internal_task_create fails, we MUST reclaim this Arc
+            // to avoid a permanent strong-reference leak.
             let raw = Arc::into_raw(Arc::clone(service))
                 .cast_mut()
                 .cast::<c_void>();
 
             let name = c"roussatl-timer".as_ptr();
-            let handle = unsafe {
+            let handle = match unsafe {
                 sys::internal_task_create(timer_worker, name, stack_words as u32, raw, priority)
-            }
-            .ok_or(Error::OutOfMemory)?;
+            } {
+                Some(h) => h,
+                None => {
+                    // Reclaim the leaked Arc — the worker will never
+                    // run, so we must decrement the refcount here.
+                    unsafe {
+                        drop(Arc::from_raw(raw.cast::<TimerService>()));
+                    }
+                    return Err(Error::OutOfMemory);
+                }
+            };
 
             *worker = Some(handle);
             Ok(())
@@ -548,18 +599,23 @@ pub fn change_period(id: u64, new_period: Duration) -> Result<()> {
 }
 
 pub fn deregister(id: u64) -> Result<()> {
-    with_registry(|service, state| {
+    // Take the callback from the registry inside the lock, then drop it
+    // outside to avoid deadlock if it captures other OSAL objects.
+    let dropped_cb = with_registry(|service, state| {
         if let Some(e) = state.timers.iter_mut().find(|e| e.id == id && !e.deleted) {
             e.deleted = true;
             e.state.stop();
-            // Take callback so it's dropped when the caller releases the lock.
-            // The callback is NOT in flight (dispatch_one takes it before
-            // unlocking), so taking it here is safe.
-            e.callback = None;
+            // Take callback — safe because dispatch_one takes it before
+            // unlocking, so it cannot be in flight right now.
+            let cb = e.callback.take();
             service.signal_wake();
-            Ok(())
+            Ok(cb)
         } else {
             Err(Error::NotFound)
         }
-    })
+    })?;
+
+    // Drop outside all locks.
+    drop(dropped_cb);
+    Ok(())
 }

@@ -4,7 +4,7 @@
 //! The scheduler is owned by the application / BSP; this backend
 //! is a guest of the kernel (ADR 0020).
 //!
-//! # Current status (P7F)
+//! # Current status (P7F — stabilization ongoing)
 //!
 //! Capability status follows the terminology in
 //! `docs/documentation-policy.md`:

@@ -23,6 +23,9 @@ use osal_backend_freertos_sys::fixture;
 // ---------------------------------------------------------------------------
 
 fn setup() {
+    // Ensure scheduler is Running (a previous should_panic test may
+    // have left it in NotStarted/Suspended).
+    fixture::set_scheduler_state(osal_backend_freertos_sys::SchedulerState::Running);
     // Shut down FIRST — if a previous test panicked and left the
     // runtime Running, fixture::reset() would destroy the timer service's
     // native handles while they're still referenced.
@@ -82,8 +85,8 @@ fn delay_1ns_advances_at_least_one_tick() {
 #[test]
 #[should_panic(expected = "running scheduler")]
 fn delay_panics_when_scheduler_not_started() {
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize");
     fixture::set_scheduler_state(osal_backend_freertos_sys::SchedulerState::NotStarted);
 
@@ -199,24 +202,25 @@ fn delay_crosses_native_tick_wrap() {
 #[test]
 fn delay_zero_returns_in_any_scheduler_state() {
     // NotStarted
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize");
     fixture::set_scheduler_state(osal_backend_freertos_sys::SchedulerState::NotStarted);
     FreeRtosClock::delay(Duration::ZERO); // must not panic
     let _ = runtime::shutdown();
 
     // Suspended
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize");
     fixture::set_scheduler_state(osal_backend_freertos_sys::SchedulerState::Suspended);
     FreeRtosClock::delay(Duration::ZERO); // must not panic
+    fixture::set_scheduler_state(osal_backend_freertos_sys::SchedulerState::Running);
     let _ = runtime::shutdown();
 
     // Running (normal)
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize");
     // fixture default is Running
     FreeRtosClock::delay(Duration::ZERO); // must not panic

@@ -1,6 +1,9 @@
 # Changelog
 
-## P7F — FreeRTOS Timer Foundation (2026-07-29) — Completed
+## P7F — FreeRTOS Timer Foundation (2026-07-29) — Stabilization ongoing
+
+> Architecture implemented; lifecycle, callback, and CI fixes in progress.
+> See ADR 0029 for the approved design.
 
 ### Added
 
