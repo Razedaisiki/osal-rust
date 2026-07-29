@@ -120,3 +120,16 @@ impl osal_testkit::factory::TimerFactory for FreeRtosTimerFactory {
 impl osal_testkit::factory::ClockFactory for FreeRtosTimerFactory {
     type Clock = crate::clock::FreeRtosClock;
 }
+
+#[cfg(feature = "testkit")]
+impl osal_testkit::factory::ClockControl for FreeRtosTimerFactory {
+    fn advance_clock(&self, duration: Duration) {
+        let caps = crate::runtime::capabilities_for_test()
+            .expect("capabilities must be available for controlled tests");
+        let ticks = osal_portable::tick_time::duration_to_ticks_ceil(duration, caps.tick_rate_hz)
+            .expect("tick overflow in advance_clock");
+        if ticks > 0 {
+            osal_backend_freertos_sys::delay_ticks(ticks as u64);
+        }
+    }
+}

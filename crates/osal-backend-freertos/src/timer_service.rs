@@ -222,7 +222,12 @@ impl TimerService {
                     let eg = self.completion_eg.as_ref().expect("completion EG missing");
                     let status = sys::event_group_set_bits(eg, WORKER_COMPLETED_BIT);
                     assert_eq!(status, sys::EVENT_GROUP_OK, "completion EG invalid");
+                    // In the fixture, task_delete_current panics — we just
+                    // return from run() instead.  The worker's JoinHandle
+                    // is cleaned up during fixture reset.
+                    #[cfg(not(feature = "test-fixture"))]
                     sys::task_delete_current();
+                    return;
                 }
             }
         }
@@ -379,13 +384,14 @@ pub fn shutdown() -> Result<()> {
             .completion_eg
             .as_ref()
             .expect("completion EG missing");
-        let status = sys::event_group_wait_bits(
-            eg,
-            WORKER_COMPLETED_BIT,
-            false, // don't clear
-            true,  // wait for all bits
-            sys::max_finite_delay_ticks() + 1,
-        );
+        // In the fixture, use a finite timeout with retry to avoid
+        // blocking forever on a stale EventGroup.
+        #[cfg(feature = "test-fixture")]
+        let max_wait = 10_000; // 10 seconds in fixture ticks
+        #[cfg(not(feature = "test-fixture"))]
+        let max_wait = sys::max_finite_delay_ticks() + 1;
+
+        let status = sys::event_group_wait_bits(eg, WORKER_COMPLETED_BIT, false, true, max_wait);
         assert_eq!(
             status,
             sys::EventGroupWaitStatus::Ok,

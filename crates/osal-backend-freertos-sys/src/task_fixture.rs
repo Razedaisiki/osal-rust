@@ -528,19 +528,26 @@ pub fn current_native_task_handle() -> Option<NativeTaskHandle> {
 /// Reset internal task fixture state — MUST be called before clearing
 /// the public `active_threads` to avoid joining threads that may access
 /// shared state.
+///
+/// Notifies all sync object condition variables before joining threads,
+/// to unblock any internal task that is blocked on a semaphore or mutex.
 pub fn internal_task_fixture_reset() {
     FAIL_NEXT_INTERNAL_TASK_CREATE.store(false, Ordering::Relaxed);
     LAST_INTERNAL_STACK_WORDS.store(0, Ordering::Relaxed);
     LAST_INTERNAL_PRIORITY.store(0, Ordering::Relaxed);
 
-    // 1. Drain and join all internal task threads.
+    // 1. Notify all sync objects so blocked internal tasks can wake
+    //    and observe stop_requested / deleted state.
+    super::fixture_sync::sync_notify_all();
+
+    // 2. Drain and join all internal task threads.
     let threads = {
         let (lock,) = &*INTERNAL_TASK_FIXTURE;
         let mut data = lock.lock().unwrap();
         core::mem::take(&mut *data)
     };
 
-    // 2. Join threads OUTSIDE the lock.
+    // 3. Join threads OUTSIDE the lock.
     for data in threads {
         let _ = data.handle.join();
     }

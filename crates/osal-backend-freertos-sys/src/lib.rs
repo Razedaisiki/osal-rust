@@ -980,8 +980,12 @@ pub mod fixture {
         super::CRITICAL_DEPTH_FIXTURE.store(0, Ordering::Relaxed);
         super::TICK_BITS_FIXTURE.store(32, Ordering::Relaxed);
         super::MAX_FINITE_DELAY_FIXTURE.store((1u64 << 32) - 2, Ordering::Relaxed);
-        super::fixture_sync::sync_reset();
+        // Join internal task threads (including timer worker) BEFORE
+        // clearing sync maps.  sync_notify_all unblocks threads waiting
+        // on mutexes/semaphores/event-groups so they can observe
+        // shutdown signals and exit cleanly.
         super::fixture_task::task_fixture_reset();
+        super::fixture_sync::sync_reset();
     }
 
     /// Set the tick snapshot that `tick_snapshot()` will return.
