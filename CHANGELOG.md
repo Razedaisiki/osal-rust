@@ -1,5 +1,44 @@
 # Changelog
 
+## P7F — FreeRTOS Timer Foundation (2026-07-29) — Completed
+
+### Added
+
+- ADR 0029: FreeRTOS Timer Service Model (custom service task architecture,
+  rejection of native FreeRTOS software timer wrapper).
+- `FreeRtosTimer`: full `Timer` trait implementation via ROUSSATL-owned
+  Timer Service Task + `osal-portable::TimerState`.
+- Timer Service: native mutex-protected registry, binary wake semaphore,
+  completion EventGroup, lazy worker creation on first `start()`/`reset()`.
+- Take-execute-restore callback dispatch (outside all locks, same as POSIX).
+- Pre-advance model for OneShot (auto-stop) and Periodic (fixed-rate reload,
+  O(1) missed-period coalescing).
+- Binary semaphore wake with `GiveStatus::Full` treated as success.
+- Chunked deadline waiting with guard ticks, re-reading `Clock::now()` after
+  each timeout (ADR 0023 §5).
+- Clone/Drop lifecycle: `Arc<InnerHandle { id, RuntimeLease }>`, last drop
+  prevents future callbacks without waiting for in-flight callback.
+- Scheduler preconditions: `start()`/`reset()` require `Running`;
+  `stop()`/`change_period()` always OK.
+- Internal service task via `internal_task_create`: no `RuntimeLease`,
+  no TLS identity, no `Task::count()` increment.
+- `stack_bytes_to_words` made `pub(crate)` for internal worker stack sizing.
+- `InternalTaskHandle`, `NativeTaskHandle` types in `-sys` crate.
+- Host fixture: internal task thread tracking with `sync_notify_all` before
+  join, `ClockControl` impl via `delay_ticks` for deterministic tests.
+- 6 shared core contract tests + 7 FreeRTOS-specific lifecycle/concurrency
+  tests.
+
+### Changed
+
+- Behavior contract §12: "Generation counter" rewritten as implementation-
+  neutral "State mutation during callback and stale-expiration prevention"
+  (generation counter and pre-advance model both valid).
+- Behavior contract timer test matrix: added FreeRTOS column.
+- `fixture::reset()`: join task threads before clearing sync maps.
+- Test setup order: `runtime::shutdown()` before `fixture::reset()` in all
+  test files (prevents stale native handles after fixture reset).
+
 ## P7E — FreeRTOS Task Foundation (2026-07-28) — Completed
 
 ### Added

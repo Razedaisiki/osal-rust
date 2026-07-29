@@ -162,6 +162,28 @@ FreeRtosTask
   └── LiveTaskToken → count()
 ```
 
+### FreeRTOS Timer data flow
+
+```
+FreeRtosTimer
+  → Arc<InnerHandle { id, RuntimeLease }>
+
+TimerServiceControl
+  → spin::Mutex<ServiceSlot> (Stopped / Running / Stopping)
+
+TimerService (internal — no RuntimeLease)
+  ├── native mutex (registry)
+  ├── binary wake semaphore
+  ├── completion EventGroup
+  └── TimerServiceState
+       ├── Vec<TimerEntry { id, TimerState, Option<TimerCallback>, deleted }>
+       ├── next_id
+       └── stop_requested
+
+InternalTaskHandle
+  → native task handle (lazy xTaskCreate on first start/reset)
+```
+
 ### FreeRTOS Queue data flow
 
 ```

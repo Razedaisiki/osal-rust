@@ -107,7 +107,7 @@ count (see [14](#14-reference-counting)). Drop operations must
 | Mutex | Destroy backend mutex |
 | Semaphore | Destroy backend semaphore |
 | Queue | Release queue resources |
-| Timer | Stop timer and release resources |
+| Timer | Stop timer, deregister from service, release resources |
 | Task | Release handle only (must not implicitly join) |
 
 Blocking cleanup operations (e.g. waiting for a task to finish) shall
@@ -180,6 +180,21 @@ ring buffer               counting semaphore (sender_wake)
 
 Different internal implementations are acceptable provided the
 externally observable semantics remain identical.
+
+### FreeRTOS Timer lifetime (P7F)
+
+A `FreeRtosTimer` handle owns an `Arc<FreeRtosTimerHandleInner { id, _runtime }>`.
+The callback lives in the service registry, not in the handle.
+
+- Dropping a clone only decrements the `Arc` refcount.
+- Last-handle drop: locks registry, marks entry `deleted`, stops state,
+  takes callback (if not in flight), signals wake semaphore, drops
+  callback outside lock, releases `RuntimeLease`.
+- If a callback is in-flight when the last handle drops, the callback
+  completes normally but is not restored to the registry (entry is
+  deleted).  The callback and its captures are dropped outside all locks.
+- The internal timer service task holds no `RuntimeLease` and is not
+  visible to the public `Task` API.
 
 ### FreeRTOS Task lifetime (P7E)
 

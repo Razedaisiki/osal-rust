@@ -4,7 +4,7 @@
 //! The scheduler is owned by the application / BSP; this backend
 //! is a guest of the kernel (ADR 0020).
 //!
-//! # Current status (P7E)
+//! # Current status (P7F)
 //!
 //! Capability status follows the terminology in
 //! `docs/documentation-policy.md`:
@@ -21,11 +21,15 @@
 //! - Task — xTaskCreate + EventGroup completion + TLS identity, cached
 //!   concurrent join; 17 shared core contract cases and 21 FreeRTOS
 //!   concurrency/boundary tests passing
+//! - Timer — custom ROUSSATL Timer Service Task + osal-portable::TimerState;
+//!   lazy worker creation, binary semaphore wake, take-execute-restore
+//!   dispatch, callback reentry, clone/last-drop lifecycle; 6 shared core
+//!   contract cases and 7 FreeRTOS-specific tests passing
 //!
 //! **Validated** (host + FreeRTOS kernel integration tested):
 //! - *(none yet — requires real FreeRTOS runtime tests)*
 //!
-//! **Deferred to P7F+:** Timer, ISR extensions.
+//! **Deferred to P7G+:** ISR extensions.
 //!
 //! ## Implementation vs Validation
 //!

@@ -2,23 +2,23 @@
 
 ## Status
 
-Complete — Clock and Timer are implemented across the full stack.
-FreeRTOS Clock is implemented (host-contract-verified); FreeRTOS Timer
-remains Planned.
+Complete — Clock and Timer are implemented across the full stack
+(host-contract-verified on all three backends: Mock, POSIX, FreeRTOS).
 
 ## Architecture
 
 ```
                  osal (facade)
                      |
-         +-----------+-----------+
-         |                       |
-  osal-backend-posix    osal-backend-mock
-         |                       |
-    PosixClock              MockClock
-    PosixTimer             MockTimer
-    PosixTimerService    MockTimeRuntime
-    (pthread)            (RefCell<Duration>)
+    +----------------+----------------+
+    |                |                |
+osal-backend-  osal-backend-   osal-backend-
+  posix           mock           freertos
+    |                |                |
+PosixClock      MockClock        FreeRtosClock
+PosixTimer      MockTimer        FreeRtosTimer
+PosixTimerSvc  MockTimeRuntime   FreeRtosTimerSvc
+(pthread)      (RefCell<Dur>)    (xTaskCreate + Semaphore)
 ```
 
 ## Clock Model
@@ -31,20 +31,22 @@ remains Planned.
 
 ## Timer Service Model
 
-| Aspect | POSIX | Mock |
-|--------|-------|------|
-| Service | Single detach pthread | Synchronous in `advance_clock` |
-| Registry | `static mut` Arc-protected | `Vec` in `MockTimeRuntime` |
-| Callback | `pthread` context, lock-held | Outside `RefCell` borrow |
-| Wake | `pthread_cond_signal` | N/A (sync dispatch) |
+| Aspect | POSIX | Mock | FreeRTOS |
+|--------|-------|------|----------|
+| Service | Single detach pthread | Synchronous in `advance_clock` | Lazy xTaskCreate (internal) |
+| Registry | `static mut` Arc-protected | `Vec` in `MockTimeRuntime` | `Vec<TimerEntry>` + native mutex |
+| Callback | `pthread` context, outside lock | Outside `RefCell` borrow | Worker task, outside all locks |
+| Wake | `pthread_cond_signal` | N/A (sync dispatch) | Binary semaphore (Full=coalesce) |
+| Completion | `pthread_join` | N/A | EventGroup (sticky bit) |
 
 ## Contract Tests Passing
 
-- **Clock Basic** (Mock + POSIX): now monotonic, elapsed non-negative, delay(0) immediate
+- **Clock Basic** (Mock + POSIX + FreeRTOS): now monotonic, elapsed non-negative, delay(0) immediate
 - **Clock Controlled** (Mock): advance increases now/elapsed
-- **Timer Core** (Mock + POSIX): 6 tests (zero period, stopped, stop idem, change_period zero, clone, drop)
+- **Timer Core** (Mock + POSIX + FreeRTOS): 6 tests (zero period, stopped, stop idem, change_period zero, clone, drop)
 - **Timer Controlled** (Mock): 5 tests (OneShot, Periodic, stop, reset, coalescing)
 - **Timer Realtime** (POSIX): 4 tests (OneShot bounds, Periodic ≥2, stop, reset delays)
+- **Timer Lifecycle** (FreeRTOS): 7 backend-specific tests (OneShot, Periodic, self-stop, clone, last-drop, non-last clone)
 
 ## Intentionally Deferred
 
@@ -55,5 +57,6 @@ remains Planned.
 
 ## Next Steps
 
-1. Task Foundation Slice
-2. FreeRTOS backend
+1. ISR Timer extensions (FreeRTOS)
+2. Controlled timer tests for FreeRTOS (virtual-tick-aware semaphore wait)
+3. Real-kernel timer validation (QEMU / physical MCU)
