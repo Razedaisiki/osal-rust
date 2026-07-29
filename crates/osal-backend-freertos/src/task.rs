@@ -45,7 +45,7 @@ const TASK_COMPLETED_BIT: u32 = 1;
 ///
 /// Rounds up to the next word boundary, enforces the platform minimum,
 /// and checks for overflow.
-fn stack_bytes_to_words(
+pub(crate) fn stack_bytes_to_words(
     bytes: usize,
     word_size: usize,
     minimal_words: usize,

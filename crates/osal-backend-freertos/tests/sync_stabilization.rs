@@ -24,8 +24,8 @@ use osal_backend_freertos_sys::SchedulerState;
 use osal_backend_freertos_sys::fixture;
 
 fn setup() {
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize");
 }
 
@@ -91,8 +91,8 @@ fn mutex_forever_reacquire_after_guard_drop() {
 
 #[test]
 fn mutex_after_not_started_returns_not_initialized() {
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize");
     fixture::set_scheduler_state(SchedulerState::NotStarted);
 
@@ -105,8 +105,8 @@ fn mutex_after_not_started_returns_not_initialized() {
 
 #[test]
 fn mutex_after_suspended_returns_busy() {
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize");
     fixture::set_scheduler_state(SchedulerState::Suspended);
 
@@ -120,8 +120,8 @@ fn mutex_after_suspended_returns_busy() {
 #[test]
 fn mutex_nolock_succeeds_when_not_running() {
     // NoWait should work regardless of scheduler state.
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize");
     fixture::set_scheduler_state(SchedulerState::NotStarted);
 
@@ -232,8 +232,8 @@ fn counting_long_wait_splits_into_chunks() {
 
 #[test]
 fn semaphore_after_not_started_returns_not_initialized() {
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize");
     fixture::set_scheduler_state(SchedulerState::NotStarted);
 
@@ -246,8 +246,8 @@ fn semaphore_after_not_started_returns_not_initialized() {
 
 #[test]
 fn semaphore_nolock_succeeds_when_not_running() {
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize");
     fixture::set_scheduler_state(SchedulerState::NotStarted);
 

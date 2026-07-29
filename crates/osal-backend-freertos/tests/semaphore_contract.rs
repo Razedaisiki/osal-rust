@@ -18,8 +18,8 @@ use osal_testkit::contract::semaphore;
 
 #[test]
 fn freertos_semaphore_core_contracts() {
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize runtime");
 
     semaphore::run_all(&FreeRtosSemaphoreFactory);

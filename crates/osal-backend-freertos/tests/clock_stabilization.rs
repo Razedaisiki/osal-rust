@@ -23,9 +23,11 @@ use osal_backend_freertos_sys::fixture;
 // ---------------------------------------------------------------------------
 
 fn setup() {
-    fixture::reset();
-    // Shut down in case a previous test left the runtime Running.
+    // Shut down FIRST — if a previous test panicked and left the
+    // runtime Running, fixture::reset() would destroy the timer service's
+    // native handles while they're still referenced.
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize runtime");
 }
 

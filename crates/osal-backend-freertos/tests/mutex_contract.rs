@@ -18,8 +18,8 @@ use osal_testkit::contract::mutex;
 
 #[test]
 fn freertos_mutex_core_contracts() {
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize runtime");
 
     mutex::run_core_contracts(&FreeRtosMutexFactory);

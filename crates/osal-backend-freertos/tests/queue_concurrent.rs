@@ -39,8 +39,8 @@ use osal_backend_freertos::runtime;
 use osal_backend_freertos_sys::fixture;
 
 fn setup() {
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize");
 }
 

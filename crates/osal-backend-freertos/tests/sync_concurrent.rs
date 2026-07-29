@@ -33,8 +33,8 @@ use osal_backend_freertos::semaphore::{FreeRtosBinarySemaphore, FreeRtosCounting
 use osal_backend_freertos_sys::fixture;
 
 fn setup() {
-    fixture::reset();
     let _ = runtime::shutdown();
+    fixture::reset();
     runtime::initialize().expect("initialize");
 }
 

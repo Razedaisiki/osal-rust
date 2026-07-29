@@ -39,6 +39,10 @@ pub fn initialize() -> Result<()> {
     let caps = osal_backend_freertos_sys::capabilities();
     *CAPABILITIES.write() = Some(caps);
 
+    // Initialize the timer service (creates mutex, semaphore, EventGroup;
+    // worker task is lazily created on first start()/reset()).
+    crate::timer_service::initialize()?;
+
     transition.commit();
     Ok(())
 }
@@ -50,6 +54,10 @@ pub fn initialize() -> Result<()> {
 /// `vTaskEndScheduler()`.
 pub fn shutdown() -> Result<()> {
     let transition = RUNTIME.begin_shutdown()?;
+
+    // Shut down the timer service (waits for worker if active,
+    // deletes all internal resources).
+    crate::timer_service::shutdown()?;
 
     // Clear cached capabilities so re-initialisation re-probes.
     *CAPABILITIES.write() = None;
