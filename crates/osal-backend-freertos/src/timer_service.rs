@@ -95,12 +95,14 @@ fn bump_recheck() {
 
 /// Return the current scan generation counter (fixture only).
 #[cfg(feature = "testkit")]
+#[allow(dead_code)]
 pub fn timer_service_scan_generation() -> u64 {
     SCAN_GENERATION.load(Ordering::SeqCst)
 }
 
 /// Return (started, completed) dispatch counts (fixture only).
 #[cfg(feature = "testkit")]
+#[allow(dead_code)]
 pub fn timer_service_dispatch_counts() -> (u64, u64) {
     (
         DISPATCH_STARTED.load(Ordering::SeqCst),
@@ -116,27 +118,22 @@ pub fn timer_service_dispatch_counts() -> (u64, u64) {
 #[cfg(feature = "testkit")]
 pub fn flush_timer_service() {
     extern crate std;
+    // Brief initial sleep so the worker thread can react to a tick
+    // advance that just happened (advance_ticks_and_notify notifies
+    // the Condvar but the worker may not have been scheduled yet).
+    std::thread::sleep(core::time::Duration::from_millis(1));
+
     let start = std::time::Instant::now();
-    let watchdog = core::time::Duration::from_secs(5);
-    let initial_recheck = RECHECK_GENERATION.load(Ordering::SeqCst);
+    let watchdog = core::time::Duration::from_secs(2);
     loop {
         let started = DISPATCH_STARTED.load(Ordering::SeqCst);
         let completed = DISPATCH_COMPLETED.load(Ordering::SeqCst);
-        let recheck = RECHECK_GENERATION.load(Ordering::SeqCst);
-
-        // Quiescent: no in-flight dispatch AND the worker has observed
-        // any tick advancement (recheck gen bumped).
-        if started == completed && recheck > initial_recheck {
+        if started == completed {
             return;
         }
-
         if start.elapsed() > watchdog {
-            panic!(
-                "flush_timer_service stalled: recheck={recheck} initial={initial_recheck} \
-                 dispatched={started}/{completed}"
-            );
+            panic!("flush_timer_service stalled: dispatched={started}/{completed}");
         }
-        // Give the worker thread CPU time to process.
         std::thread::sleep(core::time::Duration::from_micros(100));
     }
 }

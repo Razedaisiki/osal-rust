@@ -95,6 +95,10 @@ impl Timer for FreeRtosTimer {
     }
 }
 
+// Re-export for integration tests.
+#[cfg(feature = "testkit")]
+pub use crate::timer_service::flush_timer_service;
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
