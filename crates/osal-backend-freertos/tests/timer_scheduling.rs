@@ -12,7 +12,10 @@ use osal_api::error::Error;
 use osal_api::traits::timer::Timer;
 use osal_api::types::TimerMode;
 use osal_backend_freertos::runtime;
-use osal_backend_freertos::timer::{FreeRtosTimer, flush_timer_service, timer_flush_request};
+use osal_backend_freertos::timer::{
+    FreeRtosTimer, fixture_clear_wake_wait_ticks, fixture_wake_wait_count,
+    fixture_wake_wait_max_ticks, flush_timer_service, timer_flush_request,
+};
 use osal_backend_freertos_sys::fixture;
 use osal_backend_freertos_sys::fixture::FixtureWaitMode;
 
@@ -52,6 +55,18 @@ fn advance_ms(ms: u64) {
     fixture::advance_ticks(ms);
     let target = timer_flush_request();
     flush_timer_service(target);
+}
+
+/// Poll `cond` with `yield_now()` and a 2-second wall-clock watchdog.
+fn wait_until(mut cond: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !cond() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "wait_until: condition not met within 2 seconds"
+        );
+        std::thread::yield_now();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +218,7 @@ fn long_deadline_uses_multiple_finite_wait_chunks() {
     // Shrink max finite delay so 20-tick deadline requires multiple chunks
     // (20 / 7 = 3+ chunks before the deadline is reached).
     fixture::set_max_finite_delay_ticks(7);
+    fixture_clear_wake_wait_ticks();
 
     let timer = FreeRtosTimer::new(
         "chunk",
@@ -215,37 +231,30 @@ fn long_deadline_uses_multiple_finite_wait_chunks() {
     .unwrap();
     timer.start().unwrap();
 
-    // Advance ticks in sub-deadline increments.  The worker's
-    // wait_until_deadline loop requests at most max_finite_delay_ticks
-    // (7) per semaphore_take call, then re-reads Clock::now().
-    // After each advance the worker naturally wakes (gen change),
-    // rechecks the deadline, and blocks again.
-    fixture::advance_ticks(7);
-    // Give the worker a moment to process the tick advance and
-    // re-enter the wait loop.
-    std::thread::sleep(Duration::from_millis(1));
-    // Verify callback has NOT fired (7 < 20).
-    let target = timer_flush_request();
-    flush_timer_service(target);
-    assert_eq!(fired.load(Ordering::Relaxed), 0, "after 7 ticks");
+    // Wait for the worker to enter its first finite wake-semaphore wait.
+    wait_until(|| fixture_wake_wait_count() >= 1);
 
-    fixture::advance_ticks(7); // total 14 < 20
-    std::thread::sleep(Duration::from_millis(1));
-    let target = timer_flush_request();
-    flush_timer_service(target);
-    assert_eq!(fired.load(Ordering::Relaxed), 0, "after 14 ticks");
+    fixture::advance_ticks(7);
+    wait_until(|| fixture_wake_wait_count() >= 2);
+    assert_eq!(fired.load(Ordering::Relaxed), 0);
+
+    fixture::advance_ticks(7);
+    wait_until(|| fixture_wake_wait_count() >= 3);
+    assert_eq!(fired.load(Ordering::Relaxed), 0);
+
+    // Verify no wait exceeded the configured maximum.
+    assert!(
+        fixture_wake_wait_max_ticks() <= 7,
+        "worker requested an oversized finite wait"
+    );
 
     fixture::advance_ticks(5); // total 19 < 20
-    std::thread::sleep(Duration::from_millis(1));
-    let target = timer_flush_request();
-    flush_timer_service(target);
-    assert_eq!(fired.load(Ordering::Relaxed), 0, "after 19 ticks");
+    assert_eq!(fired.load(Ordering::Relaxed), 0);
 
-    // Final advance: total 21 ≥ 20, deadline reached.
-    fixture::advance_ticks(2);
+    fixture::advance_ticks(2); // total 21 ≥ 20
     let target = timer_flush_request();
     flush_timer_service(target);
-    assert_eq!(fired.load(Ordering::Relaxed), 1, "callback fires at 21");
+    assert_eq!(fired.load(Ordering::Relaxed), 1);
 
     // TestGuard::drop restores default max_finite_delay_ticks.
 }
