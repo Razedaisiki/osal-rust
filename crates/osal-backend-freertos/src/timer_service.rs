@@ -78,6 +78,21 @@ static FLUSH_REQUEST: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-fixture")]
 static FLUSH_ACK: AtomicU64 = AtomicU64::new(0);
 
+/// Count of wake-semaphore finite-wait calls made by the worker in
+/// `wait_until_deadline`.  Each call records its tick count via
+/// `record_wake_wait()`.  Tests use `fixture_wake_wait_count()` and
+/// `fixture_wake_wait_ticks_max()` to assert finite-chunk behavior.
+#[cfg(feature = "test-fixture")]
+static WAKE_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-fixture")]
+static WAKE_WAIT_MAX_TICKS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "test-fixture")]
+fn record_wake_wait(wait_ticks: u64) {
+    WAKE_WAIT_COUNT.fetch_add(1, Ordering::Relaxed);
+    WAKE_WAIT_MAX_TICKS.fetch_max(wait_ticks, Ordering::Relaxed);
+}
+
 /// Number of dispatched callbacks since startup.
 #[cfg(feature = "test-fixture")]
 static DISPATCH_STARTED: AtomicU64 = AtomicU64::new(0);
@@ -161,10 +176,30 @@ static SHUTDOWN_WAITING: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 #[cfg(feature = "testkit")]
+pub fn fixture_wake_wait_count() -> u64 {
+    WAKE_WAIT_COUNT.load(Ordering::Relaxed)
+}
+
+#[cfg(feature = "testkit")]
+pub fn fixture_wake_wait_max_ticks() -> u64 {
+    WAKE_WAIT_MAX_TICKS.load(Ordering::Relaxed)
+}
+
+#[cfg(feature = "testkit")]
+pub fn fixture_clear_wake_wait_ticks() {
+    WAKE_WAIT_COUNT.store(0, Ordering::Relaxed);
+    WAKE_WAIT_MAX_TICKS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(feature = "testkit")]
 pub fn fixture_reset_timer_hooks() {
     FAIL_NEXT_REGISTRY_RESERVE.store(false, Ordering::SeqCst);
     #[cfg(feature = "test-fixture")]
-    SHUTDOWN_WAITING.store(false, Ordering::SeqCst);
+    {
+        SHUTDOWN_WAITING.store(false, Ordering::SeqCst);
+        WAKE_WAIT_COUNT.store(0, Ordering::Relaxed);
+        WAKE_WAIT_MAX_TICKS.store(0, Ordering::Relaxed);
+    }
 }
 
 #[cfg(feature = "testkit")]
@@ -480,6 +515,9 @@ fn wait_until_deadline(wake_sem: &sys::SemaphoreHandle, deadline: Duration) {
         };
         let wait_ticks: u64 =
             (chunk.saturating_add(guard_tick as u128)).min(u64::MAX as u128) as u64;
+
+        #[cfg(feature = "test-fixture")]
+        record_wake_wait(wait_ticks);
 
         match sys::semaphore_take(wake_sem, wait_ticks) {
             sys::TakeStatus::Acquired => return,

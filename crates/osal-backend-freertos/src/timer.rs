@@ -98,9 +98,10 @@ impl Timer for FreeRtosTimer {
 // Re-export for integration tests.
 #[cfg(feature = "testkit")]
 pub use crate::timer_service::{
-    fixture_completion_waiter_count, fixture_fail_next_registry_reserve, fixture_registry_len,
-    fixture_reset_timer_hooks, fixture_set_next_timer_id, fixture_shutdown_waiting,
-    fixture_worker_exists, flush_timer_service, timer_flush_request,
+    fixture_clear_wake_wait_ticks, fixture_completion_waiter_count,
+    fixture_fail_next_registry_reserve, fixture_registry_len, fixture_reset_timer_hooks,
+    fixture_set_next_timer_id, fixture_shutdown_waiting, fixture_wake_wait_count,
+    fixture_wake_wait_max_ticks, fixture_worker_exists, flush_timer_service, timer_flush_request,
 };
 
 // ---------------------------------------------------------------------------

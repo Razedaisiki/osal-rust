@@ -215,21 +215,28 @@ fn long_deadline_uses_multiple_finite_wait_chunks() {
     .unwrap();
     timer.start().unwrap();
 
-    // Advance in sub-deadline chunks.  With max_finite_delay_ticks=7,
-    // the worker's wait_until_deadline loop requests at most 7 ticks
-    // per semaphore_take call, then re-reads Clock::now() and loops.
-
+    // Advance ticks in sub-deadline increments.  The worker's
+    // wait_until_deadline loop requests at most max_finite_delay_ticks
+    // (7) per semaphore_take call, then re-reads Clock::now().
+    // After each advance the worker naturally wakes (gen change),
+    // rechecks the deadline, and blocks again.
     fixture::advance_ticks(7);
+    // Give the worker a moment to process the tick advance and
+    // re-enter the wait loop.
+    std::thread::sleep(Duration::from_millis(1));
+    // Verify callback has NOT fired (7 < 20).
     let target = timer_flush_request();
     flush_timer_service(target);
     assert_eq!(fired.load(Ordering::Relaxed), 0, "after 7 ticks");
 
-    fixture::advance_ticks(7);
+    fixture::advance_ticks(7); // total 14 < 20
+    std::thread::sleep(Duration::from_millis(1));
     let target = timer_flush_request();
     flush_timer_service(target);
     assert_eq!(fired.load(Ordering::Relaxed), 0, "after 14 ticks");
 
-    fixture::advance_ticks(5); // total 19, still < 20
+    fixture::advance_ticks(5); // total 19 < 20
+    std::thread::sleep(Duration::from_millis(1));
     let target = timer_flush_request();
     flush_timer_service(target);
     assert_eq!(fired.load(Ordering::Relaxed), 0, "after 19 ticks");

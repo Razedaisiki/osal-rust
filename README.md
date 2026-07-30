@@ -18,10 +18,10 @@ trait surface. The Mock backend implements the same surface with the
 exception of blocking Queue contracts (deferred until a deterministic
 scheduler is implemented).
 
-FreeRTOS integration: ADRs 0020–0028 define scheduler ownership,
+FreeRTOS integration: ADRs 0020–0029 define scheduler ownership,
 configuration contract, FFI boundary, tick/time model, System mapping,
-blocking wait model, sync object model, queue object model, and task
-object model. The `osal-backend-freertos` crate provides the full
+blocking wait model, sync object model, queue object model, task
+object model, and timer service model. The `osal-backend-freertos` crate provides the full
 execution, synchronization, and messaging layer: Task (xTaskCreate +
 EventGroup completion + TLS identity, cached concurrent join), Mutex
 (native priority-inheritance mutex with RAII guard), CountingSemaphore
