@@ -2,9 +2,8 @@
 
 ## Status
 
-Clock is implemented across the full stack.  Timer is implemented on
-Mock and POSIX (Validated).  FreeRTOS Timer architecture is implemented;
-lifecycle and callback fixes are in stabilization (P7F).
+Complete — Clock and Timer are implemented across the full stack
+(host-contract-verified on all three backends: Mock, POSIX, FreeRTOS).
 
 ## Architecture
 

@@ -1,9 +1,44 @@
 # Changelog
 
-## P7F — FreeRTOS Timer Foundation (2026-07-29) — Stabilization ongoing
+## P7F — FreeRTOS Timer Foundation — Completed
 
-> Architecture implemented; lifecycle, callback, and CI fixes in progress.
-> See ADR 0029 for the approved design.
+Custom Timer Service Task architecture with osal-portable::TimerState.
+Lazy worker creation, binary semaphore wake, take-execute-restore
+dispatch, deterministic Virtual-mode fixture bridge.
+
+### Added
+
+- ADR 0029: custom timer service model (rejects native FreeRTOS timers).
+- `FreeRtosTimer`: full `Timer` trait implementation.
+- Timer Service: native mutex registry, binary wake semaphore, completion
+  EventGroup, lazy worker.
+- Deterministic Virtual-mode fixture bridge with request/ack flush protocol.
+- 6 shared Timer core contract cases.
+- 5 deterministic controlled Timer contract cases.
+- TimerState semantic tests: change_period, reset, fixed-rate, coalescing.
+- Callback reentry tests: self-stop, self-reset, self-restart,
+  self-change-period, cross-timer control, lock-free destruction.
+- Drop/shutdown lifecycle race tests: in-flight last drop, shutdown-waits,
+  self-shutdown Busy, suspended retry.
+- Failure-atomic construction and rollback tests: worker-create, registry
+  reserve, ID overflow, partial init, shutdown/reinit cycle.
+- Scheduling tests: earliest-deadline ordering, overdue periodic vs.
+  one-shot fairness, wake interruption, finite-chunk long-deadline wait.
+- `InternalTaskHandle` / `NativeTaskHandle` in `-sys` crate for internal
+  service tasks.
+- ClockControl + `ControlledTimerFactory` for FreeRTOS.
+
+### Changed
+
+- Behavior contract §12: stale-expiration rewritten implementation-neutral.
+- `configUSE_TIMERS == 1` requirement removed from C shim.
+- `fixture::reset()`: task threads joined before sync map cleared.
+- All tests use deterministic Virtual mode — no wall-clock sleeps.
+
+### Deferred
+
+- ISR Timer extensions → P7G+.
+- Real FreeRTOS kernel tick-interrupt validation → P7G.
 
 ### Added
 

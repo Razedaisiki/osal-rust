@@ -6,14 +6,17 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::mpsc;
+use std::sync::{Arc, Barrier};
 use std::thread;
 
 use osal_api::error::Error;
 use osal_api::traits::timer::Timer;
 use osal_api::types::TimerMode;
 use osal_backend_freertos::runtime;
-use osal_backend_freertos::timer::{FreeRtosTimer, flush_timer_service, timer_flush_request};
+use osal_backend_freertos::timer::{
+    FreeRtosTimer, fixture_shutdown_waiting, flush_timer_service, timer_flush_request,
+};
 use osal_backend_freertos_sys::fixture;
 use osal_backend_freertos_sys::fixture::FixtureWaitMode;
 
@@ -84,26 +87,22 @@ fn last_drop_during_callback_does_not_wait() {
     .unwrap();
 
     timer.start().unwrap();
-    // Advance ticks without flush — callback will fire but block on barrier.
     advance_ticks_no_flush(100);
-    // Let worker get CPU time to process the callback.
-    std::thread::sleep(Duration::from_millis(10));
+    entered.wait(); // Barrier confirms callback has entered.
 
-    // Verify callback has entered.
-    entered.wait();
-
-    // Drop the last public handle.  Must return immediately.
-    let start = std::time::Instant::now();
-    drop(timer);
-    let elapsed = start.elapsed();
-    assert!(
-        elapsed < Duration::from_secs(1),
-        "last handle drop blocked waiting for in-flight callback"
-    );
+    // Drop in a separate thread with an mpsc watchdog.  The drop must
+    // complete within 1 second — otherwise it's waiting for the
+    // callback (which is still blocked on `release`).
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        drop(timer);
+        tx.send(()).unwrap();
+    });
+    rx.recv_timeout(Duration::from_secs(1))
+        .expect("last Timer drop waited for callback");
 
     // Release the callback.
     release.wait();
-    std::thread::sleep(Duration::from_millis(10));
     let target = timer_flush_request();
     flush_timer_service(target);
 }
@@ -133,13 +132,11 @@ fn shutdown_waits_for_inflight_callback() {
 
     timer.start().unwrap();
     advance_ticks_no_flush(100);
-    std::thread::sleep(Duration::from_millis(10));
     entered.wait(); // callback started
 
-    // Drop the last public handle under the fixture lock so it completes.
+    // Drop the last public handle, then spawn shutdown in another thread.
     drop(timer);
 
-    // Shutdown from another thread — must wait for callback.
     let release2 = Arc::clone(&release);
     let shutdown_done = Arc::new(AtomicBool::new(false));
     let sd = Arc::clone(&shutdown_done);
@@ -149,8 +146,16 @@ fn shutdown_waits_for_inflight_callback() {
         sd.store(true, Ordering::Relaxed);
     });
 
-    // Shutdown should be blocked on the callback.
-    thread::sleep(Duration::from_millis(100));
+    // Poll fixture_shutdown_waiting() — shutdown must have entered
+    // the completion EventGroup wait before we release the callback.
+    let poll_deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !fixture_shutdown_waiting() {
+        assert!(
+            std::time::Instant::now() < poll_deadline,
+            "shutdown did not enter completion wait"
+        );
+        std::thread::yield_now();
+    }
     assert!(
         !shutdown_done.load(Ordering::Relaxed),
         "shutdown should wait for callback"
@@ -173,32 +178,27 @@ fn shutdown_waits_for_inflight_callback() {
 #[test]
 fn callback_self_shutdown_returns_busy() {
     let _guard = TestGuard::new();
-    let result: Arc<Mutex<Option<Error>>> = Arc::new(Mutex::new(None));
-    let r = Arc::clone(&result);
+    let (tx, rx) = mpsc::channel();
 
     let timer = FreeRtosTimer::new(
         "self-shutdown",
         Duration::from_millis(10),
         TimerMode::OneShot,
         Box::new(move || {
-            let err = runtime::shutdown().unwrap_err();
-            *r.lock().unwrap() = Some(err);
+            tx.send(runtime::shutdown()).unwrap();
         }),
     )
     .unwrap();
 
     timer.start().unwrap();
-    // Advance ticks — worker will dispatch the callback, which calls
-    // shutdown and stores the error.
-    advance_ticks_no_flush(10);
-    // Give worker CPU time to process the callback.
-    std::thread::sleep(Duration::from_millis(50));
+    advance_ms(10); // flush guarantees callback has returned
 
-    let err = result.lock().unwrap().take().expect("callback did not run");
-    assert_eq!(err, Error::Busy, "self-shutdown must return Busy");
+    let err = rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("callback did not run");
+    assert_eq!(err, Err(Error::Busy), "self-shutdown must return Busy");
 
-    // Drop the timer so RuntimeLease is released.  Runtime must still
-    // be Running after the failed self-shutdown.
+    // Drop the timer so RuntimeLease is released.
     drop(timer);
     assert!(
         runtime::shutdown().is_ok(),

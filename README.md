@@ -11,7 +11,7 @@ across different platforms by switching the backend.
 
 ## Project Status
 
-**Latest milestone: P7F — FreeRTOS Timer Foundation.**
+**Latest milestone: P7F — FreeRTOS Timer Foundation — Completed.**
 
 The POSIX backend fully implements the current non-deferred `osal-api`
 trait surface. The Mock backend implements the same surface with the
@@ -49,8 +49,8 @@ Public APIs may change before version 1.0.
 - FreeRTOS backend foundation (`backend-freertos`): Runtime Lifecycle,
   Clock, System, Mutex, CountingSemaphore, BinarySemaphore, Queue,
   Task (spawn + cached concurrent join), and Timer (custom Timer Service
-  Task + TimerState; 5 deterministic controlled contracts passing;
-  lifecycle and edge-case stabilization ongoing)
+  Task + TimerState; host-contract-verified with deterministic
+  Virtual-mode fixture bridge)
 - Queue (core + blocking on POSIX and FreeRTOS; Mock blocking deferred)
 - Mutex (non-recursive, ADR 0007)
 - CountingSemaphore and BinarySemaphore
@@ -85,7 +85,7 @@ Public APIs may change before version 1.0.
 | BinarySemaphore   | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
 | Semaphore ISR     | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
 | Clock             | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
-| Timer             | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
+| Timer             | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
 | Timer ISR         | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
 | System            | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
 | Task Foundation   | Validated | Foundation  | Validated   | Implemented| Foundation  | Validated |
