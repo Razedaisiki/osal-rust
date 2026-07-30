@@ -145,6 +145,86 @@ pub fn flush_timer_service(target: u64) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Fixture-only test hooks (P7F-S3)
+// ---------------------------------------------------------------------------
+
+/// Fault: make the next registry reserve fail with OutOfMemory.
+#[cfg(feature = "testkit")]
+static FAIL_NEXT_REGISTRY_RESERVE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Set when shutdown enters its EventGroup wait; cleared on exit.
+/// Tests poll this instead of using fixed sleeps.
+#[cfg(feature = "test-fixture")]
+static SHUTDOWN_WAITING: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "testkit")]
+pub fn fixture_reset_timer_hooks() {
+    FAIL_NEXT_REGISTRY_RESERVE.store(false, Ordering::SeqCst);
+    #[cfg(feature = "test-fixture")]
+    SHUTDOWN_WAITING.store(false, Ordering::SeqCst);
+}
+
+#[cfg(feature = "testkit")]
+pub fn fixture_fail_next_registry_reserve() {
+    FAIL_NEXT_REGISTRY_RESERVE.store(true, Ordering::SeqCst);
+}
+
+#[cfg(feature = "testkit")]
+pub fn fixture_set_next_timer_id(id: u64) {
+    with_registry(|_, state| {
+        state.next_id = id;
+        Ok(())
+    })
+    .expect("timer service must be running");
+}
+
+#[cfg(feature = "testkit")]
+pub fn fixture_registry_len() -> usize {
+    with_registry(|_, state| Ok(state.timers.len())).expect("timer service must be running")
+}
+
+#[cfg(feature = "testkit")]
+pub fn fixture_worker_exists() -> bool {
+    crate::timer_control::with_slot(|slot| {
+        Ok(matches!(
+            slot,
+            crate::timer_control::ServiceSlot::Running {
+                worker: Some(_),
+                ..
+            }
+        ))
+    })
+    .unwrap_or(false)
+}
+
+/// Return the number of threads blocked on the completion EventGroup.
+/// Used by shutdown tests instead of fixed sleeps.
+#[cfg(feature = "testkit")]
+pub fn fixture_completion_waiter_count() -> usize {
+    use osal_backend_freertos_sys as sys;
+    crate::timer_control::with_slot(|slot| match slot {
+        crate::timer_control::ServiceSlot::Running { service, .. }
+        | crate::timer_control::ServiceSlot::Stopping { service } => {
+            let eg = service
+                .completion_eg
+                .as_ref()
+                .expect("completion EG missing");
+            Ok(sys::fixture::event_group_blocked_count(eg))
+        }
+        crate::timer_control::ServiceSlot::Stopped => Ok(0),
+    })
+    .unwrap_or(0)
+}
+
+/// Return true if shutdown has entered its completion EventGroup wait.
+#[cfg(feature = "testkit")]
+pub fn fixture_shutdown_waiting() -> bool {
+    SHUTDOWN_WAITING.load(Ordering::SeqCst)
+}
+
 pub(crate) struct TimerService {
     registry_mutex: Option<sys::MutexHandle>,
     wake_sem: Option<sys::SemaphoreHandle>,
@@ -453,7 +533,7 @@ fn with_registry<R>(
     let service = timer_control::with_slot(|slot| match slot {
         ServiceSlot::Running { service, .. } => Ok(Arc::clone(service)),
         ServiceSlot::Stopped => Err(Error::NotInitialized),
-        ServiceSlot::Stopping => Err(Error::Busy),
+        ServiceSlot::Stopping { .. } => Err(Error::Busy),
     })?;
 
     service.with_lock(|state| f(&service, state))
@@ -464,6 +544,9 @@ fn with_registry<R>(
 // ---------------------------------------------------------------------------
 
 pub fn initialize() -> Result<()> {
+    #[cfg(feature = "testkit")]
+    fixture_reset_timer_hooks();
+
     timer_control::with_slot(|slot| match slot {
         ServiceSlot::Stopped => {
             let service = Arc::new(TimerService::new()?);
@@ -474,7 +557,7 @@ pub fn initialize() -> Result<()> {
             Ok(())
         }
         ServiceSlot::Running { .. } => Err(Error::AlreadyInitialized),
-        ServiceSlot::Stopping => Err(Error::Busy),
+        ServiceSlot::Stopping { .. } => Err(Error::Busy),
     })
 }
 
@@ -485,7 +568,7 @@ pub fn shutdown() -> Result<()> {
     let has_worker = timer_control::with_slot(|slot| match slot {
         ServiceSlot::Running { worker, .. } => Ok(worker.is_some()),
         ServiceSlot::Stopped => Ok(false),
-        ServiceSlot::Stopping => Err(Error::Busy),
+        ServiceSlot::Stopping { .. } => Err(Error::Busy),
     })?;
 
     if has_worker {
@@ -503,7 +586,7 @@ pub fn shutdown() -> Result<()> {
     let (has_worker, service) = timer_control::with_slot(|slot| {
         let (has_worker, service) = match slot {
             ServiceSlot::Stopped => return Err(Error::NotInitialized),
-            ServiceSlot::Stopping => return Err(Error::Busy),
+            ServiceSlot::Stopping { .. } => return Err(Error::Busy),
             ServiceSlot::Running { service, worker } => (worker.is_some(), Arc::clone(service)),
         };
 
@@ -538,7 +621,9 @@ pub fn shutdown() -> Result<()> {
         })?;
 
         // Transition to Stopping.
-        *slot = ServiceSlot::Stopping;
+        *slot = ServiceSlot::Stopping {
+            service: Arc::clone(&service),
+        };
 
         Ok((has_worker, service))
     })?;
@@ -548,6 +633,10 @@ pub fn shutdown() -> Result<()> {
     // is guaranteed to observe the flag and signal completion.  We wait
     // in finite chunks (never portMAX_DELAY) and retry on Timeout, so a
     // long-running in-flight callback cannot cause a spurious panic.
+    #[cfg(feature = "test-fixture")]
+    {
+        SHUTDOWN_WAITING.store(true, Ordering::SeqCst);
+    }
     if has_worker {
         let eg = service
             .completion_eg
@@ -572,10 +661,14 @@ pub fn shutdown() -> Result<()> {
     }
 
     // Phase 3: clean up.
+    #[cfg(feature = "test-fixture")]
+    {
+        SHUTDOWN_WAITING.store(false, Ordering::SeqCst);
+    }
     drop(service); // Arc::drop → TimerService::drop → delete resources
 
     timer_control::with_slot(|slot| match slot {
-        ServiceSlot::Stopping => {
+        ServiceSlot::Stopping { .. } => {
             *slot = ServiceSlot::Stopped;
             Ok(())
         }
@@ -641,7 +734,7 @@ pub fn ensure_worker() -> Result<()> {
             Ok(())
         }
         ServiceSlot::Stopped => Err(Error::NotInitialized),
-        ServiceSlot::Stopping => Err(Error::Busy),
+        ServiceSlot::Stopping { .. } => Err(Error::Busy),
     })
 }
 
@@ -656,6 +749,11 @@ pub fn register(
 ) -> Result<u64> {
     with_registry(|service, state| {
         let timer_state = TimerState::new(period, mode)?;
+
+        #[cfg(feature = "testkit")]
+        if FAIL_NEXT_REGISTRY_RESERVE.swap(false, Ordering::SeqCst) {
+            return Err(Error::OutOfMemory);
+        }
 
         state
             .timers

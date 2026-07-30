@@ -22,7 +22,12 @@ pub(crate) enum ServiceSlot {
         /// Lazy — `None` until first `start()`/`reset()`.
         worker: Option<osal_backend_freertos_sys::InternalTaskHandle>,
     },
-    Stopping,
+    Stopping {
+        /// The service is kept alive until the slot transitions to
+        /// Stopped.  Tests can query the completion EventGroup's
+        /// blocked count while the worker is shutting down.
+        service: Arc<TimerService>,
+    },
 }
 
 // ---------------------------------------------------------------------------
