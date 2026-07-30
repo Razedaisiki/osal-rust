@@ -26,6 +26,7 @@ pub(crate) enum ServiceSlot {
         /// The service is kept alive until the slot transitions to
         /// Stopped.  Tests can query the completion EventGroup's
         /// blocked count while the worker is shutting down.
+        #[allow(dead_code)]
         service: Arc<TimerService>,
     },
 }

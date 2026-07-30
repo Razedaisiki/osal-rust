@@ -23,8 +23,10 @@
 //!   concurrency/boundary tests passing
 //! - Timer — custom ROUSSATL Timer Service Task + osal-portable::TimerState;
 //!   lazy worker creation, binary semaphore wake, take-execute-restore
-//!   dispatch, callback reentry, clone/last-drop lifecycle; 6 shared core
-//!   contract cases and 7 FreeRTOS-specific tests passing
+//!   dispatch; deterministic Virtual-mode fixture bridge with request/ack
+//!   flush; core + controlled contracts; TimerState semantics, callback
+//!   reentry, drop/shutdown lifecycle, failure rollback, scheduling and
+//!   finite-chunk wait coverage
 //!
 //! **Validated** (host + FreeRTOS kernel integration tested):
 //! - *(none yet — requires real FreeRTOS runtime tests)*

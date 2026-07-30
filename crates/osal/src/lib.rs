@@ -128,7 +128,11 @@ pub mod prelude {
         feature = "backend-freertos"
     ))]
     pub use crate::backend::TaskBuilder;
-    #[cfg(any(feature = "backend-mock", feature = "backend-posix"))]
+    #[cfg(any(
+        feature = "backend-mock",
+        feature = "backend-posix",
+        feature = "backend-freertos"
+    ))]
     pub use crate::backend::Timer;
     pub use crate::runtime::{initialize, runtime_state, shutdown};
     pub use osal_api::error::{Error, Result};

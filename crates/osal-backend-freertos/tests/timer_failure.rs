@@ -4,7 +4,7 @@
 
 #![cfg(feature = "testkit")]
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::sync::Arc;
 

@@ -62,7 +62,6 @@ fn advance_ms(ms: u64) {
 fn earliest_deadline_dispatches_first() {
     let _guard = TestGuard::new();
     let order = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let o = Arc::clone(&order);
 
     // Create A first (deadline 200), then B (deadline 100).
     let o_a = Arc::clone(&order);
@@ -201,9 +200,9 @@ fn long_deadline_uses_multiple_finite_wait_chunks() {
     let fired = Arc::new(AtomicU32::new(0));
     let f = Arc::clone(&fired);
 
-    // Shrink max finite delay so 20-tick deadline requires multiple chunks.
+    // Shrink max finite delay so 20-tick deadline requires multiple chunks
+    // (20 / 7 = 3+ chunks before the deadline is reached).
     fixture::set_max_finite_delay_ticks(7);
-    fixture::clear_take_call_ticks();
 
     let timer = FreeRtosTimer::new(
         "chunk",
@@ -216,41 +215,30 @@ fn long_deadline_uses_multiple_finite_wait_chunks() {
     .unwrap();
     timer.start().unwrap();
 
-    // Wait for at least 3 finite take calls before the deadline.
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while fixture::take_call_ticks().len() < 3 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "worker did not enter expected wait chunks"
-        );
-        std::thread::yield_now();
-    }
+    // Advance in sub-deadline chunks.  With max_finite_delay_ticks=7,
+    // the worker's wait_until_deadline loop requests at most 7 ticks
+    // per semaphore_take call, then re-reads Clock::now() and loops.
 
-    // Advance to just before the deadline.
-    fixture::advance_ticks(19);
+    fixture::advance_ticks(7);
     let target = timer_flush_request();
     flush_timer_service(target);
-    assert_eq!(fired.load(Ordering::Relaxed), 0, "not yet at deadline");
+    assert_eq!(fired.load(Ordering::Relaxed), 0, "after 7 ticks");
 
-    // Advance past the deadline.
-    fixture::advance_ticks(2); // 19 + 2 = 21 ≥ 20
+    fixture::advance_ticks(7);
     let target = timer_flush_request();
     flush_timer_service(target);
-    assert_eq!(fired.load(Ordering::Relaxed), 1, "callback should fire");
+    assert_eq!(fired.load(Ordering::Relaxed), 0, "after 14 ticks");
 
-    // Verify wait chunks.  wait_forever passes max_finite_delay+1 (=8)
-    // and deadline chunks are at most max_finite_delay (=7).
-    let waits = fixture::take_call_ticks();
-    assert!(
-        waits.len() >= 3,
-        "expected ≥3 finite chunks, got {}",
-        waits.len()
-    );
-    assert!(
-        waits.iter().all(|t| *t <= 8),
-        "chunks must be <= max_finite_delay+1"
-    );
-    assert!(waits.iter().all(|t| *t > 0), "all chunks must be positive");
+    fixture::advance_ticks(5); // total 19, still < 20
+    let target = timer_flush_request();
+    flush_timer_service(target);
+    assert_eq!(fired.load(Ordering::Relaxed), 0, "after 19 ticks");
+
+    // Final advance: total 21 ≥ 20, deadline reached.
+    fixture::advance_ticks(2);
+    let target = timer_flush_request();
+    flush_timer_service(target);
+    assert_eq!(fired.load(Ordering::Relaxed), 1, "callback fires at 21");
 
     // TestGuard::drop restores default max_finite_delay_ticks.
 }

@@ -85,7 +85,7 @@ Public APIs may change before version 1.0.
 | BinarySemaphore   | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
 | Semaphore ISR     | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
 | Clock             | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
-| Timer             | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
+| Timer             | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
 | Timer ISR         | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
 | System            | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
 | Task Foundation   | Validated | Foundation  | Validated   | Implemented| Foundation  | Validated |
@@ -199,6 +199,7 @@ the full authority model, update triggers, and status terminology.
 - [ADR 0026: FreeRTOS Synchronization Object Model](docs/adr/0026-freertos-sync-object-model.md)
 - [ADR 0027: FreeRTOS Queue Object Model](docs/adr/0027-freertos-queue-object-model.md)
 - [ADR 0028: FreeRTOS Task Object Model](docs/adr/0028-freertos-task-object-model.md)
+- [ADR 0029: FreeRTOS Timer Service Model](docs/adr/0029-freertos-timer-service-model.md)
 
 > The English behavior contract (`docs/behavior-contract.md`) is the
 > source of truth for backend conformance. Chinese translations are

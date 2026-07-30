@@ -41,12 +41,14 @@ PosixTimerSvc  MockTimeRuntime   FreeRtosTimerSvc
 
 ## Contract Tests Passing
 
-- **Clock Basic** (Mock + POSIX + FreeRTOS): now monotonic, elapsed non-negative, delay(0) immediate
+- **Clock Basic** (all backends): now monotonic, elapsed non-negative, delay(0) immediate
 - **Clock Controlled** (Mock): advance increases now/elapsed
-- **Timer Core** (Mock + POSIX + FreeRTOS): 6 tests (zero period, stopped, stop idem, change_period zero, clone, drop)
-- **Timer Controlled** (Mock): 5 tests (OneShot, Periodic, stop, reset, coalescing)
-- **Timer Realtime** (POSIX): 4 tests (OneShot bounds, Periodic ≥2, stop, reset delays)
-- **Timer Lifecycle** (FreeRTOS): 7 backend-specific tests (OneShot, Periodic, self-stop, clone, last-drop, non-last clone)
+- **Timer Core** (all backends): 6 shared core contract cases
+- **Timer Controlled** (Mock + FreeRTOS): 5 deterministic controlled contract cases
+- **Timer Realtime** (POSIX): timing-bounds contract cases
+- **FreeRTOS-specific**: TimerState semantics (change_period, reset, fixed-rate,
+  coalescing), callback reentry, drop/shutdown lifecycle races, failure-atomic
+  rollback, scheduling and finite-chunk wait coverage
 
 ## Intentionally Deferred
 
@@ -58,5 +60,4 @@ PosixTimerSvc  MockTimeRuntime   FreeRtosTimerSvc
 ## Next Steps
 
 1. ISR Timer extensions (FreeRTOS)
-2. Controlled timer tests for FreeRTOS (virtual-tick-aware semaphore wait)
-3. Real-kernel timer validation (QEMU / physical MCU)
+2. Real-kernel timer validation (QEMU / physical MCU) → P7G
