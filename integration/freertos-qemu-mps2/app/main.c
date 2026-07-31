@@ -93,9 +93,9 @@ static void boot_task(void *context)
 
     console_write_line("OSAL_BOOT_END status=pass");
 
-    /* QEMU 4.2.1 does not reliably exit via semihosting on MPS2.
-     * Spin here — the run script uses a timeout and the verifier
-     * checks the UART output for the pass marker. */
+    qemu_exit_success();
+
+    /* If semihosting did not exit QEMU, spin as a safe fallback. */
     for (;;) {
         __asm__ volatile ("wfi");
     }

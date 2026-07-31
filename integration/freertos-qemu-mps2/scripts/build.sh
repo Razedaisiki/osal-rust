@@ -55,7 +55,15 @@ echo "  MPS2 reference: OK ($MPS2_DIR)"
 echo ""
 
 # ------------------------------------------------------------------
-# 3. Record tool versions
+# 3. Prepare build directory (clean old artifacts, then create fresh)
+# ------------------------------------------------------------------
+echo "--- Preparing build directory ---"
+make -C "$INTEG_DIR" clean
+mkdir -p "$BUILD_DIR"
+echo ""
+
+# ------------------------------------------------------------------
+# 4. Record tool versions (write before make all, after mkdir)
 # ------------------------------------------------------------------
 echo "--- Tool versions ---"
 arm-none-eabi-gcc --version | head -1 | tee "$BUILD_DIR/toolchain-gcc.txt"
@@ -63,10 +71,10 @@ qemu-system-arm --version | head -1 | tee "$BUILD_DIR/toolchain-qemu.txt"
 echo ""
 
 # ------------------------------------------------------------------
-# 4. Build
+# 5. Build
 # ------------------------------------------------------------------
 echo "--- Building firmware ---"
-make -C "$INTEG_DIR" clean all
+make -C "$INTEG_DIR" all
 echo ""
 
 # ------------------------------------------------------------------

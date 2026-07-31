@@ -1,7 +1,7 @@
 /* qemu_exit.c — ARM semihosting QEMU exit.
  *
- * Uses ARM semihosting SYS_EXIT (0x18) via the SVC 0xAB
- * instruction.  QEMU interprets:
+ * Uses ARM semihosting SYS_EXIT (0x18) via the BKPT 0xAB
+ * instruction (ARMv7-M Thumb semihosting).  QEMU interprets:
  *   r0 = operation (0x18 = SYS_EXIT)
  *   r1 = exit type:
  *        ADP_Stopped_ApplicationExit (0x20026) → exit(0)
@@ -26,7 +26,7 @@ static void semihosting_exit(int code)
     __asm__ volatile (
         "mov  r0, #0x18\n"
         "mov  r1, %[p]\n"
-        "svc  0xAB\n"
+        "bkpt #0xAB\n"
         :
         : [p] "r" (param)
         : "r0", "r1", "memory"

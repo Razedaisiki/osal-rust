@@ -1,8 +1,9 @@
 #!/bin/bash
 # run-qemu.sh — run the boot firmware on QEMU, capture output, verify.
 #
-# QEMU 4.2.1 does not reliably exit via semihosting on MPS2, so we use
-# a hard timeout.  The verifier parses the output log and checks markers.
+# Firmware exits via ARM semihosting BKPT 0xAB (SYS_EXIT).
+# QEMU must exit with code 0; timeout or crash = failure.
+# The verifier double-checks the UART boot protocol.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -49,18 +50,16 @@ cat "$LOG"
 echo "--- End QEMU output ---"
 echo ""
 
-# QEMU exit codes:
-#   0   = clean exit (semihosting worked)
-#   124 = timeout (expected on QEMU < 6.0 without semihosting exit)
-#   other = crash or error
-case $QEMU_EXIT in
-    0)   echo "QEMU exited normally (code 0)" ;;
-    124) echo "QEMU stopped by timeout (expected on QEMU 4.x)" ;;
-    *)   echo "QEMU exited with unexpected code: $QEMU_EXIT" ;;
-esac
+# QEMU must exit cleanly via semihosting.  Timeout or crash = failure.
+if [ "$QEMU_EXIT" -ne 0 ]; then
+    echo "ERROR: QEMU exited with code $QEMU_EXIT (expected 0)" >&2
+    exit 1
+fi
+
+echo "QEMU exited normally (code 0)"
 
 # ------------------------------------------------------------------
-# Verify
+# Verify UART boot protocol
 # ------------------------------------------------------------------
 echo ""
 python3 "$SCRIPT_DIR/verify-boot.py" "$LOG"
