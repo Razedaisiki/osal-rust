@@ -96,17 +96,23 @@ SIZE_FILE = $(BUILD)/freertos-qemu-mps2.size.txt
 # ------------------------------------------------------------------
 .PHONY: all clean verify
 
+.DEFAULT_GOAL := all
+
 # Ensure build directory exists before compiling.
 $(BUILD):
 	@mkdir -p $(BUILD)
 
+.PHONY: rust-staticlib
+
 all: $(ELF) size
 
-# Build the Rust staticlib before linking.
-$(RUST_LIB):
+# Always invoke cargo — let it decide whether rebuilding is needed.
+# Avoids silent stale-Rust-in-ELF when src/lib.rs changed across runs.
+rust-staticlib:
 	cd $(RUST_DIR) && $(CARGO) build
 
-$(ELF): $(PROJECT_OBJS) $(VENDOR_OBJS) $(RUST_LIB)
+$(ELF): $(PROJECT_OBJS) $(VENDOR_OBJS) rust-staticlib
+	@test -f "$(RUST_LIB)" || { echo "ERROR: Rust staticlib not found: $(RUST_LIB)" >&2; exit 1; }
 	$(CC) $(PROJECT_CFLAGS) $(LDFLAGS) $(PROJECT_OBJS) $(VENDOR_OBJS) $(RUST_LIB) -o $@
 
 # Project: object in build/, source in same-named subdirectory or .

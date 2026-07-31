@@ -14,13 +14,13 @@ pub extern "C" fn osal_rust_smoke_entry() -> i32 {
     0
 }
 
-/// Panic handler — required by `#![no_std]`.  On panic, return
-/// a distinct non-zero code so the C caller can report the failure.
+/// Panic handler — required by `#![no_std]`.
+///
+/// Step 3A has no UART or platform output from Rust.  A panic traps
+/// permanently here and is detected by the QEMU timeout.  A later
+/// step will route panic diagnostics through the platform console.
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // Signal failure to the C side by returning a non-zero code.
-    // We can't unwind (panic = "abort"), so this will trap.
-    // A future step can add UART output here.
     loop {
         core::hint::spin_loop();
     }
