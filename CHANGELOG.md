@@ -2,7 +2,20 @@
 
 ## P7G — FreeRTOS Real-Kernel Integration and Validation — In progress
 
-### Changed
+### Step 2 — C-only Kernel Boot on QEMU Cortex-M3
+
+- ADR 0030: real-kernel validation platform (QEMU mps2-an385, Cortex-M3,
+  FreeRTOS Kernel V11.3.0, ARM_CM3 port, heap_4.c).
+- `third_party/freertos-kernel/` — FreeRTOS Kernel V11.3.0 submodule.
+- `third_party/mps2-an385-reference/` — frozen vendor platform files
+  (startup_gcc.c, CMSIS headers, linker script) with full provenance.
+- `integration/freertos-qemu-mps2/` — independent C firmware with own
+  `main.c`, `FreeRTOSConfig.h`, UART console, boot protocol, QEMU runner.
+- C-only boot test validates scheduler start, SysTick tick advance,
+  `vTaskDelay` wake, and structured UART output.
+- GitHub Actions: `freertos-qemu-boot` job (build + QEMU + verify).
+
+### Step 1 — Integration Contract Neutralization
 
 - Integration identifiers neutralized: `ROUSSATL_FREERTOS_*` env vars →
   `OSAL_FREERTOS_*`; `ROUSSATL_FREERTOS_TASK_TLS_INDEX` →
@@ -11,19 +24,13 @@
   the previous default-to-slot-0 fallback is removed.
 - `configUSE_TIMERS` changed from required to optional; native fixture
   smoke build uses `configUSE_TIMERS=0`.
-- ADR 0021: configuration contract amended — neutral identifiers,
-  `configUSE_TIMERS` optional, full current C shim checks documented,
-  tick-width section rewritten implementation-neutral.
-- ADR 0022: FFI boundary amended — removed non-existent
-  `target_os = "freertos"` gate; fixture/native build selection
-  documented from actual implementation.
+- ADR 0021, 0022 amended: neutral identifiers, `configUSE_TIMERS` optional,
+  `target_os = "freertos"` gate removed, handle types / error mapping /
+  callback safety aligned with current implementation, `configMINIMAL_STACK_SIZE`
+  and TLS non-negative checks added.
 - ADR 0028: TLS macro renamed to `OSAL_FREERTOS_TASK_TLS_INDEX`.
-- CI: added negative-compile tests (missing TLS index, out-of-range TLS
-  index).
-- C shim: added `configMINIMAL_STACK_SIZE` presence and nonzero checks;
-  added TLS non-negative `_Static_assert`.
-- ADR 0022: aligned handle types, error mapping, and callback safety
-  descriptions with current implementation.
+- CI: added negative-compile tests (missing TLS, out-of-range TLS,
+  negative TLS, zero minimal stack) with diagnostic verification.
 - Task concurrency tests: RAII `TestGuard` with serialization mutex
   for safe parallel runs.
 

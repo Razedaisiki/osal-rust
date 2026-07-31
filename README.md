@@ -12,7 +12,7 @@ across different platforms by switching the backend.
 ## Project Status
 
 **Latest completed milestone: P7F — FreeRTOS Timer Foundation — Completed.**
-**Current milestone: P7G — FreeRTOS Real-Kernel Integration and Validation — In progress.**
+**Current milestone: P7G Step 2 — FreeRTOS C-only Kernel Boot on QEMU Cortex-M3 — In progress.**
 
 The POSIX backend fully implements the current non-deferred `osal-api`
 trait surface. The Mock backend implements the same surface with the
@@ -201,6 +201,7 @@ the full authority model, update triggers, and status terminology.
 - [ADR 0027: FreeRTOS Queue Object Model](docs/adr/0027-freertos-queue-object-model.md)
 - [ADR 0028: FreeRTOS Task Object Model](docs/adr/0028-freertos-task-object-model.md)
 - [ADR 0029: FreeRTOS Timer Service Model](docs/adr/0029-freertos-timer-service-model.md)
+- [ADR 0030: FreeRTOS Real-Kernel Validation Platform](docs/adr/0030-freertos-real-kernel-validation-platform.md)
 
 > The English behavior contract (`docs/behavior-contract.md`) is the
 > source of truth for backend conformance. Chinese translations are
