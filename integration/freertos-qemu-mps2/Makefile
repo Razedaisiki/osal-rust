@@ -73,30 +73,13 @@ LDFLAGS += -Wl,--gc-sections
 LDFLAGS += -Wl,-Map=$(BUILD)/freertos-qemu-mps2.map
 
 # ------------------------------------------------------------------
-# Project source files
+# Objects — all flat in build/
 # ------------------------------------------------------------------
-PROJECT_SRC  = app/main.c
-PROJECT_SRC += app/hooks.c
-PROJECT_SRC += bsp/console.c
-PROJECT_SRC += bsp/platform.c
-PROJECT_SRC += bsp/qemu_exit.c
-
-# ------------------------------------------------------------------
-# Third-party source files
-# ------------------------------------------------------------------
-VENDOR_SRC  = $(KERNEL)/tasks.c
-VENDOR_SRC += $(KERNEL)/list.c
-VENDOR_SRC += $(KERNEL)/queue.c
-VENDOR_SRC += $(KERNEL)/event_groups.c
-VENDOR_SRC += $(KERNEL)/portable/MemMang/heap_4.c
-VENDOR_SRC += $(KERNEL)/portable/GCC/ARM_CM3/port.c
-VENDOR_SRC += $(MPS2_REF)/startup_gcc.c
-
-# ------------------------------------------------------------------
-# Objects
-# ------------------------------------------------------------------
-PROJECT_OBJS = $(PROJECT_SRC:%.c=$(BUILD)/%.o)
-VENDOR_OBJS  = $(VENDOR_SRC:%.c=$(BUILD)/vendor/%.o)
+PROJECT_OBJS = $(BUILD)/main.o $(BUILD)/hooks.o $(BUILD)/console.o \
+               $(BUILD)/platform.o $(BUILD)/qemu_exit.o
+VENDOR_OBJS  = $(BUILD)/tasks.o $(BUILD)/list.o $(BUILD)/queue.o \
+               $(BUILD)/event_groups.o $(BUILD)/heap_4.o \
+               $(BUILD)/port.o $(BUILD)/startup_gcc.o
 
 ELF  = $(BUILD)/freertos-qemu-mps2.elf
 MAP  = $(BUILD)/freertos-qemu-mps2.map
@@ -107,18 +90,41 @@ SIZE_FILE = $(BUILD)/freertos-qemu-mps2.size.txt
 # ------------------------------------------------------------------
 .PHONY: all clean verify
 
+# Ensure build directory exists before compiling.
+$(BUILD):
+	@mkdir -p $(BUILD)
+
 all: $(ELF) size
 
 $(ELF): $(PROJECT_OBJS) $(VENDOR_OBJS)
-	@mkdir -p $(BUILD)
 	$(CC) $(PROJECT_CFLAGS) $(LDFLAGS) $^ -o $@
 
-$(BUILD)/%.o: %.c
-	@mkdir -p $(dir $@)
+# Project: object in build/, source in same-named subdirectory or .
+$(BUILD)/main.o: app/main.c | $(BUILD)
+	$(CC) $(PROJECT_CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/hooks.o: app/hooks.c | $(BUILD)
+	$(CC) $(PROJECT_CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/console.o: bsp/console.c | $(BUILD)
+	$(CC) $(PROJECT_CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/platform.o: bsp/platform.c | $(BUILD)
+	$(CC) $(PROJECT_CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/qemu_exit.o: bsp/qemu_exit.c | $(BUILD)
 	$(CC) $(PROJECT_CFLAGS) $(INCLUDES) -c $< -o $@
 
-$(BUILD)/vendor/%.o: %.c
-	@mkdir -p $(dir $@)
+# Vendor: object in build/, source in third_party/ via absolute include path
+$(BUILD)/tasks.o: $(KERNEL)/tasks.c | $(BUILD)
+	$(CC) $(VENDOR_CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/list.o: $(KERNEL)/list.c | $(BUILD)
+	$(CC) $(VENDOR_CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/queue.o: $(KERNEL)/queue.c | $(BUILD)
+	$(CC) $(VENDOR_CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/event_groups.o: $(KERNEL)/event_groups.c | $(BUILD)
+	$(CC) $(VENDOR_CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/heap_4.o: $(KERNEL)/portable/MemMang/heap_4.c | $(BUILD)
+	$(CC) $(VENDOR_CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/port.o: $(KERNEL)/portable/GCC/ARM_CM3/port.c | $(BUILD)
+	$(CC) $(VENDOR_CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/startup_gcc.o: $(MPS2_REF)/startup_gcc.c | $(BUILD)
 	$(CC) $(VENDOR_CFLAGS) $(INCLUDES) -c $< -o $@
 
 size: $(ELF)
