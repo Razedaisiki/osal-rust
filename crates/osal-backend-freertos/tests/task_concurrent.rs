@@ -70,7 +70,6 @@ fn join_no_wait_running_returns_timeout() {
         assert_eq!(task.join(Timeout::NoWait), Err(Error::Timeout));
         task.join(Timeout::Forever).expect("join");
     }
-
 }
 
 #[test]
@@ -93,7 +92,6 @@ fn join_zero_running_returns_timeout() {
         );
         task.join(Timeout::Forever).expect("join");
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +108,6 @@ fn forever_join_wakes_on_completion() {
 
         assert_eq!(task.join(Timeout::Forever), Ok(ExitCode::SUCCESS));
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +134,6 @@ fn finite_join_times_out() {
         );
         task.join(Timeout::Forever).expect("join");
     }
-
 }
 
 #[test]
@@ -160,7 +156,6 @@ fn finite_timeout_can_retry_forever() {
         );
         assert_eq!(task.join(Timeout::Forever), Ok(ExitCode::SUCCESS));
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +178,6 @@ fn repeated_join_returns_cached_result() {
             Ok(ExitCode::SUCCESS)
         );
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +223,6 @@ fn two_joiners_receive_same_result() {
         h2.join().expect("h2");
     }
     thread::sleep(Duration::from_millis(20));
-
 }
 
 #[test]
@@ -250,7 +243,6 @@ fn late_joiner_receives_cached_result() {
         assert_eq!(result, Ok(ExitCode::SUCCESS));
     }
     thread::sleep(Duration::from_millis(20));
-
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +285,6 @@ fn self_join_returns_busy() {
         task.join(Timeout::Forever).expect("join");
     }
     thread::sleep(Duration::from_millis(20));
-
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +311,6 @@ fn drop_handle_does_not_cancel_task() {
     }
     // Give the task trampoline time to drop its Arc and release the lease.
     thread::sleep(Duration::from_millis(20));
-
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +336,6 @@ fn finished_join_works_when_scheduler_not_started() {
     }
     // Give the task trampoline time to fully exit.
     thread::sleep(Duration::from_millis(20));
-
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +364,6 @@ fn blocking_join_not_started_returns_not_initialized() {
     }
     // The task may still be running — wait for it.
     thread::sleep(Duration::from_millis(200));
-
 }
 
 // ---------------------------------------------------------------------------
@@ -466,7 +454,6 @@ fn stack_bytes_rounds_up_to_words() {
             "stack_words={stack_words} should be >= 1 byte worth ({word_size} byte words)"
         );
     }
-
 }
 
 #[test]
@@ -488,7 +475,6 @@ fn stack_clamps_to_minimum_native_depth() {
             caps.minimal_stack_depth_words
         );
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -507,7 +493,6 @@ fn priority_reports_requested_value() {
         task.join(Timeout::Forever).expect("join");
         assert_eq!(task.priority(), 7);
     }
-
 }
 
 #[test]
@@ -529,7 +514,6 @@ fn native_priority_saturates() {
             caps.max_priorities
         );
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -543,7 +527,6 @@ fn zero_stack_rejected() {
         let result = FreeRtosTaskBuilder::new().stack_size(0).spawn(|| {});
         assert!(matches!(result, Err(Error::InvalidParameter)));
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -564,5 +547,4 @@ fn task_stress_50_cycles() {
             assert_eq!(task.join(Timeout::Forever), Ok(ExitCode::SUCCESS));
         }
     }
-
 }
