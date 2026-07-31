@@ -28,6 +28,9 @@
 static void boot_task(void *context);
 static void boot_fail(const char *reason);
 
+/* Rust staticlib entry (P7G Step 3A).                                */
+extern int32_t osal_rust_smoke_entry(void);
+
 /* ------------------------------------------------------------------ */
 /* main                                                               */
 /* ------------------------------------------------------------------ */
@@ -84,11 +87,17 @@ static void boot_task(void *context)
         boot_fail("tick-not-advanced");
     }
 
-    /* 3. Success. */
+    /* 3. Call into the Rust staticlib entry. */
+    if (osal_rust_smoke_entry() != 0) {
+        boot_fail("rust-entry");
+    }
+
+    /* 4. Success. */
     console_write_line(
         "OSAL_BOOT_PASS "
         "scheduler=running "
-        "tick_advanced=true"
+        "tick_advanced=true "
+        "rust_entry=true"
     );
 
     console_write_line("OSAL_BOOT_END status=pass");

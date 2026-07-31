@@ -201,6 +201,13 @@ jobs:
         with:
           submodules: true
 
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+
+      - name: Install Rust bare-metal target
+        run: rustup target add thumbv7m-none-eabi
+
       - name: Install tools
         run: |
           sudo apt-get update
@@ -210,6 +217,8 @@ jobs:
         run: |
           arm-none-eabi-gcc --version | head -1
           qemu-system-arm --version | head -1
+          cargo --version
+          rustup target list --installed | grep thumb
 
       - name: Build firmware
         run: integration/freertos-qemu-mps2/scripts/build.sh

@@ -9,6 +9,7 @@
 # Toolchain
 # ------------------------------------------------------------------
 CC      = arm-none-eabi-gcc
+CARGO   = cargo
 SIZE    = arm-none-eabi-size
 NM      = arm-none-eabi-nm
 QEMU    = qemu-system-arm
@@ -19,7 +20,12 @@ QEMU    = qemu-system-arm
 ROOT       = ../..
 KERNEL     = $(ROOT)/third_party/freertos-kernel
 MPS2_REF   = $(ROOT)/third_party/mps2-an385-reference
+RUST_DIR   = rust
 BUILD      = build
+
+# The Rust staticlib is built with cargo into its own target directory.
+RUST_TARGET_DIR = $(RUST_DIR)/target
+RUST_LIB        = $(RUST_TARGET_DIR)/thumbv7m-none-eabi/debug/libosal_integration_freertos_qemu_mps2.a
 
 # ------------------------------------------------------------------
 # Flags — project source (strict)
@@ -96,8 +102,12 @@ $(BUILD):
 
 all: $(ELF) size
 
-$(ELF): $(PROJECT_OBJS) $(VENDOR_OBJS)
-	$(CC) $(PROJECT_CFLAGS) $(LDFLAGS) $^ -o $@
+# Build the Rust staticlib before linking.
+$(RUST_LIB):
+	cd $(RUST_DIR) && $(CARGO) build
+
+$(ELF): $(PROJECT_OBJS) $(VENDOR_OBJS) $(RUST_LIB)
+	$(CC) $(PROJECT_CFLAGS) $(LDFLAGS) $(PROJECT_OBJS) $(VENDOR_OBJS) $(RUST_LIB) -o $@
 
 # Project: object in build/, source in same-named subdirectory or .
 $(BUILD)/main.o: app/main.c | $(BUILD)
@@ -132,6 +142,7 @@ size: $(ELF)
 
 clean:
 	rm -rf $(BUILD)
+	cd $(RUST_DIR) && $(CARGO) clean
 
 # ------------------------------------------------------------------
 # Symbol check — must always pass.
@@ -140,7 +151,8 @@ check-symbols: $(ELF)
 	@echo "=== Checking required symbols ==="
 	@for sym in Reset_Handler main vTaskStartScheduler \
 	            xPortPendSVHandler xPortSysTickHandler \
-	            vPortSVCHandler boot_task; do \
+	            vPortSVCHandler boot_task \
+	            osal_rust_smoke_entry; do \
 	    if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
 	        echo "  OK   $$sym"; \
 	    else \

@@ -4,6 +4,7 @@
 
 # Integration build artifacts
 integration/freertos-qemu-mps2/build/
+integration/freertos-qemu-mps2/rust/target/
 
 # IDE
 .vscode/

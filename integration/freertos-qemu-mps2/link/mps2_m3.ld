@@ -8,8 +8,8 @@
  *   License:    MIT
  *
  * Modifications from original:
- *   - None.  Rust output sections (.ARM.exidx, .ARM.extab, etc.) will
- *     be added in a future step when the Rust staticlib is integrated.
+ *   - Added .ARM.extab and .ARM.exidx sections (P7G Step 3A) for the
+ *     Rust thumbv7m-none-eabi staticlib.
  *
  * Original FreeRTOS copyright:
  *   FreeRTOS V202212.00
@@ -65,6 +65,22 @@ SECTIONS
         *(.bss)
         _ebss = .;
     } > RAM
+
+    /* Rust exception unwind tables — required when a staticlib is
+     * linked, even with panic = "abort".  The linker may keep them
+     * empty; the sections must still be declared to avoid orphan
+     * section errors. */
+    .ARM.extab :
+    {
+        *(.ARM.extab*)
+    } > FLASH
+
+    .ARM.exidx :
+    {
+        __exidx_start = .;
+        *(.ARM.exidx*)
+        __exidx_end = .;
+    } > FLASH
 
     .heap :
     {

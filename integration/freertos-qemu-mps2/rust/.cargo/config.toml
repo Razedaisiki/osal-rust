@@ -1,0 +1,10 @@
+[build]
+target = "thumbv7m-none-eabi"
+
+[target.thumbv7m-none-eabi]
+# arm-none-eabi-gcc is the linker for bare-metal Cortex-M3.
+rustflags = [
+    "-C", "linker=arm-none-eabi-gcc",
+    "-C", "link-arg=-specs=nano.specs",
+    "-C", "link-arg=-specs=nosys.specs",
+]

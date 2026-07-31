@@ -24,13 +24,21 @@ for tool in arm-none-eabi-gcc arm-none-eabi-size arm-none-eabi-nm; do
     echo "  $tool: $(command -v "$tool")"
 done
 
-for tool in qemu-system-arm; do
+for tool in qemu-system-arm cargo; do
     if ! command -v "$tool" &>/dev/null; then
         echo "ERROR: $tool not found in PATH" >&2
         exit 1
     fi
     echo "  $tool: $(command -v "$tool")"
 done
+
+# Verify the thumbv7m-none-eabi Rust target is installed.
+if ! rustup target list --installed | grep -q 'thumbv7m-none-eabi'; then
+    echo "ERROR: Rust target thumbv7m-none-eabi is not installed" >&2
+    echo "  Run: rustup target add thumbv7m-none-eabi" >&2
+    exit 1
+fi
+echo "  Rust target: thumbv7m-none-eabi (installed)"
 
 echo ""
 
