@@ -16,7 +16,8 @@ echo ""
 # 1. Check toolchain
 # ------------------------------------------------------------------
 echo "--- Checking toolchain ---"
-for tool in arm-none-eabi-gcc arm-none-eabi-size arm-none-eabi-nm; do
+for tool in arm-none-eabi-gcc arm-none-eabi-size arm-none-eabi-nm \
+           arm-none-eabi-ar arm-none-eabi-readelf; do
     if ! command -v "$tool" &>/dev/null; then
         echo "ERROR: $tool not found in PATH" >&2
         exit 1
@@ -102,3 +103,16 @@ echo ""
 echo "=== Build complete ==="
 echo "ELF: $BUILD_DIR/freertos-qemu-mps2.elf"
 echo "MAP: $BUILD_DIR/freertos-qemu-mps2.map"
+
+# ------------------------------------------------------------------
+# 7. ELF evidence (readelf)
+# ------------------------------------------------------------------
+echo ""
+echo "--- ELF evidence ---"
+ELF_PATH="$BUILD_DIR/freertos-qemu-mps2.elf"
+arm-none-eabi-readelf -h "$ELF_PATH" > "$BUILD_DIR/elf-header.txt"
+arm-none-eabi-readelf -S "$ELF_PATH" > "$BUILD_DIR/elf-sections.txt"
+arm-none-eabi-readelf -l "$ELF_PATH" > "$BUILD_DIR/elf-segments.txt"
+echo "  elf-header.txt"
+echo "  elf-sections.txt"
+echo "  elf-segments.txt"

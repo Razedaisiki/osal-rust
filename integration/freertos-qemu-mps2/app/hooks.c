@@ -47,30 +47,6 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask,
 /* configASSERT — platform-level assertion failure.                   */
 /* ------------------------------------------------------------------ */
 
-/* ------------------------------------------------------------------ */
-/* Timer interrupt stubs — required by the vendor vector table.       */
-/* The MPS2 QEMU machine has TIMER0 and TIMER1 peripherals; we do     */
-/* not use them.  FreeRTOS uses SysTick for the system tick.          */
-/* ------------------------------------------------------------------ */
-
-void TIMER0_Handler(void)
-{
-    for (;;) {
-        __asm__ volatile ("wfi");
-    }
-}
-
-void TIMER1_Handler(void)
-{
-    for (;;) {
-        __asm__ volatile ("wfi");
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/* configASSERT — platform-level assertion failure.                   */
-/* ------------------------------------------------------------------ */
-
 void platform_assert_failed(const char *file,
                             unsigned long line)
 {

@@ -82,10 +82,11 @@ LDFLAGS += -Wl,-Map=$(BUILD)/freertos-qemu-mps2.map
 # Objects — all flat in build/
 # ------------------------------------------------------------------
 PROJECT_OBJS = $(BUILD)/main.o $(BUILD)/hooks.o $(BUILD)/console.o \
-               $(BUILD)/platform.o $(BUILD)/qemu_exit.o
+               $(BUILD)/platform.o $(BUILD)/qemu_exit.o \
+               $(BUILD)/startup.o
 VENDOR_OBJS  = $(BUILD)/tasks.o $(BUILD)/list.o $(BUILD)/queue.o \
                $(BUILD)/event_groups.o $(BUILD)/heap_4.o \
-               $(BUILD)/port.o $(BUILD)/startup_gcc.o
+               $(BUILD)/port.o
 
 ELF  = $(BUILD)/freertos-qemu-mps2.elf
 MAP  = $(BUILD)/freertos-qemu-mps2.map
@@ -126,6 +127,8 @@ $(BUILD)/platform.o: bsp/platform.c | $(BUILD)
 	$(CC) $(PROJECT_CFLAGS) $(INCLUDES) -c $< -o $@
 $(BUILD)/qemu_exit.o: bsp/qemu_exit.c | $(BUILD)
 	$(CC) $(PROJECT_CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/startup.o: bsp/startup.c | $(BUILD)
+	$(CC) $(PROJECT_CFLAGS) $(INCLUDES) -c $< -o $@
 
 # Vendor: object in build/, source in third_party/ via absolute include path
 $(BUILD)/tasks.o: $(KERNEL)/tasks.c | $(BUILD)
@@ -140,9 +143,6 @@ $(BUILD)/heap_4.o: $(KERNEL)/portable/MemMang/heap_4.c | $(BUILD)
 	$(CC) $(VENDOR_CFLAGS) $(INCLUDES) -c $< -o $@
 $(BUILD)/port.o: $(KERNEL)/portable/GCC/ARM_CM3/port.c | $(BUILD)
 	$(CC) $(VENDOR_CFLAGS) $(INCLUDES) -c $< -o $@
-$(BUILD)/startup_gcc.o: $(MPS2_REF)/startup_gcc.c | $(BUILD)
-	$(CC) $(VENDOR_CFLAGS) $(INCLUDES) -c $< -o $@
-
 size: $(ELF)
 	$(SIZE) $(ELF) | tee $(SIZE_FILE)
 
@@ -153,7 +153,7 @@ clean:
 # ------------------------------------------------------------------
 # Symbol check — must always pass.
 # ------------------------------------------------------------------
-check-symbols: $(ELF)
+check-symbols:
 	@echo "=== Checking required symbols ==="
 	@for sym in Reset_Handler main vTaskStartScheduler \
 	            xPortPendSVHandler xPortSysTickHandler \
@@ -168,6 +168,14 @@ check-symbols: $(ELF)
 	@for sym in main_blinky main_full; do \
 	    if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
 	        echo "  UNEXPECTED $$sym"; exit 1; \
+	    fi; \
+	done
+	@echo "=== Linker script symbols ==="
+	@for sym in _sidata _sdata _edata _sbss _ebss; do \
+	    if $(NM) $(ELF) | grep -q " $$sym$$"; then \
+	        echo "  OK   $$sym"; \
+	    else \
+	        echo "  MISS $$sym"; exit 1; \
 	    fi; \
 	done
 	@echo "=== Symbol check passed ==="

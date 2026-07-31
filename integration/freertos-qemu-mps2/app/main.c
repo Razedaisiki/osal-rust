@@ -23,10 +23,17 @@
 #define BOOT_TASK_PRIORITY     (configMAX_PRIORITIES - 1)
 
 /* ------------------------------------------------------------------ */
+/* Runtime-image sentinels — prove .data copy and .bss zero.         */
+/* ------------------------------------------------------------------ */
+static volatile uint32_t c_data_sentinel = 0x13579BDFU;
+static volatile uint32_t c_bss_sentinel;
+
+/* ------------------------------------------------------------------ */
 /* Forward declarations.                                              */
 /* ------------------------------------------------------------------ */
 static void boot_task(void *context);
 static void boot_fail(const char *reason);
+static void boot_fail_u32(const char *reason, uint32_t code);
 
 /* Rust staticlib entry (P7G Step 3A).                                */
 extern int32_t osal_rust_smoke_entry(void);
@@ -40,6 +47,18 @@ int main(void)
     console_init();
 
     console_write_line("OSAL_BOOT_BEGIN");
+
+    /* Validate runtime image initialisation before the scheduler.     */
+    if (c_data_sentinel != 0x13579BDFU) {
+        boot_fail("c-data-init");
+    }
+    if (c_bss_sentinel != 0U) {
+        boot_fail("c-bss-init");
+    }
+    c_bss_sentinel = 0xA5A5A5A5U;
+    if (c_bss_sentinel != 0xA5A5A5A5U) {
+        boot_fail("c-bss-write");
+    }
 
     BaseType_t created = xTaskCreate(
         boot_task,
@@ -88,8 +107,9 @@ static void boot_task(void *context)
     }
 
     /* 3. Call into the Rust staticlib entry. */
-    if (osal_rust_smoke_entry() != 0) {
-        boot_fail("rust-entry");
+    int32_t rust_code = osal_rust_smoke_entry();
+    if (rust_code != 0) {
+        boot_fail_u32("rust-entry", (uint32_t)rust_code);
     }
 
     /* 4. Success. */
@@ -97,6 +117,7 @@ static void boot_task(void *context)
         "OSAL_BOOT_PASS "
         "scheduler=running "
         "tick_advanced=true "
+        "runtime_image=true "
         "rust_entry=true"
     );
 
@@ -117,5 +138,38 @@ static void boot_fail(const char *reason)
 {
     console_write("OSAL_BOOT_FAIL reason=");
     console_write_line(reason);
+    qemu_exit_failure();
+}
+
+/* ------------------------------------------------------------------ */
+/* Write a u32 in decimal — no printf, no malloc.                     */
+/* ------------------------------------------------------------------ */
+static void console_write_u32(uint32_t value)
+{
+    char buf[12];
+    int  i = 0;
+
+    if (value == 0U) {
+        console_write_byte('0');
+        return;
+    }
+
+    while (value > 0U && i < (int)(sizeof(buf) - 1)) {
+        buf[i++] = (char)('0' + (value % 10U));
+        value /= 10U;
+    }
+
+    while (i > 0) {
+        console_write_byte(buf[--i]);
+    }
+}
+
+static void boot_fail_u32(const char *reason, uint32_t code)
+{
+    console_write("OSAL_BOOT_FAIL reason=");
+    console_write(reason);
+    console_write(" code=");
+    console_write_u32(code);
+    console_write_line("");
     qemu_exit_failure();
 }

@@ -8,8 +8,11 @@
  *   License:    MIT
  *
  * Modifications from original:
- *   - Added .ARM.extab and .ARM.exidx sections (P7G Step 3A) for the
- *     Rust thumbv7m-none-eabi staticlib.
+ *   - .text* / .rodata* wildcards for Rust staticlib sections
+ *   - .data* / .rel.ro* wildcards with FLASH LMA and RAM VMA
+ *   - .bss* / COMMON wildcards with NOLOAD
+ *   - .ARM.extab / .ARM.exidx for Rust unwind tables
+ *   - Linker assertions for section bounds
  *
  * Original FreeRTOS copyright:
  *   FreeRTOS V202212.00
@@ -40,36 +43,49 @@ SECTIONS
 
     .text :
     {
+        . = ALIGN(4);
         *(.text)
+        *(.text*)
+        *(.rodata)
         *(.rodata*)
         *(.constdata*)
-        _etext = .;
-        _sidata = .;
+        . = ALIGN(4);
     } > FLASH
 
+    _etext = .;
+
+    /* .data: runtime address in RAM, load address in FLASH.           */
     .data :
     {
         . = ALIGN(8);
-        _data = .;
         _sdata = .;
-        *(vtable)
-        *(.data)
-        _edata = .;
-    } > RAM
 
-    .bss :
+        *(.data)
+        *(.data*)
+        *(.data.rel.ro*)
+        *(vtable)
+
+        . = ALIGN(8);
+        _edata = .;
+    } > RAM AT > FLASH
+
+    _sidata = LOADADDR(.data);
+
+    /* .bss: zero-initialised at runtime by Reset_Handler.             */
+    .bss (NOLOAD) :
     {
         . = ALIGN(8);
-        _bss = .;
         _sbss = .;
+
         *(.bss)
+        *(.bss*)
+        *(COMMON)
+
+        . = ALIGN(8);
         _ebss = .;
     } > RAM
 
-    /* Rust exception unwind tables — required when a staticlib is
-     * linked, even with panic = "abort".  The linker may keep them
-     * empty; the sections must still be declared to avoid orphan
-     * section errors. */
+    /* Rust exception unwind tables.                                   */
     .ARM.extab :
     {
         *(.ARM.extab*)
@@ -92,11 +108,19 @@ SECTIONS
         _heap_top = .;
         . = . + _Min_Stack_Size;
         . = ALIGN(8);
-    } >RAM
+    } > RAM
 
     __StackTop = ORIGIN(RAM) + LENGTH(RAM);
     __StackLimit = __StackTop - _Min_Stack_Size;
     PROVIDE(__stack = __StackTop);
 
+    /* ------------------------------------------------------------------ */
+    /* Assertions                                                         */
+    /* ------------------------------------------------------------------ */
+    ASSERT(_sidata >= ORIGIN(FLASH), ".data load address is not in FLASH")
+    ASSERT(_sdata >= ORIGIN(RAM),   ".data runtime address is not in RAM")
+    ASSERT(_edata <= ORIGIN(RAM) + LENGTH(RAM), ".data exceeds RAM")
+    ASSERT(_sbss >= ORIGIN(RAM),    ".bss runtime address is not in RAM")
+    ASSERT(_ebss <= ORIGIN(RAM) + LENGTH(RAM), ".bss exceeds RAM")
     ASSERT(__StackLimit >= _heap_top, "region RAM overflowed with stack")
 }

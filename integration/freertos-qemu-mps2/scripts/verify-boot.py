@@ -18,10 +18,11 @@ MARKER_FAIL  = "OSAL_BOOT_FAIL"
 MARKER_FATAL = "OSAL_BOOT_FATAL"
 
 # Field expected within the PASS marker.
-FIELD_SCHEDULER  = "scheduler=running"
-FIELD_TICK       = "tick_advanced=true"
-FIELD_RUST_ENTRY = "rust_entry=true"
-FIELD_STATUS     = "status=pass"
+FIELD_SCHEDULER      = "scheduler=running"
+FIELD_TICK           = "tick_advanced=true"
+FIELD_RUNTIME_IMAGE  = "runtime_image=true"
+FIELD_RUST_ENTRY     = "rust_entry=true"
+FIELD_STATUS         = "status=pass"
 
 
 def verify(log_path: str) -> int:
@@ -91,6 +92,10 @@ def verify(log_path: str) -> int:
         if FIELD_TICK not in pass_line:
             errors.append(
                 f"{MARKER_PASS} missing '{FIELD_TICK}': {pass_line}"
+            )
+        if FIELD_RUNTIME_IMAGE not in pass_line:
+            errors.append(
+                f"{MARKER_PASS} missing '{FIELD_RUNTIME_IMAGE}': {pass_line}"
             )
         if FIELD_RUST_ENTRY not in pass_line:
             errors.append(
