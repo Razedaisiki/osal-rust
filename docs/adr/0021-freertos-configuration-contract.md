@@ -65,15 +65,16 @@ OSAL Task identity system:
 #define OSAL_FREERTOS_TASK_TLS_INDEX  0   // (example)
 ```
 
-and satisfy:
+and satisfy both:
 
 ```c
+OSAL_FREERTOS_TASK_TLS_INDEX >= 0
 configNUM_THREAD_LOCAL_STORAGE_POINTERS > OSAL_FREERTOS_TASK_TLS_INDEX
 ```
 
-The C shim emits `#error` if the macro is missing. A `_Static_assert`
-catches out-of-range values at C compile time. There is no default
-slot — the application must choose.
+The C shim emits `#error` if the macro is missing. Two `_Static_assert`
+directives catch negative values and upper-bound violations at C compile
+time. There is no default slot — the application must choose.
 
 ### 4. Native FreeRTOS timers are optional
 

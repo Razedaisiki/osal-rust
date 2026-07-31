@@ -35,16 +35,20 @@ osal-backend-freertos           ← safe Rust, uses -sys types only
 
 ### 2. Opaque handle types
 
-FreeRTOS native handles are exposed as opaque pointers:
+FreeRTOS native handles are exposed as owned, opaque wrapper types
+in the `-sys` crate:
 
 ```rust
 // In osal-backend-freertos-sys
-pub type TaskHandle = *mut core::ffi::c_void;
-pub type QueueHandle = *mut core::ffi::c_void;
-pub type SemaphoreHandle = *mut core::ffi::c_void;
-pub type TimerHandle = *mut core::ffi::c_void;
-pub type EventGroupHandle = *mut core::ffi::c_void;
+pub struct MutexHandle(NonNull<c_void>);       // !Copy, Drop deletes
+pub struct SemaphoreHandle(NonNull<c_void>);   // !Copy, Drop deletes
+pub struct EventGroupHandle(NonNull<c_void>);  // !Copy, Drop deletes
 ```
+
+These wrappers own the native resource and delete it on drop.
+Raw pointer types (`*mut c_void`) are used only for transient
+references (e.g. the native task handle returned by
+`xTaskGetCurrentTaskHandle`).
 
 The Rust backend **MUST NOT**:
 
@@ -67,37 +71,43 @@ The C shim (`osal_freertos_shim.c` + `osal_freertos_shim.h`):
 
 ### 4. Callback safety
 
-Timer callbacks and task entry points cross the C↔Rust boundary:
+Task entry points cross the C↔Rust boundary:
 
-- C→Rust callbacks use `extern "C"` trampolines in the backend
+- C→Rust task trampolines use `extern "C"` functions in the backend
   crate (not in `-sys`).
-- Callbacks **MUST NOT** unwind (panic across FFI is UB).
+- Trampolines **MUST NOT** unwind (panic across FFI is UB).
   The backend uses `panic = "abort"` (workspace default).
-- Callback context pointers are passed as `*mut c_void` and
+- Task context pointers are passed as `*mut c_void` and
   reconstructed via `Box::from_raw` in the trampoline.
-- The trampoline owns the context pointer and is responsible for
-  either consuming it (task entry, one-shot callback) or
-  preserving it (periodic timer callback).
+- The trampoline owns the context pointer and consumes it after the
+  user entry function returns.
 
-### 5. Native error code mapping
+Timer callbacks are pure Rust — the Timer Service Task dispatches
+them within the backend crate. They do not cross the C FFI boundary.
+
+### 5. Native status code mapping
 
 FreeRTOS returns `BaseType_t` / `pdPASS` / `pdFAIL` or
 `pdTRUE` / `pdFALSE` from most APIs. The `-sys` crate translates
-these to `Result<(), FreeRtosError>` where:
+these to per-operation status enums:
 
 ```rust
-enum FreeRtosError {
-    Timeout,        // pdFALSE from xQueueReceive with timeout
-    QueueFull,      // errQUEUE_FULL
-    NotFound,       // invalid handle
-    OutOfMemory,    // NULL from pvPortMalloc
-    InvalidParameter,
-    Internal(u32),  // unexpected / unhandled error code
-}
+pub enum TakeStatus   { Acquired, Timeout, Invalid }
+pub enum GiveStatus   { Ok, Full, Invalid }
+pub enum TaskCreateStatus { Ok, OutOfMemory, Invalid }
+pub enum DelayStatus  { Ok, InvalidTicks, SchedulerStopped }
+pub enum EventGroupStatus { Ok, Timeout, Invalid }
 ```
 
-The backend crate maps `FreeRtosError` to `osal_api::Error` with
-semantic equivalence to the POSIX backend's error mapping.
+The C shim returns `uint32_t` status codes; the `-sys` crate
+maps each to the appropriate enum. The backend crate maps these
+status enums to `osal_api::Error` with semantic equivalence to
+the POSIX backend's error mapping.
+
+The Queue and Timer subsystems are self-built Rust models
+(ByteQueue + native mutex, Timer Service Task). They map their
+own internal state to `osal_api::Error` directly — they do not
+go through the C shim for error translation.
 
 ### 6. Build selection: fixture vs native
 

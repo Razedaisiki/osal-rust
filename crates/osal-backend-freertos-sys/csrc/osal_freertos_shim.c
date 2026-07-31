@@ -65,6 +65,12 @@ _Static_assert(configMAX_PRIORITIES > 0,
 _Static_assert(configMAX_TASK_NAME_LEN > 0,
                "configMAX_TASK_NAME_LEN must be greater than zero");
 
+#ifndef configMINIMAL_STACK_SIZE
+#error "FreeRTOSConfig.h must define configMINIMAL_STACK_SIZE"
+#endif
+_Static_assert(configMINIMAL_STACK_SIZE > 0,
+               "configMINIMAL_STACK_SIZE must be greater than zero");
+
 // P7B: single-core only (ADR 0024 §5)
 #ifndef configNUMBER_OF_CORES
 #error "FreeRTOSConfig.h must define configNUMBER_OF_CORES"
@@ -96,6 +102,10 @@ _Static_assert(configNUMBER_OF_CORES == 1,
 #ifndef configNUM_THREAD_LOCAL_STORAGE_POINTERS
 #error "FreeRTOSConfig.h must define configNUM_THREAD_LOCAL_STORAGE_POINTERS"
 #endif
+_Static_assert(
+    OSAL_FREERTOS_TASK_TLS_INDEX >= 0,
+    "OSAL_FREERTOS_TASK_TLS_INDEX must be non-negative"
+);
 _Static_assert(
     configNUM_THREAD_LOCAL_STORAGE_POINTERS > OSAL_FREERTOS_TASK_TLS_INDEX,
     "OSAL_FREERTOS_TASK_TLS_INDEX exceeds configNUM_THREAD_LOCAL_STORAGE_POINTERS"

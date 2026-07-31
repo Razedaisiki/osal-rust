@@ -20,6 +20,12 @@
 - ADR 0028: TLS macro renamed to `OSAL_FREERTOS_TASK_TLS_INDEX`.
 - CI: added negative-compile tests (missing TLS index, out-of-range TLS
   index).
+- C shim: added `configMINIMAL_STACK_SIZE` presence and nonzero checks;
+  added TLS non-negative `_Static_assert`.
+- ADR 0022: aligned handle types, error mapping, and callback safety
+  descriptions with current implementation.
+- Task concurrency tests: RAII `TestGuard` with serialization mutex
+  for safe parallel runs.
 
 ## P7F — FreeRTOS Timer Foundation — Completed
 

@@ -73,24 +73,66 @@ jobs:
           OSAL_FREERTOS_PORT_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/port
           CARGO_TARGET_DIR: ${{ github.workspace }}/target-freertos-neg-missing-tls
         run: |
-          if cargo check -p osal --no-default-features --features backend-freertos 2>&1; then
+          OUT=$(cargo check -p osal --no-default-features --features backend-freertos 2>&1) && {
             echo "Expected build to fail when OSAL_FREERTOS_TASK_TLS_INDEX is missing"
             exit 1
-          fi
+          }
+          echo "$OUT" | grep -q 'must define OSAL_FREERTOS_TASK_TLS_INDEX' || {
+            echo "Missing TLS index: wrong diagnostic"
+            exit 1
+          }
           echo "Correctly failed (missing TLS index)"
 
-      - name: FreeRTOS native build (invalid TLS index)
+      - name: FreeRTOS native build (negative TLS index)
+        env:
+          OSAL_FREERTOS_KERNEL_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/kernel/include
+          OSAL_FREERTOS_CONFIG_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/config-negative-tls
+          OSAL_FREERTOS_PORT_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/port
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target-freertos-neg-negative-tls
+        run: |
+          OUT=$(cargo check -p osal --no-default-features --features backend-freertos 2>&1) && {
+            echo "Expected build to fail when OSAL_FREERTOS_TASK_TLS_INDEX is negative"
+            exit 1
+          }
+          echo "$OUT" | grep -q 'must be non-negative' || {
+            echo "Negative TLS index: wrong diagnostic"
+            exit 1
+          }
+          echo "Correctly failed (negative TLS index)"
+
+      - name: FreeRTOS native build (TLS index exceeds slots)
         env:
           OSAL_FREERTOS_KERNEL_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/kernel/include
           OSAL_FREERTOS_CONFIG_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/config-invalid-tls
           OSAL_FREERTOS_PORT_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/port
           CARGO_TARGET_DIR: ${{ github.workspace }}/target-freertos-neg-invalid-tls
         run: |
-          if cargo check -p osal --no-default-features --features backend-freertos 2>&1; then
+          OUT=$(cargo check -p osal --no-default-features --features backend-freertos 2>&1) && {
             echo "Expected build to fail when OSAL_FREERTOS_TASK_TLS_INDEX exceeds slots"
             exit 1
-          fi
-          echo "Correctly failed (invalid TLS index)"
+          }
+          echo "$OUT" | grep -q 'exceeds configNUM_THREAD_LOCAL_STORAGE_POINTERS' || {
+            echo "TLS index exceeds slots: wrong diagnostic"
+            exit 1
+          }
+          echo "Correctly failed (TLS index exceeds slots)"
+
+      - name: FreeRTOS native build (zero minimal stack)
+        env:
+          OSAL_FREERTOS_KERNEL_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/kernel/include
+          OSAL_FREERTOS_CONFIG_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/config-zero-minimal-stack
+          OSAL_FREERTOS_PORT_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/port
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target-freertos-neg-zero-minimal-stack
+        run: |
+          OUT=$(cargo check -p osal --no-default-features --features backend-freertos 2>&1) && {
+            echo "Expected build to fail when configMINIMAL_STACK_SIZE is zero"
+            exit 1
+          }
+          echo "$OUT" | grep -q 'configMINIMAL_STACK_SIZE must be greater than zero' || {
+            echo "Zero minimal stack: wrong diagnostic"
+            exit 1
+          }
+          echo "Correctly failed (zero minimal stack)"
 
       - name: No backend must fail
         run: |
