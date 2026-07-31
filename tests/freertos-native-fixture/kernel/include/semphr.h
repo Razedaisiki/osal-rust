@@ -1,4 +1,4 @@
-// Minimal semphr.h for ROUSSATL native C shim smoke build.
+// Minimal semphr.h for OSAL native C shim smoke build.
 // Declares the FreeRTOS semaphore API that osal_freertos_shim.c uses.
 
 #ifndef SEMPHR_H

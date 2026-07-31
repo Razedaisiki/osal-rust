@@ -11,7 +11,8 @@ across different platforms by switching the backend.
 
 ## Project Status
 
-**Latest milestone: P7F — FreeRTOS Timer Foundation — Completed.**
+**Latest completed milestone: P7F — FreeRTOS Timer Foundation — Completed.**
+**Current milestone: P7G — FreeRTOS Real-Kernel Integration and Validation — In progress.**
 
 The POSIX backend fully implements the current non-deferred `osal-api`
 trait surface. The Mock backend implements the same surface with the

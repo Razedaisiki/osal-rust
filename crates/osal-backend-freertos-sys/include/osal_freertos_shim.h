@@ -1,4 +1,4 @@
-// osal_freertos_shim.h — stable C ABI for ROUSSATL FreeRTOS backend
+// osal_freertos_shim.h — stable C ABI for OSAL FreeRTOS backend
 //
 // This header is the ONLY compilation unit that #includes FreeRTOS
 // headers.  All FreeRTOS interaction from Rust goes through the
@@ -29,7 +29,7 @@ typedef struct {
     uint32_t minimal_stack_depth_words;  // configMINIMAL_STACK_SIZE
     uint32_t max_stack_depth_words;      // max value of stack-depth type
     uint8_t  tls_pointer_slots;          // configNUM_THREAD_LOCAL_STORAGE_POINTERS
-    uint8_t  task_tls_index;             // ROUSSATL_FREERTOS_TASK_TLS_INDEX
+    uint8_t  task_tls_index;             // OSAL_FREERTOS_TASK_TLS_INDEX
     uint8_t  reserved[2];                // align to 32-bit boundary
 } osal_freertos_capability_t;
 

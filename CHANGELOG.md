@@ -1,5 +1,26 @@
 # Changelog
 
+## P7G — FreeRTOS Real-Kernel Integration and Validation — In progress
+
+### Changed
+
+- Integration identifiers neutralized: `ROUSSATL_FREERTOS_*` env vars →
+  `OSAL_FREERTOS_*`; `ROUSSATL_FREERTOS_TASK_TLS_INDEX` →
+  `OSAL_FREERTOS_TASK_TLS_INDEX`.
+- TLS slot is now explicitly required (compile-time `#error` if missing);
+  the previous default-to-slot-0 fallback is removed.
+- `configUSE_TIMERS` changed from required to optional; native fixture
+  smoke build uses `configUSE_TIMERS=0`.
+- ADR 0021: configuration contract amended — neutral identifiers,
+  `configUSE_TIMERS` optional, full current C shim checks documented,
+  tick-width section rewritten implementation-neutral.
+- ADR 0022: FFI boundary amended — removed non-existent
+  `target_os = "freertos"` gate; fixture/native build selection
+  documented from actual implementation.
+- ADR 0028: TLS macro renamed to `OSAL_FREERTOS_TASK_TLS_INDEX`.
+- CI: added negative-compile tests (missing TLS index, out-of-range TLS
+  index).
+
 ## P7F — FreeRTOS Timer Foundation — Completed
 
 Custom Timer Service Task architecture with osal-portable::TimerState.

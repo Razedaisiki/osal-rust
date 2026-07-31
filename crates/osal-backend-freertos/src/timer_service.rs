@@ -753,7 +753,7 @@ pub fn ensure_worker() -> Result<()> {
                 .cast_mut()
                 .cast::<c_void>();
 
-            let name = c"roussatl-timer".as_ptr();
+            let name = c"osal-timer".as_ptr();
             let handle = match unsafe {
                 sys::internal_task_create(timer_worker, name, stack_words as u32, raw, priority)
             } {

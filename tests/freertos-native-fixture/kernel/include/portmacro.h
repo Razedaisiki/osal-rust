@@ -1,4 +1,4 @@
-// Minimal portmacro.h for ROUSSATL native C shim smoke build.
+// Minimal portmacro.h for OSAL native C shim smoke build.
 // Provides the base types that a real FreeRTOS port would define.
 // Not a real port — only satisfies the compile-time requirements.
 

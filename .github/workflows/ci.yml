@@ -61,10 +61,36 @@ jobs:
 
       - name: FreeRTOS native facade smoke build
         env:
-          ROUSSATL_FREERTOS_KERNEL_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/kernel/include
-          ROUSSATL_FREERTOS_CONFIG_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/config
-          ROUSSATL_FREERTOS_PORT_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/port
+          OSAL_FREERTOS_KERNEL_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/kernel/include
+          OSAL_FREERTOS_CONFIG_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/config
+          OSAL_FREERTOS_PORT_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/port
         run: cargo check -p osal --no-default-features --features backend-freertos
+
+      - name: FreeRTOS native build (missing TLS index)
+        env:
+          OSAL_FREERTOS_KERNEL_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/kernel/include
+          OSAL_FREERTOS_CONFIG_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/config-missing-tls
+          OSAL_FREERTOS_PORT_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/port
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target-freertos-neg-missing-tls
+        run: |
+          if cargo check -p osal --no-default-features --features backend-freertos 2>&1; then
+            echo "Expected build to fail when OSAL_FREERTOS_TASK_TLS_INDEX is missing"
+            exit 1
+          fi
+          echo "Correctly failed (missing TLS index)"
+
+      - name: FreeRTOS native build (invalid TLS index)
+        env:
+          OSAL_FREERTOS_KERNEL_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/kernel/include
+          OSAL_FREERTOS_CONFIG_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/config-invalid-tls
+          OSAL_FREERTOS_PORT_INCLUDE: ${{ github.workspace }}/tests/freertos-native-fixture/port
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target-freertos-neg-invalid-tls
+        run: |
+          if cargo check -p osal --no-default-features --features backend-freertos 2>&1; then
+            echo "Expected build to fail when OSAL_FREERTOS_TASK_TLS_INDEX exceeds slots"
+            exit 1
+          fi
+          echo "Correctly failed (invalid TLS index)"
 
       - name: No backend must fail
         run: |

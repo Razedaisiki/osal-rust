@@ -1,6 +1,6 @@
 // Minimal FreeRTOSConfig.h for OSAL native C shim smoke build.
-// Not a real configuration — only satisfies the compile-time checks
-// in osal_freertos_shim.c.
+// Intentionally omits OSAL_FREERTOS_TASK_TLS_INDEX to verify the
+// compile-time #error in osal_freertos_shim.c.
 
 #define configSUPPORT_DYNAMIC_ALLOCATION 1
 #define INCLUDE_xTaskGetSchedulerState   1
@@ -13,5 +13,4 @@
 #define configUSE_MUTEXES                 1
 #define INCLUDE_vTaskDelete                1
 #define configNUM_THREAD_LOCAL_STORAGE_POINTERS 5
-#define OSAL_FREERTOS_TASK_TLS_INDEX      0
 #define configMINIMAL_STACK_SIZE           64

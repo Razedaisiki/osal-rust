@@ -1,4 +1,4 @@
-//! FreeRTOS timer — software timer backed by the ROUSSATL Timer Service.
+//! FreeRTOS timer — software timer backed by the OSAL Timer Service.
 //!
 //! Follows the POSIX/Mock pattern: `Arc<InnerHandle { id, RuntimeLease }>`.
 //! Callbacks live in the service registry, not in the handle.

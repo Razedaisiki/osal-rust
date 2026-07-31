@@ -1,4 +1,4 @@
-// osal_freertos_shim.c — C shim for ROUSSATL FreeRTOS backend
+// osal_freertos_shim.c — C shim for OSAL FreeRTOS backend
 //
 // This is the ONLY compilation unit that #includes FreeRTOS headers.
 // It exposes a stable C ABI that the Rust -sys crate calls.
@@ -42,7 +42,7 @@
 #error "OSAL FreeRTOS backend requires INCLUDE_vTaskDelay = 1"
 #endif
 
-// P7F: ROUSSATL provides its own Timer Service Task.  Native FreeRTOS
+// P7F: The OSAL backend provides its own Timer Service Task.  Native FreeRTOS
 // software timers (timers.c, xTimerCreate, the timer daemon task) are
 // not required.  configUSE_TIMERS is still probed for capability
 // reporting but may be 0.
@@ -77,7 +77,7 @@ _Static_assert(configNUMBER_OF_CORES == 1,
 #error "FreeRTOSConfig.h must define configUSE_MUTEXES"
 #endif
 #if configUSE_MUTEXES != 1
-#error "ROUSSATL FreeRTOS backend requires configUSE_MUTEXES == 1"
+#error "OSAL FreeRTOS backend requires configUSE_MUTEXES == 1"
 #endif
 
 // P7E: task delete support (ADR 0028 §5)
@@ -85,21 +85,20 @@ _Static_assert(configNUMBER_OF_CORES == 1,
 #error "FreeRTOSConfig.h must define INCLUDE_vTaskDelete"
 #endif
 #if INCLUDE_vTaskDelete != 1
-#error "ROUSSATL FreeRTOS backend requires INCLUDE_vTaskDelete == 1"
+#error "OSAL FreeRTOS backend requires INCLUDE_vTaskDelete == 1"
 #endif
 
 // P7E: TLS pointer slots (ADR 0028 §3)
-#ifndef ROUSSATL_FREERTOS_TASK_TLS_INDEX
-// Default to slot 0 if the application does not specify.
-#define ROUSSATL_FREERTOS_TASK_TLS_INDEX 0
+#ifndef OSAL_FREERTOS_TASK_TLS_INDEX
+#error "FreeRTOSConfig.h must define OSAL_FREERTOS_TASK_TLS_INDEX"
 #endif
 
 #ifndef configNUM_THREAD_LOCAL_STORAGE_POINTERS
 #error "FreeRTOSConfig.h must define configNUM_THREAD_LOCAL_STORAGE_POINTERS"
 #endif
 _Static_assert(
-    configNUM_THREAD_LOCAL_STORAGE_POINTERS > ROUSSATL_FREERTOS_TASK_TLS_INDEX,
-    "ROUSSATL_FREERTOS_TASK_TLS_INDEX exceeds configNUM_THREAD_LOCAL_STORAGE_POINTERS"
+    configNUM_THREAD_LOCAL_STORAGE_POINTERS > OSAL_FREERTOS_TASK_TLS_INDEX,
+    "OSAL_FREERTOS_TASK_TLS_INDEX exceeds configNUM_THREAD_LOCAL_STORAGE_POINTERS"
 );
 
 // ---------------------------------------------------------------------------
@@ -130,7 +129,7 @@ osal_freertos_capability_t osal_freertos_probe_capabilities(void) {
         }
     }
     cap.tls_pointer_slots         = (uint8_t) configNUM_THREAD_LOCAL_STORAGE_POINTERS;
-    cap.task_tls_index            = (uint8_t) ROUSSATL_FREERTOS_TASK_TLS_INDEX;
+    cap.task_tls_index            = (uint8_t) OSAL_FREERTOS_TASK_TLS_INDEX;
     cap.reserved[0] = 0;
     cap.reserved[1] = 0;
     return cap;
@@ -436,14 +435,14 @@ void osal_freertos_task_delete_current(void) {
 void osal_freertos_task_set_current_context(void *ptr) {
     vTaskSetThreadLocalStoragePointer(
         NULL,
-        ROUSSATL_FREERTOS_TASK_TLS_INDEX,
+        OSAL_FREERTOS_TASK_TLS_INDEX,
         ptr);
 }
 
 void *osal_freertos_task_get_current_context(void) {
     return pvTaskGetThreadLocalStoragePointer(
         NULL,
-        ROUSSATL_FREERTOS_TASK_TLS_INDEX);
+        OSAL_FREERTOS_TASK_TLS_INDEX);
 }
 
 osal_freertos_task_handle_t osal_freertos_task_get_current_handle(void) {

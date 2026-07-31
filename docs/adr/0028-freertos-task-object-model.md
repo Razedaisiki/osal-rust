@@ -3,6 +3,7 @@
 ## Status
 
 Accepted (2026-07-28)
+Amended: 2026-07-30 for P7G integration contract alignment (TLS macro renamed).
 
 ## Context
 
@@ -61,7 +62,7 @@ slots (`configNUM_THREAD_LOCAL_STORAGE_POINTERS`).
 A dedicated TLS index is reserved via a build-time constant:
 
 ```c
-#define ROUSSATL_FREERTOS_TASK_TLS_INDEX 0
+#define OSAL_FREERTOS_TASK_TLS_INDEX 0
 ```
 
 The C shim wraps the TLS access:
@@ -84,8 +85,8 @@ The TLS index must be validated at compile time:
 
 ```c
 _Static_assert(
-    configNUM_THREAD_LOCAL_STORAGE_POINTERS > ROUSSATL_FREERTOS_TASK_TLS_INDEX,
-    "ROUSSATL_FREERTOS_TASK_TLS_INDEX exceeds available TLS slots"
+    configNUM_THREAD_LOCAL_STORAGE_POINTERS > OSAL_FREERTOS_TASK_TLS_INDEX,
+    "OSAL_FREERTOS_TASK_TLS_INDEX exceeds available TLS slots"
 );
 ```
 
@@ -384,7 +385,7 @@ atomic or owned by FreeRTOS kernel objects).
 - Simplified state machine (no `Joining` state) reduces join code
   compared to POSIX.
 - TLS slot reservation must be explicit in application configuration
-  (`ROUSSATL_FREERTOS_TASK_TLS_INDEX`).
+  (`OSAL_FREERTOS_TASK_TLS_INDEX`).
 - No native task handle stored — `vTaskDelete` and other task-control
   APIs cannot be used on OSAL tasks from the backend.
 - `xTaskCreate` with `NULL` output handle means the backend has no

@@ -21,18 +21,32 @@ use osal_backend_freertos::runtime;
 use osal_backend_freertos::task::{FreeRtosTask, FreeRtosTaskBuilder};
 use osal_backend_freertos_sys::fixture;
 
-fn setup() {
-    let _ = runtime::shutdown();
-    fixture::reset();
-    runtime::initialize().expect("initialize");
+// Serialize task tests: they mutate shared static runtime/fixture state
+// and must not run concurrently.
+static TASK_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+struct TestGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
 
-fn teardown() {
-    match runtime::shutdown() {
-        Ok(()) | Err(Error::NotInitialized) => {}
-        Err(e) => panic!("test leaked runtime lease or object: {e:?}"),
+impl TestGuard {
+    fn new() -> Self {
+        let lock = TASK_TEST_LOCK.lock().expect("task test lock poisoned");
+        let _ = runtime::shutdown();
+        fixture::reset();
+        runtime::initialize().expect("initialize");
+        TestGuard { _lock: lock }
     }
-    fixture::reset();
+}
+
+impl Drop for TestGuard {
+    fn drop(&mut self) {
+        match runtime::shutdown() {
+            Ok(()) | Err(Error::NotInitialized) => {}
+            Err(e) => panic!("test leaked runtime lease or object: {e:?}"),
+        }
+        fixture::reset();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -41,7 +55,7 @@ fn teardown() {
 
 #[test]
 fn join_no_wait_running_returns_timeout() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let (tx, rx) = mpsc::channel();
         let task = FreeRtosTaskBuilder::new()
@@ -56,12 +70,12 @@ fn join_no_wait_running_returns_timeout() {
         assert_eq!(task.join(Timeout::NoWait), Err(Error::Timeout));
         task.join(Timeout::Forever).expect("join");
     }
-    teardown();
+
 }
 
 #[test]
 fn join_zero_running_returns_timeout() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let (tx, rx) = mpsc::channel();
         let task = FreeRtosTaskBuilder::new()
@@ -79,7 +93,7 @@ fn join_zero_running_returns_timeout() {
         );
         task.join(Timeout::Forever).expect("join");
     }
-    teardown();
+
 }
 
 // ---------------------------------------------------------------------------
@@ -88,7 +102,7 @@ fn join_zero_running_returns_timeout() {
 
 #[test]
 fn forever_join_wakes_on_completion() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let task = FreeRtosTaskBuilder::new()
             .spawn(|| { /* immediate return */ })
@@ -96,7 +110,7 @@ fn forever_join_wakes_on_completion() {
 
         assert_eq!(task.join(Timeout::Forever), Ok(ExitCode::SUCCESS));
     }
-    teardown();
+
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +119,7 @@ fn forever_join_wakes_on_completion() {
 
 #[test]
 fn finite_join_times_out() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let (tx, rx) = mpsc::channel();
         let task = FreeRtosTaskBuilder::new()
@@ -123,12 +137,12 @@ fn finite_join_times_out() {
         );
         task.join(Timeout::Forever).expect("join");
     }
-    teardown();
+
 }
 
 #[test]
 fn finite_timeout_can_retry_forever() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let (tx, rx) = mpsc::channel();
         let task = FreeRtosTaskBuilder::new()
@@ -146,7 +160,7 @@ fn finite_timeout_can_retry_forever() {
         );
         assert_eq!(task.join(Timeout::Forever), Ok(ExitCode::SUCCESS));
     }
-    teardown();
+
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +169,7 @@ fn finite_timeout_can_retry_forever() {
 
 #[test]
 fn repeated_join_returns_cached_result() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let task = FreeRtosTaskBuilder::new()
             .spawn(|| { /* immediate */ })
@@ -169,7 +183,7 @@ fn repeated_join_returns_cached_result() {
             Ok(ExitCode::SUCCESS)
         );
     }
-    teardown();
+
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +192,7 @@ fn repeated_join_returns_cached_result() {
 
 #[test]
 fn two_joiners_receive_same_result() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let task = FreeRtosTaskBuilder::new()
             .spawn(|| { /* immediate */ })
@@ -215,12 +229,12 @@ fn two_joiners_receive_same_result() {
         h2.join().expect("h2");
     }
     thread::sleep(Duration::from_millis(20));
-    teardown();
+
 }
 
 #[test]
 fn late_joiner_receives_cached_result() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let task = FreeRtosTaskBuilder::new()
             .spawn(|| { /* immediate */ })
@@ -236,7 +250,7 @@ fn late_joiner_receives_cached_result() {
         assert_eq!(result, Ok(ExitCode::SUCCESS));
     }
     thread::sleep(Duration::from_millis(20));
-    teardown();
+
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +259,7 @@ fn late_joiner_receives_cached_result() {
 
 #[test]
 fn self_join_returns_busy() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let slot: Arc<Mutex<Option<FreeRtosTask>>> = Arc::new(Mutex::new(None));
         let (result_tx, result_rx) = mpsc::channel();
@@ -279,7 +293,7 @@ fn self_join_returns_busy() {
         task.join(Timeout::Forever).expect("join");
     }
     thread::sleep(Duration::from_millis(20));
-    teardown();
+
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +302,7 @@ fn self_join_returns_busy() {
 
 #[test]
 fn drop_handle_does_not_cancel_task() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let (tx, rx) = mpsc::channel();
         let task = FreeRtosTaskBuilder::new()
@@ -306,7 +320,7 @@ fn drop_handle_does_not_cancel_task() {
     }
     // Give the task trampoline time to drop its Arc and release the lease.
     thread::sleep(Duration::from_millis(20));
-    teardown();
+
 }
 
 // ---------------------------------------------------------------------------
@@ -315,7 +329,7 @@ fn drop_handle_does_not_cancel_task() {
 
 #[test]
 fn finished_join_works_when_scheduler_not_started() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let task = FreeRtosTaskBuilder::new()
             .spawn(|| { /* immediate */ })
@@ -332,7 +346,7 @@ fn finished_join_works_when_scheduler_not_started() {
     }
     // Give the task trampoline time to fully exit.
     thread::sleep(Duration::from_millis(20));
-    teardown();
+
 }
 
 // ---------------------------------------------------------------------------
@@ -341,7 +355,7 @@ fn finished_join_works_when_scheduler_not_started() {
 
 #[test]
 fn blocking_join_not_started_returns_not_initialized() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let (tx, rx) = mpsc::channel();
         let task = FreeRtosTaskBuilder::new()
@@ -361,7 +375,7 @@ fn blocking_join_not_started_returns_not_initialized() {
     }
     // The task may still be running — wait for it.
     thread::sleep(Duration::from_millis(200));
-    teardown();
+
 }
 
 // ---------------------------------------------------------------------------
@@ -370,7 +384,7 @@ fn blocking_join_not_started_returns_not_initialized() {
 
 #[test]
 fn shutdown_busy_while_task_running() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let (tx, rx) = mpsc::channel();
         let task = FreeRtosTaskBuilder::new()
@@ -386,14 +400,14 @@ fn shutdown_busy_while_task_running() {
 
         drop(task);
     }
+    // Allow the task trampoline thread to fully exit before guard Drop
+    // attempts runtime shutdown.
     thread::sleep(Duration::from_millis(200));
-    assert!(runtime::shutdown().is_ok());
-    fixture::reset();
 }
 
 #[test]
 fn shutdown_busy_while_finished_handle_alive() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let task = FreeRtosTaskBuilder::new()
             .spawn(|| { /* immediate */ })
@@ -405,13 +419,11 @@ fn shutdown_busy_while_finished_handle_alive() {
     }
     // Allow the task trampoline thread to fully exit and release its Arcs.
     thread::sleep(Duration::from_millis(50));
-    assert!(runtime::shutdown().is_ok());
-    fixture::reset();
 }
 
 #[test]
 fn shutdown_succeeds_after_last_handle_drop() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let task = FreeRtosTaskBuilder::new()
             .spawn(|| { /* immediate */ })
@@ -419,8 +431,9 @@ fn shutdown_succeeds_after_last_handle_drop() {
         task.join(Timeout::Forever).expect("join");
         drop(task);
     }
-    assert!(runtime::shutdown().is_ok());
-    fixture::reset();
+    // Wait for trampoline thread to fully exit and release its
+    // RuntimeLease before guard Drop calls shutdown.
+    thread::sleep(Duration::from_millis(50));
 }
 
 // ---------------------------------------------------------------------------
@@ -429,7 +442,7 @@ fn shutdown_succeeds_after_last_handle_drop() {
 
 #[test]
 fn stack_bytes_rounds_up_to_words() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let caps = runtime::capabilities_for_test().expect("capabilities");
         let word_size = caps.stack_word_size as usize;
@@ -453,12 +466,12 @@ fn stack_bytes_rounds_up_to_words() {
             "stack_words={stack_words} should be >= 1 byte worth ({word_size} byte words)"
         );
     }
-    teardown();
+
 }
 
 #[test]
 fn stack_clamps_to_minimum_native_depth() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let task = FreeRtosTaskBuilder::new()
             .stack_size(1)
@@ -475,7 +488,7 @@ fn stack_clamps_to_minimum_native_depth() {
             caps.minimal_stack_depth_words
         );
     }
-    teardown();
+
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +497,7 @@ fn stack_clamps_to_minimum_native_depth() {
 
 #[test]
 fn priority_reports_requested_value() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let task = FreeRtosTaskBuilder::new()
             .priority(7)
@@ -494,12 +507,12 @@ fn priority_reports_requested_value() {
         task.join(Timeout::Forever).expect("join");
         assert_eq!(task.priority(), 7);
     }
-    teardown();
+
 }
 
 #[test]
 fn native_priority_saturates() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let task = FreeRtosTaskBuilder::new()
             .priority(100) // above configMAX_PRIORITIES=8
@@ -516,7 +529,7 @@ fn native_priority_saturates() {
             caps.max_priorities
         );
     }
-    teardown();
+
 }
 
 // ---------------------------------------------------------------------------
@@ -525,12 +538,12 @@ fn native_priority_saturates() {
 
 #[test]
 fn zero_stack_rejected() {
-    setup();
+    let _guard = TestGuard::new();
     {
         let result = FreeRtosTaskBuilder::new().stack_size(0).spawn(|| {});
         assert!(matches!(result, Err(Error::InvalidParameter)));
     }
-    teardown();
+
 }
 
 // ---------------------------------------------------------------------------
@@ -539,7 +552,7 @@ fn zero_stack_rejected() {
 
 #[test]
 fn task_stress_50_cycles() {
-    setup();
+    let _guard = TestGuard::new();
     {
         for i in 0..50 {
             let task = match FreeRtosTaskBuilder::new().spawn(move || {
@@ -551,5 +564,5 @@ fn task_stress_50_cycles() {
             assert_eq!(task.join(Timeout::Forever), Ok(ExitCode::SUCCESS));
         }
     }
-    teardown();
+
 }

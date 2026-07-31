@@ -1,4 +1,4 @@
-// Minimal event_groups.h for ROUSSATL native C shim smoke build.
+// Minimal event_groups.h for OSAL native C shim smoke build.
 // Provides the EventGroup types and declarations that the C shim uses.
 
 #ifndef EVENT_GROUPS_H

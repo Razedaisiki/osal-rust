@@ -21,7 +21,7 @@
 //! - Task — xTaskCreate + EventGroup completion + TLS identity, cached
 //!   concurrent join; 17 shared core contract cases and 21 FreeRTOS
 //!   concurrency/boundary tests passing
-//! - Timer — custom ROUSSATL Timer Service Task + osal-portable::TimerState;
+//! - Timer — custom OSAL Timer Service Task + osal-portable::TimerState;
 //!   lazy worker creation, binary semaphore wake, take-execute-restore
 //!   dispatch; deterministic Virtual-mode fixture bridge with request/ack
 //!   flush; core + controlled contracts; TimerState semantics, callback

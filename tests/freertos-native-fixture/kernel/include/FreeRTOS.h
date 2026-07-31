@@ -1,4 +1,4 @@
-// Minimal FreeRTOS.h for ROUSSATL native C shim smoke build.
+// Minimal FreeRTOS.h for OSAL native C shim smoke build.
 // Includes the config and port headers, then defines the base types
 // that the real FreeRTOS.h would provide.
 

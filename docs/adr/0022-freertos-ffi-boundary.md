@@ -3,6 +3,7 @@
 ## Status
 
 Accepted (2026-07-25)
+Amended: 2026-07-30 for P7G integration contract alignment.
 
 ## Context
 
@@ -98,18 +99,23 @@ enum FreeRtosError {
 The backend crate maps `FreeRtosError` to `osal_api::Error` with
 semantic equivalence to the POSIX backend's error mapping.
 
-### 6. Platform `cfg` gate
+### 6. Build selection: fixture vs native
 
-The `-sys` crate uses:
+The `-sys` crate uses a Cargo feature to select the build mode:
 
-```rust
-#[cfg(not(any(target_os = "freertos", feature = "test-fixture")))]
-compile_error!("osal-backend-freertos-sys requires a FreeRTOS target");
-```
+- **`test-fixture` enabled**: compiles against host Rust fixtures
+  (`sync_fixture.rs`, `task_fixture.rs`, etc.). No C shim is
+  compiled or linked. Used for deterministic host testing and CI.
+- **`test-fixture` disabled**: `build.rs` compiles the C shim
+  (`osal_freertos_shim.c`). All three `OSAL_FREERTOS_*` include
+  environment variables must be set. The final target and link
+  environment are determined by the application/integration
+  firmware build.
 
-For CI, a `test-fixture` feature gates a host-compilable mock of
-the capability probe that returns fixed values. The mock is
-**not** linked against a real FreeRTOS kernel.
+There is no `target_os = "freertos"` compile gate. The backend is
+designed to work with bare-metal targets (e.g. `thumbv7m-none-eabi`
+where `target_os = "none"`) as well as host-based testing. The
+feature flag is the sole build-mode selector.
 
 ## Consequences
 
@@ -122,3 +128,4 @@ the capability probe that returns fixed values. The mock is
 - Native error codes never appear in `osal-api`.
 - CI can build and test the backend crate without a real FreeRTOS
   kernel via the `test-fixture` feature.
+- No `target_os` gate blocks bare-metal Rust targets.

@@ -8,9 +8,9 @@
 //! Requires three environment variables pointing to the application's
 //! FreeRTOS source tree:
 //!
-//! - `ROUSSATL_FREERTOS_KERNEL_INCLUDE` — path to `FreeRTOS.h` etc.
-//! - `ROUSSATL_FREERTOS_CONFIG_INCLUDE` — path to `FreeRTOSConfig.h`
-//! - `ROUSSATL_FREERTOS_PORT_INCLUDE`  — path to `portmacro.h` etc.
+//! - `OSAL_FREERTOS_KERNEL_INCLUDE` — path to `FreeRTOS.h` etc.
+//! - `OSAL_FREERTOS_CONFIG_INCLUDE` — path to `FreeRTOSConfig.h`
+//! - `OSAL_FREERTOS_PORT_INCLUDE`  — path to `portmacro.h` etc.
 //!
 //! # Test fixture
 //!
@@ -30,16 +30,16 @@ fn main() {
 
     #[cfg(not(feature = "test-fixture"))]
     {
-        let kernel = env::var("ROUSSATL_FREERTOS_KERNEL_INCLUDE")
-            .expect("ROUSSATL_FREERTOS_KERNEL_INCLUDE must be set (path to FreeRTOS.h)");
-        let config = env::var("ROUSSATL_FREERTOS_CONFIG_INCLUDE")
-            .expect("ROUSSATL_FREERTOS_CONFIG_INCLUDE must be set (path to FreeRTOSConfig.h)");
-        let port = env::var("ROUSSATL_FREERTOS_PORT_INCLUDE")
-            .expect("ROUSSATL_FREERTOS_PORT_INCLUDE must be set (path to portmacro.h)");
+        let kernel = env::var("OSAL_FREERTOS_KERNEL_INCLUDE")
+            .expect("OSAL_FREERTOS_KERNEL_INCLUDE must be set (path to FreeRTOS.h)");
+        let config = env::var("OSAL_FREERTOS_CONFIG_INCLUDE")
+            .expect("OSAL_FREERTOS_CONFIG_INCLUDE must be set (path to FreeRTOSConfig.h)");
+        let port = env::var("OSAL_FREERTOS_PORT_INCLUDE")
+            .expect("OSAL_FREERTOS_PORT_INCLUDE must be set (path to portmacro.h)");
 
-        println!("cargo:rerun-if-env-changed=ROUSSATL_FREERTOS_KERNEL_INCLUDE");
-        println!("cargo:rerun-if-env-changed=ROUSSATL_FREERTOS_CONFIG_INCLUDE");
-        println!("cargo:rerun-if-env-changed=ROUSSATL_FREERTOS_PORT_INCLUDE");
+        println!("cargo:rerun-if-env-changed=OSAL_FREERTOS_KERNEL_INCLUDE");
+        println!("cargo:rerun-if-env-changed=OSAL_FREERTOS_CONFIG_INCLUDE");
+        println!("cargo:rerun-if-env-changed=OSAL_FREERTOS_PORT_INCLUDE");
 
         cc::Build::new()
             .file("csrc/osal_freertos_shim.c")

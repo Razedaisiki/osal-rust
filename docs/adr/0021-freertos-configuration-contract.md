@@ -3,6 +3,7 @@
 ## Status
 
 Accepted (2026-07-25)
+Amended: 2026-07-30 for P7G integration contract alignment.
 
 ## Context
 
@@ -17,14 +18,32 @@ or depend on the raw FreeRTOS headers from Rust.
 
 ## Decision
 
-### 1. Required configuration
+### 1. Native build environment variables
+
+Three environment variables point to the application's FreeRTOS
+source tree during the native build:
+
+```
+OSAL_FREERTOS_KERNEL_INCLUDE  — path to FreeRTOS.h etc.
+OSAL_FREERTOS_CONFIG_INCLUDE  — path to FreeRTOSConfig.h
+OSAL_FREERTOS_PORT_INCLUDE    — path to portmacro.h etc.
+```
+
+All three must be present. The build script (`build.rs`) fails with
+a clear error if any is missing. No legacy fallback names are
+supported.
+
+### 2. Required configuration macros
 
 The application **MUST** provide a `FreeRTOSConfig.h` with at least:
 
 ```c
 #define configSUPPORT_DYNAMIC_ALLOCATION 1
 #define INCLUDE_xTaskGetSchedulerState    1
-#define configUSE_TIMERS                  1
+#define INCLUDE_vTaskDelay                1
+#define configNUMBER_OF_CORES             1
+#define configUSE_MUTEXES                 1
+#define INCLUDE_vTaskDelete                1
 ```
 
 The following macros **MUST** be defined and have valid,
@@ -34,14 +53,40 @@ non-zero values:
 configTICK_RATE_HZ
 configMAX_PRIORITIES
 configMAX_TASK_NAME_LEN
+configMINIMAL_STACK_SIZE
 ```
 
-The C shim (`osal_freertos_shim.c`) reads these at compile time
-and exposes them through a stable C ABI. The Rust backend queries
-capabilities through the `-sys` crate, never by parsing
-`FreeRTOSConfig.h` directly.
+### 3. TLS slot requirement
 
-### 2. Capability probe
+The application **MUST** explicitly define the TLS slot used by the
+OSAL Task identity system:
+
+```c
+#define OSAL_FREERTOS_TASK_TLS_INDEX  0   // (example)
+```
+
+and satisfy:
+
+```c
+configNUM_THREAD_LOCAL_STORAGE_POINTERS > OSAL_FREERTOS_TASK_TLS_INDEX
+```
+
+The C shim emits `#error` if the macro is missing. A `_Static_assert`
+catches out-of-range values at C compile time. There is no default
+slot — the application must choose.
+
+### 4. Native FreeRTOS timers are optional
+
+`configUSE_TIMERS` is **not** required. The OSAL Timer subsystem
+uses its own Timer Service Task and does not depend on
+`timers.c`, `xTimerCreate`, or the native timer daemon.
+
+Legal configurations include `configUSE_TIMERS 0` or the macro
+being absent entirely (the capability probe reports
+`software_timers = 0` in both cases). Non-zero values are also
+valid — the backend simply does not use the native timer subsystem.
+
+### 5. Capability probe
 
 `osal-backend-freertos-sys` exposes a single probe function:
 
@@ -60,46 +105,52 @@ returning a struct with:
 | `stack_word_size` | `sizeof(StackType_t)` | `uint8_t` |
 | `dynamic_allocation` | `configSUPPORT_DYNAMIC_ALLOCATION` | `uint8_t` (bool) |
 | `software_timers` | `configUSE_TIMERS` | `uint8_t` (bool) |
-| `scheduler_state` | `xTaskGetSchedulerState()` | `uint32_t` |
+| `minimal_stack_depth_words` | `configMINIMAL_STACK_SIZE` | `uint32_t` |
+| `max_stack_depth_words` | max value of stack-depth type | `uint32_t` |
+| `tls_pointer_slots` | `configNUM_THREAD_LOCAL_STORAGE_POINTERS` | `uint8_t` |
+| `task_tls_index` | `OSAL_FREERTOS_TASK_TLS_INDEX` | `uint8_t` |
 
 The Rust backend calls this once during `initialize()` and caches
 the result. Public OSAL APIs never expose raw FreeRTOS macros.
 
-### 3. Missing configuration → compile error
+### 6. Missing configuration → compile error
 
 If a required macro is not defined or has an invalid value, the
 shim **MUST** emit a `#error` directive at C compile time:
 
 ```c
 #ifndef configSUPPORT_DYNAMIC_ALLOCATION
-#error "configSUPPORT_DYNAMIC_ALLOCATION must be defined"
+#error "FreeRTOSConfig.h must define configSUPPORT_DYNAMIC_ALLOCATION"
 #endif
 #if configSUPPORT_DYNAMIC_ALLOCATION != 1
-#error "configSUPPORT_DYNAMIC_ALLOCATION must be 1 for the current OSAL backend"
+#error "OSAL FreeRTOS backend requires configSUPPORT_DYNAMIC_ALLOCATION = 1"
 #endif
 ```
 
 The Rust backend does not perform runtime capability checks for
 required features — violations are caught at C compile time.
 
-### 4. Optional capabilities
+### 7. Optional capabilities
 
 Capabilities that may vary between valid configurations (e.g.
-`configUSE_16_BIT_TICKS`) are exposed through the capability struct
+`configUSE_TIMERS`) are exposed through the capability struct
 but do not cause compile errors. The Rust backend may degrade
 gracefully (e.g. narrower tick range) or return `Error::Unsupported`
 for features that require a specific configuration.
 
-### 5. Tick width
+### 8. Tick width
 
-The first supported configuration uses `TickType_t` = 32-bit
-(`configUSE_16_BIT_TICKS == 0`). The shim reports `tick_bits` from
-`sizeof(TickType_t)`. The Rust backend scales its internal
-arithmetic to the reported width.
+The backend probes `tick_bits` from `sizeof(TickType_t) * 8` at
+C compile time. The actual tick-width configuration macro depends
+on the locked FreeRTOS Kernel version (`configUSE_16_BIT_TICKS`
+for older kernels, `configTICK_TYPE_WIDTH_IN_BITS` for newer ones).
+The application must satisfy its Kernel version's own tick-width
+requirements; the backend's sole source of truth is
+`sizeof(TickType_t)`.
 
-16-bit and 64-bit `TickType_t` are **not** validated in the initial
-implementation but the probe field and conversion code are designed
-to accommodate them.
+P7G will validate 16-, 32-, and 64-bit `TickType_t` separately.
+The probe field and conversion code are designed to accommodate
+all widths.
 
 ## Consequences
 
@@ -111,3 +162,7 @@ to accommodate them.
 - Public OSAL APIs contain no FreeRTOS-specific types or macros.
 - Configuration changes require recompiling the C shim (and
   therefore the Rust `-sys` crate).
+- The TLS slot is explicitly reserved by the application — no
+  silent default that could conflict with application TLS usage.
+- Native FreeRTOS software timers are not required; the OSAL Timer
+  Service Task operates independently.

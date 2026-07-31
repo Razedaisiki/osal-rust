@@ -1,4 +1,4 @@
-// Minimal portmacro.h for ROUSSATL native C shim smoke build.
+// Minimal portmacro.h for OSAL native C shim smoke build.
 // Defines the base types FreeRTOS.h expects.
 
 #ifndef PORTMACRO_H

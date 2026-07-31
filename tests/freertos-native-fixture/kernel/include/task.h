@@ -1,4 +1,4 @@
-// Minimal task.h for ROUSSATL native C shim smoke build.
+// Minimal task.h for OSAL native C shim smoke build.
 // Provides the scheduler-state query that osal_freertos_shim.c uses.
 
 #ifndef TASK_H
