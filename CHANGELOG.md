@@ -1,21 +1,25 @@
 # Changelog
 
-## P7G — FreeRTOS Real-Kernel Integration and Validation — In progress
+## P7G — FreeRTOS Real-Kernel Integration and Validation
 
-### Step 2 — C-only Kernel Boot on QEMU Cortex-M3
+### Step 2 — C-only Kernel Boot on QEMU Cortex-M3 — Completed
 
 - ADR 0030: real-kernel validation platform (QEMU mps2-an385, Cortex-M3,
   FreeRTOS Kernel V11.3.0, ARM_CM3 port, heap_4.c).
-- `third_party/freertos-kernel/` — FreeRTOS Kernel V11.3.0 submodule.
+- `third_party/freertos-kernel/` — FreeRTOS Kernel V11.3.0 submodule
+  (9b777ae5c).
 - `third_party/mps2-an385-reference/` — frozen vendor platform files
   (startup_gcc.c, CMSIS headers, linker script) with full provenance.
 - `integration/freertos-qemu-mps2/` — independent C firmware with own
   `main.c`, `FreeRTOSConfig.h`, UART console, boot protocol, QEMU runner.
 - C-only boot test validates scheduler start, SysTick tick advance,
   `vTaskDelay` wake, and structured UART output.
-- GitHub Actions: `freertos-qemu-boot` job (build + QEMU + verify).
+- GitHub Actions: `freertos-qemu-boot` job (build + QEMU + verify; CI #98 green).
 
-### Step 1 — Integration Contract Neutralization
+**Verification scope:** Cortex-M3 QEMU, scheduler, SysTick, delay wake, UART protocol, semihosting exit.
+**Not yet verified:** Rust staticlib, C shim, heap-backed allocator, OSAL runtime smoke.  These are deferred to Step 3+.
+
+### Step 1 — Integration Contract Neutralization — Completed
 
 - Integration identifiers neutralized: `ROUSSATL_FREERTOS_*` env vars →
   `OSAL_FREERTOS_*`; `ROUSSATL_FREERTOS_TASK_TLS_INDEX` →
