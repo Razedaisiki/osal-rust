@@ -47,8 +47,30 @@
 - QEMU exit via `bkpt #0xAB` (ARMv7-M Thumb semihosting).
 - Host CI passes (0 failures).
 
-**Not yet verified:** heap-backed allocator, `osal::initialize()`,
-`RuntimeLease`, public OSAL objects — deferred to Step 3C.
+**Not yet verified:** managed-object contracts (Mutex, Semaphore, Queue,
+Task, Timer) on real kernel — deferred to Step 4.
+
+### Step 3C — FreeRTOS Allocator and Runtime Lifecycle — Completed
+
+- C shim: `osal_freertos_heap_alloc` / `osal_freertos_heap_dealloc`
+  wrapping `pvPortMalloc` / `vPortFree` (P7G Step 3C Commit 1).
+- Rust `GlobalAlloc`: over-allocation + header technique supporting
+  arbitrary alignment.  All arithmetic checked.  OOM returns null.
+- Allocator smoke: `Box<u32>`, `Box<Aligned64>` (align 64), `Arc`
+  clone/drop/strong_count, `Vec<u32>` growth 0..128.  Exact heap
+  recovery after all drops.
+- Facade integration: `osal` with `backend-freertos` feature.
+  Runtime lifecycle: 10 cases (initial state, pre-init rejection,
+  initialize, AlreadyInitialized, Mutex create/lock/write/unlock,
+  Busy shutdown, drop→shutdown, NotInitialized, reinitialize).
+  8× init→mutex→shutdown cycle with exact heap recovery per cycle.
+- Timer Service initializes (native mutex + semaphore + EventGroup)
+  on first `initialize()`, releases on `shutdown()`.  Worker task
+  remains lazy (not created).
+- Task stack: 1024 words (993→475 high-water, 518 used).
+- Heap evidence: baseline→alloc_live→after_alloc→after_init→
+  with_mutex→after_shutdown — all exact recovery confirmed.
+- Host CI: 0 failures.  QEMU exit code 0.
 
 ### Step 1 — Integration Contract Neutralization — Completed
 
