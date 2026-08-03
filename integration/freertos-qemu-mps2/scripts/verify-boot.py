@@ -22,8 +22,9 @@ FIELD_SCHEDULER      = "scheduler=running"
 FIELD_TICK           = "tick_advanced=true"
 FIELD_RUNTIME_IMAGE  = "runtime_image=true"
 FIELD_RUST_ENTRY     = "rust_entry=true"
+FIELD_SHIM           = "shim=true"
+FIELD_CAPABILITIES   = "capabilities=true"
 FIELD_SHIM_DELAY     = "shim_delay=true"
-# FIELD_CAPABILITIES — re-enabled after delay root cause resolved
 FIELD_STATUS         = "status=pass"
 
 
@@ -102,6 +103,14 @@ def verify(log_path: str) -> int:
         if FIELD_RUST_ENTRY not in pass_line:
             errors.append(
                 f"{MARKER_PASS} missing '{FIELD_RUST_ENTRY}': {pass_line}"
+            )
+        if FIELD_SHIM not in pass_line:
+            errors.append(
+                f"{MARKER_PASS} missing '{FIELD_SHIM}': {pass_line}"
+            )
+        if FIELD_CAPABILITIES not in pass_line:
+            errors.append(
+                f"{MARKER_PASS} missing '{FIELD_CAPABILITIES}': {pass_line}"
             )
         if FIELD_SHIM_DELAY not in pass_line:
             errors.append(

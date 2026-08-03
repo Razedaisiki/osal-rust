@@ -139,6 +139,8 @@ static void boot_task(void *context)
         "tick_advanced=true "
         "runtime_image=true "
         "rust_entry=true "
+        "shim=true "
+        "capabilities=true "
         "shim_delay=true"
     );
 
