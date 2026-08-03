@@ -19,7 +19,7 @@
 /* ------------------------------------------------------------------ */
 /* Boot task stack and priority.                                      */
 /* ------------------------------------------------------------------ */
-#define BOOT_TASK_STACK_WORDS  512U
+#define BOOT_TASK_STACK_WORDS  1024U
 #define BOOT_TASK_PRIORITY     (configMAX_PRIORITIES - 1)
 
 /* ------------------------------------------------------------------ */
@@ -36,8 +36,33 @@ static void boot_fail(const char *reason);
 static void boot_fail_u32(const char *reason, uint32_t code);
 static void console_write_u32(uint32_t value);
 
-/* Rust staticlib entry (full C-shim smoke, P7G Step 3B).             */
+/* Rust staticlib entry (allocator smoke, P7G Step 3C).               */
 extern int32_t osal_rust_smoke_entry(void);
+
+/* ------------------------------------------------------------------ */
+/* C bridges for the Rust integration crate.                          */
+/* ------------------------------------------------------------------ */
+
+__attribute__((noreturn))
+void osal_test_rust_fatal(uint32_t reason)
+{
+    if (reason == 1U) {
+        console_write_line("OSAL_BOOT_FATAL kind=rust-panic");
+    } else {
+        console_write_line("OSAL_BOOT_FATAL kind=unknown");
+    }
+    qemu_exit_failure();
+    for (;;) { __asm volatile ("wfi"); }
+}
+
+void osal_test_trace_u64(const char *name, uint64_t value)
+{
+    console_write("OSAL_RUNTIME_INFO ");
+    console_write(name);
+    console_write("=");
+    console_write_u32((uint32_t)value);
+    console_write_line("");
+}
 
 /* ------------------------------------------------------------------ */
 /* main                                                               */
