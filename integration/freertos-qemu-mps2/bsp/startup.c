@@ -65,7 +65,7 @@ void TIMER1_Handler(void) {
 /* ------------------------------------------------------------------ */
 void HardFault_Handler(void)
 {
-    /* Minimal UART write — no printf, no stack.                      */
+    /* Minimal UART write — no printf, no allocation.                 */
     const char msg[] = "OSAL_BOOT_FATAL kind=hard-fault\r\n";
     const char *p = msg;
     while (*p) {
@@ -102,26 +102,22 @@ static void runtime_image_init(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Reset_Handler — entry point                                        */
+/* Reset_Handler — entry point.                                       */
+/*                                                                     */
+/* The initial stack pointer is set by the vector table; a normal      */
+/* C function prologue / epilogue is safe here.  noreturn because      */
+/* main() must never return.                                           */
 /* ------------------------------------------------------------------ */
-__attribute__((naked))
+__attribute__((noreturn))
 void Reset_Handler(void)
 {
-    /* 1. Initialise the runtime image.                               */
+    /* 1. Initialise the runtime image (.data copy, .bss zero).       */
     runtime_image_init();
 
-    /* 2. Call main().                                                */
-    int result;
-    __asm volatile (
-        "bl  main       \n"
-        "mov %[r], r0   \n"
-        : [r] "=r" (result)
-        :
-        : "r0", "memory"
-    );
-
-    /* 3. main() must never return.  If it does, treat as fatal.     */
+    /* 2. Call main().  If it returns, treat as fatal.                */
     {
+        int result = main();
+
         const char msg[] = "OSAL_BOOT_FATAL kind=main-returned\r\n";
         const char *p = msg;
         while (*p) {
@@ -132,6 +128,10 @@ void Reset_Handler(void)
         (void)result;
     }
     qemu_exit_failure();
+
+    for (;;) {
+        __asm volatile ("wfi");
+    }
 }
 
 /* ------------------------------------------------------------------ */

@@ -73,7 +73,7 @@ fn validate_shim() -> Result<(), SmokeFailure> {
         return Err(SmokeFailure::ShimScheduler);
     }
 
-    // 2. Probe capabilities — every field matched exactly against
+    // 2. Probe capabilities — all 11 public fields matched against
     //    the current FreeRTOSConfig.h.
     let caps = sys::capabilities();
 
@@ -101,7 +101,7 @@ fn validate_shim() -> Result<(), SmokeFailure> {
     if caps.minimal_stack_depth_words != 128 {
         return Err(SmokeFailure::CapMinimalStack);
     }
-    if caps.max_stack_depth_words == 0 {
+    if caps.max_stack_depth_words != u32::MAX {
         return Err(SmokeFailure::CapMaxStack);
     }
     if caps.tls_pointer_slots != 1 {

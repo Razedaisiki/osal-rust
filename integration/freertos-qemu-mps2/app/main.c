@@ -34,9 +34,13 @@ static volatile uint32_t c_bss_sentinel;
 static void boot_task(void *context);
 static void boot_fail(const char *reason);
 static void boot_fail_u32(const char *reason, uint32_t code);
+static void console_write_u32(uint32_t value);
 
 /* Rust staticlib entry (P7G Step 3A).                                */
 extern int32_t osal_rust_smoke_entry(void);
+
+/* C shim delay — direct C call for diagnostic test A.               */
+extern uint32_t osal_freertos_delay_ticks(uint64_t ticks);
 
 /* ------------------------------------------------------------------ */
 /* main                                                               */
@@ -106,7 +110,16 @@ static void boot_task(void *context)
         boot_fail("tick-not-advanced");
     }
 
-    /* 3. Call into the Rust staticlib entry. */
+    /* 3. Diagnostic: direct C call to shim delay (test A).
+     *    Emitted as OSAL_BOOT_DIAG — not required by verifier.       */
+    {
+        uint32_t diag_delay = osal_freertos_delay_ticks(2U);
+        console_write("OSAL_BOOT_DIAG direct_delay_ticks=");
+        console_write_u32(diag_delay);
+        console_write_line("");
+    }
+
+    /* 4. Call into the Rust staticlib entry. */
     int32_t rust_code = osal_rust_smoke_entry();
     if (rust_code != 0) {
         boot_fail_u32("rust-entry", (uint32_t)rust_code);

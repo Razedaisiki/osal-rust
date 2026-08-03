@@ -24,7 +24,7 @@ FIELD_RUNTIME_IMAGE  = "runtime_image=true"
 FIELD_RUST_ENTRY     = "rust_entry=true"
 FIELD_SHIM           = "shim=true"
 FIELD_CAPABILITIES   = "capabilities=true"
-# FIELD_SHIM_DELAY — deferred pending delay_ticks ABI fix
+# FIELD_SHIM_DELAY — deferred (root cause unresolved)
 FIELD_STATUS         = "status=pass"
 
 
@@ -112,7 +112,7 @@ def verify(log_path: str) -> int:
             errors.append(
                 f"{MARKER_PASS} missing '{FIELD_CAPABILITIES}': {pass_line}"
             )
-        # FIELD_SHIM_DELAY — deferred pending delay_ticks ABI fix
+        # FIELD_SHIM_DELAY — deferred (root cause unresolved)
 
     # --- END field validation ---
     end_line = None
