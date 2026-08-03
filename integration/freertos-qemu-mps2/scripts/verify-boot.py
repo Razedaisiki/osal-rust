@@ -22,6 +22,9 @@ FIELD_SCHEDULER      = "scheduler=running"
 FIELD_TICK           = "tick_advanced=true"
 FIELD_RUNTIME_IMAGE  = "runtime_image=true"
 FIELD_RUST_ENTRY     = "rust_entry=true"
+FIELD_SHIM           = "shim=true"
+FIELD_CAPABILITIES   = "capabilities=true"
+# FIELD_SHIM_DELAY — deferred pending delay_ticks ABI fix
 FIELD_STATUS         = "status=pass"
 
 
@@ -101,6 +104,15 @@ def verify(log_path: str) -> int:
             errors.append(
                 f"{MARKER_PASS} missing '{FIELD_RUST_ENTRY}': {pass_line}"
             )
+        if FIELD_SHIM not in pass_line:
+            errors.append(
+                f"{MARKER_PASS} missing '{FIELD_SHIM}': {pass_line}"
+            )
+        if FIELD_CAPABILITIES not in pass_line:
+            errors.append(
+                f"{MARKER_PASS} missing '{FIELD_CAPABILITIES}': {pass_line}"
+            )
+        # FIELD_SHIM_DELAY — deferred pending delay_ticks ABI fix
 
     # --- END field validation ---
     end_line = None

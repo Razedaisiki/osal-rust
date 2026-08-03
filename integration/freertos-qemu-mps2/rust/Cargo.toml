@@ -9,6 +9,9 @@ description = "Rust staticlib linked into the OSAL FreeRTOS QEMU MPS2 firmware"
 [lib]
 crate-type = ["staticlib"]
 
+[dependencies]
+osal-backend-freertos-sys = { path = "../../../crates/osal-backend-freertos-sys" }
+
 [profile.dev]
 panic = "abort"
 

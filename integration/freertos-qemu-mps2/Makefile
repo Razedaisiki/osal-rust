@@ -9,6 +9,7 @@
 # Toolchain
 # ------------------------------------------------------------------
 CC      = arm-none-eabi-gcc
+AR      = arm-none-eabi-ar
 CARGO   = cargo
 SIZE    = arm-none-eabi-size
 NM      = arm-none-eabi-nm
@@ -107,10 +108,20 @@ $(BUILD):
 
 all: $(ELF) size
 
+# Pass the ARM cross-compiler and FreeRTOS include paths so the
+# -sys crate build.rs compiles the C shim with arm-none-eabi-gcc.
+RUST_BUILD_ENV  = CC_thumbv7m_none_eabi=$(CC)
+RUST_BUILD_ENV += AR_thumbv7m_none_eabi=$(AR)
+RUST_BUILD_ENV += CFLAGS_thumbv7m_none_eabi="-mthumb -mcpu=cortex-m3 -ffreestanding -ffunction-sections -fdata-sections"
+RUST_BUILD_ENV += OSAL_FREERTOS_KERNEL_INCLUDE=$(abspath $(KERNEL)/include)
+RUST_BUILD_ENV += OSAL_FREERTOS_CONFIG_INCLUDE=$(abspath config)
+RUST_BUILD_ENV += OSAL_FREERTOS_PORT_INCLUDE=$(abspath $(KERNEL)/portable/GCC/ARM_CM3)
+
 # Always invoke cargo — let it decide whether rebuilding is needed.
 # Avoids silent stale-Rust-in-ELF when src/lib.rs changed across runs.
 rust-staticlib:
-	cd $(RUST_DIR) && $(CARGO) build
+	cd $(RUST_DIR) && env $(RUST_BUILD_ENV) $(CARGO) build -vv 2>&1 | tee ../build/cargo-build.log
+	@echo "  cargo-build.log written"
 
 $(ELF): $(PROJECT_OBJS) $(VENDOR_OBJS) rust-staticlib
 	@test -f "$(RUST_LIB)" || { echo "ERROR: Rust staticlib not found: $(RUST_LIB)" >&2; exit 1; }
@@ -158,7 +169,11 @@ check-symbols:
 	@for sym in Reset_Handler main vTaskStartScheduler \
 	            xPortPendSVHandler xPortSysTickHandler \
 	            vPortSVCHandler boot_task \
-	            osal_rust_smoke_entry; do \
+	            osal_rust_smoke_entry \
+	            osal_freertos_probe_capabilities \
+	            osal_freertos_scheduler_state \
+	            osal_freertos_tick_snapshot \
+	            osal_freertos_delay_ticks; do \
 	    if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
 	        echo "  OK   $$sym"; \
 	    else \

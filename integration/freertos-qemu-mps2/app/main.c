@@ -118,7 +118,9 @@ static void boot_task(void *context)
         "scheduler=running "
         "tick_advanced=true "
         "runtime_image=true "
-        "rust_entry=true"
+        "rust_entry=true "
+        "shim=true "
+        "capabilities=true"
     );
 
     console_write_line("OSAL_BOOT_END status=pass");
