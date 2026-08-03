@@ -225,7 +225,7 @@ fn validate_lifecycle() -> Result<(), SmokeFailure> {
         return Err(SmokeFailure::InitialState);
     }
 
-    // Case 2: pre-init object creation must fail — and must not alloc
+    // Case 2: pre-init object creation must fail without changing free heap
     match osal::backend::Mutex::new(1u32) {
         Err(Error::NotInitialized) => {}
         _ => return Err(SmokeFailure::ObjectBeforeInit),

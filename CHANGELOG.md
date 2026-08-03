@@ -67,7 +67,8 @@ Task, Timer) on real kernel — deferred to Step 4.
 - Timer Service initializes (native mutex + semaphore + EventGroup)
   on first `initialize()`, releases on `shutdown()`.  Worker task
   remains lazy (not created).
-- Task stack: 1024 words (993→475 high-water, 518 used).
+- Task stack: 1024 words.  CI enforces a minimum remaining high-water
+  mark of 128 words (Step 3C smoke observed ~459 words remaining).
 - Heap evidence: baseline→alloc_live→after_alloc→after_init→
   with_mutex→after_shutdown — all exact recovery confirmed.
 - Host CI: 0 failures.  QEMU exit code 0.

@@ -6,7 +6,6 @@ present, in order, and without error.
 """
 
 import sys
-import re
 
 # Expected markers, in order.
 MARKER_BEGIN = "OSAL_BOOT_BEGIN"

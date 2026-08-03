@@ -183,7 +183,10 @@ check-symbols:
 	            osal_freertos_probe_capabilities \
 	            osal_freertos_scheduler_state \
 	            osal_freertos_tick_snapshot \
-	            osal_freertos_delay_ticks; do \
+	            osal_freertos_delay_ticks \
+	            osal_freertos_heap_alloc \
+	            osal_freertos_heap_dealloc \
+	            pvPortMalloc vPortFree; do \
 	    if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
 	        echo "  OK   $$sym"; \
 	    else \
