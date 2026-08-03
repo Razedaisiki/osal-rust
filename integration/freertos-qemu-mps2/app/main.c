@@ -19,7 +19,8 @@
 /* ------------------------------------------------------------------ */
 /* Boot task stack and priority.                                      */
 /* ------------------------------------------------------------------ */
-#define BOOT_TASK_STACK_WORDS  1024U
+#define BOOT_TASK_STACK_WORDS       1024U
+#define MIN_BOOT_STACK_MARGIN_WORDS  128U
 #define BOOT_TASK_PRIORITY     (configMAX_PRIORITIES - 1)
 
 /* ------------------------------------------------------------------ */
@@ -55,12 +56,32 @@ void osal_test_rust_fatal(uint32_t reason)
     for (;;) { __asm volatile ("wfi"); }
 }
 
+static void console_write_u64(uint64_t value)
+{
+    char buf[21];
+    int i = 0;
+
+    if (value == 0U) {
+        console_write_byte('0');
+        return;
+    }
+
+    while (value > 0U && i < (int)sizeof(buf)) {
+        buf[i++] = (char)('0' + (value % 10U));
+        value /= 10U;
+    }
+
+    while (i > 0) {
+        console_write_byte(buf[--i]);
+    }
+}
+
 void osal_test_trace_u64(const char *name, uint64_t value)
 {
     console_write("OSAL_RUNTIME_INFO ");
     console_write(name);
     console_write("=");
-    console_write_u32((uint32_t)value);
+    console_write_u64(value);
     console_write_line("");
 }
 
@@ -152,6 +173,10 @@ static void boot_task(void *context)
         console_write("OSAL_BOOT_DIAG stack_hwm_after=");
         console_write_u32(after_hwm);
         console_write_line("");
+
+        if (after_hwm < MIN_BOOT_STACK_MARGIN_WORDS) {
+            boot_fail("stack-margin");
+        }
     }
 
     /* 6. Success. */
@@ -163,7 +188,13 @@ static void boot_task(void *context)
         "rust_entry=true "
         "shim=true "
         "capabilities=true "
-        "shim_delay=true"
+        "shim_delay=true "
+        "allocator=true "
+        "runtime_lifecycle=true "
+        "runtime_lease=true "
+        "mutex=true "
+        "heap_recovered=true "
+        "lifecycle_cycles=8"
     );
 
     console_write_line("OSAL_BOOT_END status=pass");

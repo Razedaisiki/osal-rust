@@ -22,8 +22,9 @@ pub struct FreeRtosAllocator;
 
 unsafe impl GlobalAlloc for FreeRtosAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // Zero-sized allocation — return a non-null dangling pointer
-        // as required by the GlobalAlloc contract.
+        // Defensive fallback.  GlobalAlloc callers must provide a
+        // non-zero-sized Layout — the standard library never requests
+        // a zero-sized allocation through the global allocator.
         if layout.size() == 0 {
             return ptr::null_mut();
         }

@@ -117,10 +117,20 @@ RUST_BUILD_ENV += OSAL_FREERTOS_KERNEL_INCLUDE=$(abspath $(KERNEL)/include)
 RUST_BUILD_ENV += OSAL_FREERTOS_CONFIG_INCLUDE=$(abspath config)
 RUST_BUILD_ENV += OSAL_FREERTOS_PORT_INCLUDE=$(abspath $(KERNEL)/portable/GCC/ARM_CM3)
 
+CARGO_BUILD_LOG := $(abspath $(BUILD)/cargo-build.log)
+
 # Always invoke cargo — let it decide whether rebuilding is needed.
 # Avoids silent stale-Rust-in-ELF when src/lib.rs changed across runs.
-rust-staticlib:
-	cd $(RUST_DIR) && env $(RUST_BUILD_ENV) $(CARGO) build -vv 2>&1 | tee ../build/cargo-build.log
+rust-staticlib: | $(BUILD)
+	@set -eu; \
+	cd $(RUST_DIR); \
+	env $(RUST_BUILD_ENV) $(CARGO) build -vv \
+	    >"$(CARGO_BUILD_LOG)" 2>&1 || { \
+	        status=$$?; \
+	        cat "$(CARGO_BUILD_LOG)"; \
+	        exit $$status; \
+	    }; \
+	cat "$(CARGO_BUILD_LOG)"
 	@echo "  cargo-build.log written"
 
 $(ELF): $(PROJECT_OBJS) $(VENDOR_OBJS) rust-staticlib

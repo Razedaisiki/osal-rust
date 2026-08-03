@@ -12,7 +12,6 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -71,6 +70,7 @@ enum SmokeFailure {
     ArcCount     = 62,
     ArcDrop      = 63,
     VecValue     = 64,
+    AlignedValue = 67,
     HeapDidNotDecrease = 65,
     AllocatorLeak = 66,
 
@@ -94,6 +94,10 @@ enum SmokeFailure {
     CycleMutex        = 86,
     CycleShutdown     = 87,
     CycleLeak         = 88,
+    ObjectBeforeInitHeapChanged = 89,
+    BusyHeapChanged             = 90,
+    LifecycleLeak               = 91,
+    ReinitializeLeak            = 92,
 }
 
 // ------------------------------------------------------------------
@@ -171,10 +175,13 @@ fn validate_allocator() -> Result<(), SmokeFailure> {
     if *boxed != 0x1234_5678 { return Err(SmokeFailure::BoxValue); }
 
     let aligned = Box::new(Aligned64 { bytes: [0xA5; 64] });
-    core::hint::black_box(aligned.as_ref());
     if (&*aligned as *const Aligned64 as usize) & 63 != 0 {
         return Err(SmokeFailure::Alignment);
     }
+    if aligned.bytes.iter().any(|b| *b != 0xA5) {
+        return Err(SmokeFailure::AlignedValue);
+    }
+    core::hint::black_box(&aligned.bytes);
 
     let h1 = sys::heap_free();
     trace_u64(c"heap_alloc_live", h1);
@@ -211,15 +218,20 @@ fn validate_allocator() -> Result<(), SmokeFailure> {
 // ------------------------------------------------------------------
 
 fn validate_lifecycle() -> Result<(), SmokeFailure> {
+    let lifecycle_baseline = sys::heap_free();
+
     // Case 1: initial state
     if osal::runtime_state() != RuntimeState::Uninitialized {
         return Err(SmokeFailure::InitialState);
     }
 
-    // Case 2: pre-init object creation must fail
+    // Case 2: pre-init object creation must fail — and must not alloc
     match osal::backend::Mutex::new(1u32) {
         Err(Error::NotInitialized) => {}
         _ => return Err(SmokeFailure::ObjectBeforeInit),
+    }
+    if sys::heap_free() != lifecycle_baseline {
+        return Err(SmokeFailure::ObjectBeforeInitHeapChanged);
     }
 
     // Case 3: first initialize
@@ -250,7 +262,8 @@ fn validate_lifecycle() -> Result<(), SmokeFailure> {
         if *guard != 11 { return Err(SmokeFailure::MutexValue); }
     }
 
-    // Case 7: active object blocks shutdown
+    // Case 7: active object blocks shutdown, must be failure-atomic
+    let heap_before_busy = sys::heap_free();
     match osal::shutdown() {
         Err(Error::Busy) => {}
         _ => return Err(SmokeFailure::ShutdownBusy),
@@ -258,14 +271,23 @@ fn validate_lifecycle() -> Result<(), SmokeFailure> {
     if osal::runtime_state() != RuntimeState::Running {
         return Err(SmokeFailure::BusyRollback);
     }
+    if sys::heap_free() != heap_before_busy {
+        return Err(SmokeFailure::BusyHeapChanged);
+    }
 
-    // Case 8: drop mutex → shutdown succeeds
+    // Case 8: drop mutex → shutdown succeeds → back to baseline
     drop(mutex);
     osal::shutdown().map_err(|_| SmokeFailure::Shutdown)?;
     if osal::runtime_state() != RuntimeState::Uninitialized {
         return Err(SmokeFailure::ShutdownState);
     }
-    trace_u64(c"heap_after_shutdown", sys::heap_free());
+    {
+        let h = sys::heap_free();
+        trace_u64(c"heap_after_shutdown", h);
+        if h != lifecycle_baseline {
+            return Err(SmokeFailure::LifecycleLeak);
+        }
+    }
 
     // Case 9: repeat shutdown
     match osal::shutdown() {
@@ -273,9 +295,12 @@ fn validate_lifecycle() -> Result<(), SmokeFailure> {
         _ => return Err(SmokeFailure::NotInitialized),
     }
 
-    // Case 10: reinitialize + shutdown
+    // Case 10: reinitialize + shutdown → back to baseline
     osal::initialize().map_err(|_| SmokeFailure::Reinitialize)?;
     osal::shutdown().map_err(|_| SmokeFailure::Reshutdown)?;
+    if sys::heap_free() != lifecycle_baseline {
+        return Err(SmokeFailure::ReinitializeLeak);
+    }
 
     Ok(())
 }

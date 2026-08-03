@@ -17,15 +17,24 @@ MARKER_END   = "OSAL_BOOT_END"
 MARKER_FAIL  = "OSAL_BOOT_FAIL"
 MARKER_FATAL = "OSAL_BOOT_FATAL"
 
-# Field expected within the PASS marker.
-FIELD_SCHEDULER      = "scheduler=running"
-FIELD_TICK           = "tick_advanced=true"
-FIELD_RUNTIME_IMAGE  = "runtime_image=true"
-FIELD_RUST_ENTRY     = "rust_entry=true"
-FIELD_SHIM           = "shim=true"
-FIELD_CAPABILITIES   = "capabilities=true"
-FIELD_SHIM_DELAY     = "shim_delay=true"
-FIELD_STATUS         = "status=pass"
+# Fields required within the PASS marker — all must be present.
+REQUIRED_PASS_FIELDS = [
+    "scheduler=running",
+    "tick_advanced=true",
+    "runtime_image=true",
+    "rust_entry=true",
+    "shim=true",
+    "capabilities=true",
+    "shim_delay=true",
+    "allocator=true",
+    "runtime_lifecycle=true",
+    "runtime_lease=true",
+    "mutex=true",
+    "heap_recovered=true",
+    "lifecycle_cycles=8",
+]
+
+FIELD_STATUS = "status=pass"
 
 
 def verify(log_path: str) -> int:
@@ -88,34 +97,11 @@ def verify(log_path: str) -> int:
             break
 
     if pass_line is not None:
-        if FIELD_SCHEDULER not in pass_line:
-            errors.append(
-                f"{MARKER_PASS} missing '{FIELD_SCHEDULER}': {pass_line}"
-            )
-        if FIELD_TICK not in pass_line:
-            errors.append(
-                f"{MARKER_PASS} missing '{FIELD_TICK}': {pass_line}"
-            )
-        if FIELD_RUNTIME_IMAGE not in pass_line:
-            errors.append(
-                f"{MARKER_PASS} missing '{FIELD_RUNTIME_IMAGE}': {pass_line}"
-            )
-        if FIELD_RUST_ENTRY not in pass_line:
-            errors.append(
-                f"{MARKER_PASS} missing '{FIELD_RUST_ENTRY}': {pass_line}"
-            )
-        if FIELD_SHIM not in pass_line:
-            errors.append(
-                f"{MARKER_PASS} missing '{FIELD_SHIM}': {pass_line}"
-            )
-        if FIELD_CAPABILITIES not in pass_line:
-            errors.append(
-                f"{MARKER_PASS} missing '{FIELD_CAPABILITIES}': {pass_line}"
-            )
-        if FIELD_SHIM_DELAY not in pass_line:
-            errors.append(
-                f"{MARKER_PASS} missing '{FIELD_SHIM_DELAY}': {pass_line}"
-            )
+        for field in REQUIRED_PASS_FIELDS:
+            if field not in pass_line:
+                errors.append(
+                    f"{MARKER_PASS} missing '{field}': {pass_line}"
+                )
     # --- END field validation ---
     end_line = None
     for line in lines:
