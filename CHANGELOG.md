@@ -73,6 +73,34 @@ Task, Timer) on real kernel — deferred to Step 4.
   with_mutex→after_shutdown — all exact recovery confirmed.
 - Host CI: 0 failures.  QEMU exit code 0.
 
+### Step 4 — Managed Object Real-Kernel Validation — In Progress
+
+#### Step 4-0 — Deterministic native helper-task harness — Completed
+
+- `integration/freertos-qemu-mps2/app/test_task.h` / `test_task.c` —
+  native FreeRTOS helper task API: `osal_test_task_spawn`,
+  `osal_test_task_stack_hwm`, `osal_test_scheduler_suspend`/`resume`,
+  `osal_test_task_exit` (self-delete via `vTaskDelete(NULL)`).
+- `integration/freertos-qemu-mps2/rust/src/harness.rs` — Rust harness:
+  `CaseState` with `AtomicU32` phase/result/tick fields, `wait_until_phase`
+  with monotonic `>=` check and tick-bounded deadline,
+  `wait_until_heap_recovered` for Idle task cleanup, extern "C" bridges.
+- Object protocol: `OSAL_OBJECT_BEGIN`, `OSAL_CASE_PASS`,
+  `OSAL_OBJECT_PASS`, `OSAL_OBJECT_END status=pass` markers independent
+  of the boot protocol.
+- Harness smoke: `harness_smoke_helper` native FreeRTOS task validates
+  scheduler state, reports phases (STARTED → OPERATION_COMPLETED →
+  EXITING), self-deletes, Idle task reclaims TCB and stack, exact heap
+  recovery confirmed.
+- New entry point `osal_test_object_entry()` called from boot task after
+  Step 3C smoke and boot protocol markers.
+- Verifier extended: `REQUIRED_CASES` list with `harness_native_task`,
+  `REQUIRED_OBJECT_PASS_FIELDS`, object marker ordering and count checks.
+- Boot protocol markers reordered to precede object protocol (BOOT_PASS
+  + BOOT_END emitted before object tests).
+- QEMU exit code 0.  All Step 3B/3C fields preserved.  Stack margin
+  ~459 words remaining (threshold 128).
+
 ### Step 1 — Integration Contract Neutralization — Completed
 
 - Integration identifiers neutralized: `ROUSSATL_FREERTOS_*` env vars →

@@ -7,6 +7,8 @@
 extern crate alloc;
 
 mod allocator;
+mod harness;
+mod cases;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -343,6 +345,19 @@ fn run_smoke() -> Result<(), SmokeFailure> {
 #[unsafe(no_mangle)]
 pub extern "C" fn osal_rust_smoke_entry() -> i32 {
     match run_smoke() {
+        Ok(()) => 0,
+        Err(e) => e as i32,
+    }
+}
+
+// ------------------------------------------------------------------
+// Object test entry (P7G Step 4)
+// ------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub extern "C" fn osal_test_object_entry() -> i32 {
+    let caps = sys::capabilities();
+    match harness::run_harness_smoke(caps.tick_bits) {
         Ok(()) => 0,
         Err(e) => e as i32,
     }

@@ -84,7 +84,7 @@ LDFLAGS += -Wl,-Map=$(BUILD)/freertos-qemu-mps2.map
 # ------------------------------------------------------------------
 PROJECT_OBJS = $(BUILD)/main.o $(BUILD)/hooks.o $(BUILD)/console.o \
                $(BUILD)/platform.o $(BUILD)/qemu_exit.o \
-               $(BUILD)/startup.o
+               $(BUILD)/startup.o $(BUILD)/test_task.o
 VENDOR_OBJS  = $(BUILD)/tasks.o $(BUILD)/list.o $(BUILD)/queue.o \
                $(BUILD)/event_groups.o $(BUILD)/heap_4.o \
                $(BUILD)/port.o
@@ -150,6 +150,8 @@ $(BUILD)/qemu_exit.o: bsp/qemu_exit.c | $(BUILD)
 	$(CC) $(PROJECT_CFLAGS) $(INCLUDES) -c $< -o $@
 $(BUILD)/startup.o: bsp/startup.c | $(BUILD)
 	$(CC) $(PROJECT_CFLAGS) $(INCLUDES) -c $< -o $@
+$(BUILD)/test_task.o: app/test_task.c | $(BUILD)
+	$(CC) $(PROJECT_CFLAGS) $(INCLUDES) -c $< -o $@
 
 # Vendor: object in build/, source in third_party/ via absolute include path
 $(BUILD)/tasks.o: $(KERNEL)/tasks.c | $(BUILD)
@@ -180,12 +182,21 @@ check-symbols:
 	            xPortPendSVHandler xPortSysTickHandler \
 	            vPortSVCHandler boot_task \
 	            osal_rust_smoke_entry \
+	            osal_test_object_entry \
+	            osal_test_harness_set_phase \
+	            osal_test_harness_set_result \
+	            osal_test_harness_record_start \
+	            osal_test_harness_record_end \
 	            osal_freertos_probe_capabilities \
 	            osal_freertos_scheduler_state \
 	            osal_freertos_tick_snapshot \
 	            osal_freertos_delay_ticks \
 	            osal_freertos_heap_alloc \
 	            osal_freertos_heap_dealloc \
+	            osal_test_task_spawn \
+	            osal_test_task_exit \
+	            osal_test_console_line \
+	            harness_smoke_helper \
 	            pvPortMalloc vPortFree; do \
 	    if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
 	        echo "  OK   $$sym"; \
