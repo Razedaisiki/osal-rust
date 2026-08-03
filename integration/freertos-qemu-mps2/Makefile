@@ -3,7 +3,7 @@
 # Usage:
 #   make          Build the ELF
 #   make clean    Remove build artifacts
-#   make verify   Build and run QEMU boot test
+#   make verify   Build firmware and check symbols
 
 # ------------------------------------------------------------------
 # Toolchain

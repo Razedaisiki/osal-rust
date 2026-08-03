@@ -12,8 +12,8 @@ across different platforms by switching the backend.
 ## Project Status
 
 **Latest completed milestone: P7F — FreeRTOS Timer Foundation — Completed.**
-**Current milestone: P7G Step 2 — FreeRTOS C-only Kernel Boot on QEMU Cortex-M3 — Completed.**
-**Next: P7G Step 3 — Rust thumbv7m-none-eabi staticlib + C shim integration.**
+**Current milestone: P7G Step 3B — FreeRTOS C-Shim and Kernel Capabilities — Completed.**
+**Next: P7G Step 3C — FreeRTOS heap-backed Rust allocator and runtime lifecycle smoke.**
 
 The POSIX backend fully implements the current non-deferred `osal-api`
 trait surface. The Mock backend implements the same surface with the

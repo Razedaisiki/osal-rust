@@ -36,11 +36,8 @@ static void boot_fail(const char *reason);
 static void boot_fail_u32(const char *reason, uint32_t code);
 static void console_write_u32(uint32_t value);
 
-/* Rust staticlib entry (P7G Step 3A).                                */
+/* Rust staticlib entry (full C-shim smoke, P7G Step 3B).             */
 extern int32_t osal_rust_smoke_entry(void);
-
-/* C shim delay — direct C call for diagnostic test A.               */
-extern uint32_t osal_freertos_delay_ticks(uint64_t ticks);
 
 /* ------------------------------------------------------------------ */
 /* main                                                               */
@@ -118,7 +115,7 @@ static void boot_task(void *context)
         console_write_line("");
     }
 
-    /* 4. Call into the Rust staticlib entry (delay-only smoke).      */
+    /* 4. Call into the Rust staticlib entry (full C-shim smoke).     */
     int32_t rust_code = osal_rust_smoke_entry();
     if (rust_code != 0) {
         boot_fail_u32("rust-entry", (uint32_t)rust_code);

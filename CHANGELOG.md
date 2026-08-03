@@ -17,7 +17,38 @@
 - GitHub Actions: `freertos-qemu-boot` job (build + QEMU + verify; CI #98 green).
 
 **Verification scope:** Cortex-M3 QEMU, scheduler, SysTick, delay wake, UART protocol, semihosting exit.
-**Not yet verified:** Rust staticlib, C shim, heap-backed allocator, OSAL runtime smoke.  These are deferred to Step 3+.
+
+### Step 3 — Rust Staticlib and Real C-Shim Integration — Completed
+
+#### Step 3A — Rust staticlib linked into firmware
+- Minimal `#![no_std]` `staticlib` crate (target `thumbv7m-none-eabi`,
+  panic=abort, independent workspace).
+- Single `extern "C"` entry `osal_rust_smoke_entry()` returning 0, called
+  from C boot task after scheduler/tick validation.
+- Proof: C → Rust ABI call from a real FreeRTOS task; `rust_entry=true`.
+
+#### Step 3B — Runtime image init and real C-shim probe
+- Project-owned Cortex-M3 startup (`.data` copy, `.bss` zero, HardFault
+  with machine-parsable fatal marker).
+- Rust `AtomicU32` data/bss sentinels validate runtime image init from
+  within a FreeRTOS task.
+- Real `osal-backend-freertos-sys` C shim linked (no `test-fixture`).
+  `extern crate alloc` gated to `cfg(test-fixture)` in `-sys`.
+- Cross-compiled with `arm-none-eabi-gcc` via `CC_thumbv7m_none_eabi`.
+- Full smoke verified on real kernel:
+  - `scheduler_state() == Running` (via `xTaskGetSchedulerState`)
+  - All 11 capability fields (incl. `software_timers=false`, `tick_bits=32`)
+  - `delay_ticks(2)` Rust → C shim → `vTaskDelay` → SysTick wake round-trip
+  - Tick snapshot monotonic advance after delay
+  - Requires 512-word task stack (128 words too small for dev-profile Rust)
+- Protocol: `runtime_image=true`, `rust_entry=true`, `shim=true`,
+  `capabilities=true`, `shim_delay=true`.
+- GitHub Actions: builds Rust staticlib with `thumbv7m-none-eabi` target.
+- QEMU exit via `bkpt #0xAB` (ARMv7-M Thumb semihosting).
+- Host CI passes (0 failures).
+
+**Not yet verified:** heap-backed allocator, `osal::initialize()`,
+`RuntimeLease`, public OSAL objects — deferred to Step 3C.
 
 ### Step 1 — Integration Contract Neutralization — Completed
 
