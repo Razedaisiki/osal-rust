@@ -487,3 +487,23 @@ osal_freertos_task_handle_t osal_freertos_internal_task_create(
 
     return (osal_freertos_task_handle_t)native_handle;
 }
+
+// ---------------------------------------------------------------------------
+// Native heap allocation bridge (P7G Step 3C)
+// ---------------------------------------------------------------------------
+
+void *osal_freertos_heap_alloc(size_t size)
+{
+    if (size == 0U) {
+        return NULL;
+    }
+
+    return pvPortMalloc(size);
+}
+
+void osal_freertos_heap_dealloc(void *pointer)
+{
+    if (pointer != NULL) {
+        vPortFree(pointer);
+    }
+}

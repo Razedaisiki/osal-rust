@@ -232,6 +232,8 @@ unsafe extern "C" {
     fn osal_freertos_delay_ticks(ticks: u64) -> u32;
     fn osal_freertos_max_finite_delay_ticks() -> u64;
     fn osal_freertos_heap_free() -> u64;
+    fn osal_freertos_heap_alloc(size: usize) -> *mut core::ffi::c_void;
+    fn osal_freertos_heap_dealloc(pointer: *mut core::ffi::c_void);
     fn osal_freertos_enter_critical();
     fn osal_freertos_exit_critical();
     fn osal_freertos_max_semaphore_count() -> u64;
@@ -470,6 +472,34 @@ pub fn heap_free() -> u64 {
     #[cfg(not(feature = "test-fixture"))]
     {
         unsafe { osal_freertos_heap_free() }
+    }
+}
+
+/// Allocate `size` bytes from the native FreeRTOS heap.
+///
+/// Returns a pointer to the allocation, or null on failure.
+///
+/// # Safety
+///
+/// The caller must release the block exactly once through
+/// [`heap_dealloc`].  No alignment guarantee beyond the native
+/// port word size — callers requiring over-alignment must adjust
+/// the returned pointer themselves.
+#[cfg(not(feature = "test-fixture"))]
+pub unsafe fn heap_alloc(size: usize) -> *mut u8 {
+    unsafe { osal_freertos_heap_alloc(size).cast::<u8>() }
+}
+
+/// Release a block previously returned by [`heap_alloc`].
+///
+/// # Safety
+///
+/// `pointer` must be null or a currently-live block from
+/// [`heap_alloc`] that has not been freed already.
+#[cfg(not(feature = "test-fixture"))]
+pub unsafe fn heap_dealloc(pointer: *mut u8) {
+    unsafe {
+        osal_freertos_heap_dealloc(pointer.cast::<core::ffi::c_void>());
     }
 }
 

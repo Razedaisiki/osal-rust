@@ -8,4 +8,7 @@
 
 size_t xPortGetFreeHeapSize(void);
 
+void *pvPortMalloc(size_t size);
+void  vPortFree(void *pointer);
+
 #endif

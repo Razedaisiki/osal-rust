@@ -209,6 +209,19 @@ osal_freertos_task_handle_t osal_freertos_internal_task_create(
     uint32_t    priority);
 
 // ---------------------------------------------------------------------------
+// Native heap allocation bridge (P7G Step 3C)
+//
+// Wraps the FreeRTOS pvPortMalloc / vPortFree for the Rust global
+// allocator.  These are low-level BSP/application callbacks — not
+// part of the public OSAL API.
+// ---------------------------------------------------------------------------
+
+#include <stddef.h>
+
+void *osal_freertos_heap_alloc(size_t size);
+void  osal_freertos_heap_dealloc(void *pointer);
+
+// ---------------------------------------------------------------------------
 // Capability struct — extended for Task support (ADR 0028 §7, §9)
 
 // New fields appended after the existing ones.  The struct remains
