@@ -77,29 +77,45 @@ Task, Timer) on real kernel — deferred to Step 4.
 
 #### Step 4-0 — Deterministic native helper-task harness — Completed
 
+**Integration-only infrastructure** for testing OSAL managed objects on
+real FreeRTOS without depending on the OSAL Task implementation.
+
 - `integration/freertos-qemu-mps2/app/test_task.h` / `test_task.c` —
-  native FreeRTOS helper task API: `osal_test_task_spawn`,
-  `osal_test_task_stack_hwm`, `osal_test_scheduler_suspend`/`resume`,
-  `osal_test_task_exit` (self-delete via `vTaskDelete(NULL)`).
-- `integration/freertos-qemu-mps2/rust/src/harness.rs` — Rust harness:
-  `CaseState` with `AtomicU32` phase/result/tick fields, `wait_until_phase`
-  with monotonic `>=` check and tick-bounded deadline,
-  `wait_until_heap_recovered` for Idle task cleanup, extern "C" bridges.
-- Object protocol: `OSAL_OBJECT_BEGIN`, `OSAL_CASE_PASS`,
-  `OSAL_OBJECT_PASS`, `OSAL_OBJECT_END status=pass` markers independent
-  of the boot protocol.
-- Harness smoke: `harness_smoke_helper` native FreeRTOS task validates
-  scheduler state, reports phases (STARTED → OPERATION_COMPLETED →
-  EXITING), self-deletes, Idle task reclaims TCB and stack, exact heap
-  recovery confirmed.
-- New entry point `osal_test_object_entry()` called from boot task after
-  Step 3C smoke and boot protocol markers.
-- Verifier extended: `REQUIRED_CASES` list with `harness_native_task`,
-  `REQUIRED_OBJECT_PASS_FIELDS`, object marker ordering and count checks.
-- Boot protocol markers reordered to precede object protocol (BOOT_PASS
-  + BOOT_END emitted before object tests).
-- QEMU exit code 0.  All Step 3B/3C fields preserved.  Stack margin
-  ~459 words remaining (threshold 128).
+  native FreeRTOS helper task API with parameter validation
+  (entry==NULL, stack_words==0, priority>=configMAX_PRIORITIES).
+  Functions: `osal_test_task_spawn`, `osal_test_task_stack_hwm`,
+  `osal_test_scheduler_suspend`/`resume`, `osal_test_task_exit`
+  (self-delete via `vTaskDelete(NULL)`).
+  `OSAL_TEST_PHASE_*` C enum defines the phase constants.
+- `integration/freertos-qemu-mps2/rust/src/harness.rs` — context-aware
+  Rust harness:
+  - `CaseState` with `AtomicU32` phase, visited bitmap, result,
+    start_tick, end_tick.  Strictly monotonic phase transitions.
+  - `wait_until_phase` with tick-bounded deadline, monotonic `>=` check,
+    fail-fast on helper result (error surfaces as HelperResult, not
+    masked as Timeout).
+  - `wait_until_heap_recovered` polls with `delay_ticks(1)` to yield
+    to Idle task for TCB/stack reclamation.
+  - Context-aware extern "C" bridges: each native helper receives an
+    opaque `*mut c_void` context pointing to its own `CaseState`,
+    eliminating single-global cross-talk.  Proven by two simultaneous
+    helpers with independent states.
+- Full phase lifecycle: STARTED → BEFORE_OPERATION →
+  OPERATION_COMPLETED → EXITING → DONE (controller sets DONE after
+  confirming Idle cleanup).  Visited bitmap proves every phase was
+  entered.
+- Tick evidence: helpers record `xTaskGetTickCount` before/after
+  `vTaskDelay(1)`; controller asserts `end - start >= 1`.
+- Object protocol: `OSAL_OBJECT_BEGIN`, `OSAL_CASE_PASS name=<case>`,
+  `OSAL_OBJECT_PASS`, `OSAL_OBJECT_END status=pass` — independent of
+  boot protocol.
+- Verifier: requires `harness_native_task` case, rejects unknown
+  cases, missing/empty `name=`, duplicates; enforces CASE_PASS
+  position between OBJECT_BEGIN and OBJECT_PASS; checks
+  `multi_helper=true` and `tick_advance=true` in OBJECT_PASS.
+- Boot protocol reordered to precede object protocol.
+- Stack margin ~459 words (threshold 128).  QEMU exit code 0.
+  All Step 3B/3C fields preserved.  `RUSTFLAGS="-D warnings"` clean.
 
 ### Step 1 — Integration Contract Neutralization — Completed
 
