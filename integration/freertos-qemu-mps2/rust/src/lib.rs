@@ -1,6 +1,6 @@
 //! Rust integration staticlib for OSAL FreeRTOS QEMU MPS2 firmware.
 //!
-//! Step 3C — FreeRTOS-backed allocator smoke (no facade yet).
+//! Step 3C — allocator + facade + RuntimeLifecycle smoke.
 
 #![no_std]
 
@@ -13,8 +13,13 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use core::alloc::{GlobalAlloc, Layout};
+use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use osal_api::error::Error;
+use osal_api::time::Timeout;
+use osal_api::runtime::RuntimeState;
+use osal_api::traits::mutex::Mutex;
 use osal_backend_freertos_sys as sys;
 use sys::{DelayStatus, SchedulerState, TickSnapshot};
 
@@ -27,15 +32,13 @@ static GLOBAL_ALLOCATOR: FreeRtosAllocator = FreeRtosAllocator;
 // C bridges
 // ------------------------------------------------------------------
 
-use core::ffi::CStr;
-
 unsafe extern "C" {
     fn osal_test_rust_fatal(reason: u32) -> !;
     fn osal_test_trace_u64(name: *const i8, value: u64);
 }
 
 fn trace_u64(name: &CStr, value: u64) {
-    unsafe { osal_test_trace_u64(name.as_ptr(), value); }
+    unsafe { osal_test_trace_u64(name.as_ptr().cast::<i8>(), value); }
 }
 
 // ------------------------------------------------------------------
@@ -44,12 +47,10 @@ fn trace_u64(name: &CStr, value: u64) {
 
 #[repr(i32)]
 enum SmokeFailure {
-    // Runtime image (10–12)
     RustData     = 10,
     RustBss      = 11,
     RustBssWrite = 12,
 
-    // C shim (20, 30–40, 50–51)
     ShimScheduler = 20,
     CapTickRate   = 30,
     CapPriorities = 31,
@@ -58,14 +59,13 @@ enum SmokeFailure {
     CapStackWord  = 34,
     CapDynamicAllocation = 35,
     CapSoftwareTimers    = 36,
-    CapMinimalStack      = 37,
-    CapMaxStack          = 38,
+    CapMinimalStack = 37,
+    CapMaxStack     = 38,
     CapTlsSlots  = 39,
     CapTlsIndex  = 40,
     ShimDelay    = 50,
     ShimTick     = 51,
 
-    // Allocator (60–69)
     BoxValue     = 60,
     Alignment    = 61,
     ArcCount     = 62,
@@ -73,6 +73,27 @@ enum SmokeFailure {
     VecValue     = 64,
     HeapDidNotDecrease = 65,
     AllocatorLeak = 66,
+
+    // Runtime lifecycle
+    InitialState      = 70,
+    ObjectBeforeInit  = 71,
+    Initialize        = 72,
+    AlreadyInitialized = 73,
+    MutexCreate       = 74,
+    MutexLock         = 75,
+    MutexRelock       = 76,
+    MutexValue        = 77,
+    ShutdownBusy      = 78,
+    BusyRollback      = 79,
+    Shutdown          = 80,
+    ShutdownState     = 81,
+    NotInitialized    = 82,
+    Reinitialize      = 83,
+    Reshutdown        = 84,
+    CycleInitialize   = 85,
+    CycleMutex        = 86,
+    CycleShutdown     = 87,
+    CycleLeak         = 88,
 }
 
 // ------------------------------------------------------------------
@@ -97,7 +118,7 @@ fn validate_runtime_image() -> Result<(), SmokeFailure> {
 }
 
 // ------------------------------------------------------------------
-// C-shim validation (scheduler, capabilities, tick/delay)
+// C-shim validation
 // ------------------------------------------------------------------
 
 fn validate_shim() -> Result<(), SmokeFailure> {
@@ -145,22 +166,20 @@ fn validate_allocator() -> Result<(), SmokeFailure> {
     let h0 = sys::heap_free();
     trace_u64(c"heap_baseline", h0);
 
-    // Box
     let boxed = Box::new(0x1234_5678_u32);
     core::hint::black_box(boxed.as_ref());
     if *boxed != 0x1234_5678 { return Err(SmokeFailure::BoxValue); }
 
-    // Over-aligned
     let aligned = Box::new(Aligned64 { bytes: [0xA5; 64] });
     core::hint::black_box(aligned.as_ref());
-    let addr = &*aligned as *const Aligned64 as usize;
-    if addr & 63 != 0 { return Err(SmokeFailure::Alignment); }
+    if (&*aligned as *const Aligned64 as usize) & 63 != 0 {
+        return Err(SmokeFailure::Alignment);
+    }
 
     let h1 = sys::heap_free();
-    trace_u64(c"heap_allocator_live", h1);
+    trace_u64(c"heap_alloc_live", h1);
     if h1 >= h0 { return Err(SmokeFailure::HeapDidNotDecrease); }
 
-    // Arc
     let shared = Arc::new(0x55AA_u32);
     core::hint::black_box(shared.as_ref());
     let cloned = Arc::clone(&shared);
@@ -168,7 +187,6 @@ fn validate_allocator() -> Result<(), SmokeFailure> {
     drop(cloned);
     if Arc::strong_count(&shared) != 1 { return Err(SmokeFailure::ArcDrop); }
 
-    // Vec growth (exercises realloc)
     let mut values = Vec::new();
     for v in 0u32..128 { values.push(v); }
     core::hint::black_box(values.as_slice());
@@ -176,16 +194,111 @@ fn validate_allocator() -> Result<(), SmokeFailure> {
         if *v != i as u32 { return Err(SmokeFailure::VecValue); }
     }
 
-    // Drop everything and check heap recovery
     drop(values);
     drop(shared);
     drop(aligned);
     drop(boxed);
 
     let h2 = sys::heap_free();
-    trace_u64(c"heap_after_allocator", h2);
+    trace_u64(c"heap_after_alloc", h2);
     if h2 != h0 { return Err(SmokeFailure::AllocatorLeak); }
 
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Runtime lifecycle smoke
+// ------------------------------------------------------------------
+
+fn validate_lifecycle() -> Result<(), SmokeFailure> {
+    // Case 1: initial state
+    if osal::runtime_state() != RuntimeState::Uninitialized {
+        return Err(SmokeFailure::InitialState);
+    }
+
+    // Case 2: pre-init object creation must fail
+    match osal::backend::Mutex::new(1u32) {
+        Err(Error::NotInitialized) => {}
+        _ => return Err(SmokeFailure::ObjectBeforeInit),
+    }
+
+    // Case 3: first initialize
+    osal::initialize().map_err(|_| SmokeFailure::Initialize)?;
+    if osal::runtime_state() != RuntimeState::Running {
+        return Err(SmokeFailure::Initialize);
+    }
+    trace_u64(c"heap_after_init", sys::heap_free());
+
+    // Case 4: repeat initialize
+    match osal::initialize() {
+        Err(Error::AlreadyInitialized) => {}
+        _ => return Err(SmokeFailure::AlreadyInitialized),
+    }
+
+    // Case 5: create Mutex, lock, write, unlock, re-lock, read
+    let mutex = osal::backend::Mutex::new(7u32)
+        .map_err(|_| SmokeFailure::MutexCreate)?;
+    trace_u64(c"heap_with_mutex", sys::heap_free());
+    {
+        let mut guard = mutex.lock(Timeout::NoWait)
+            .map_err(|_| SmokeFailure::MutexLock)?;
+        *guard = 11;
+    }
+    {
+        let guard = mutex.lock(Timeout::NoWait)
+            .map_err(|_| SmokeFailure::MutexRelock)?;
+        if *guard != 11 { return Err(SmokeFailure::MutexValue); }
+    }
+
+    // Case 7: active object blocks shutdown
+    match osal::shutdown() {
+        Err(Error::Busy) => {}
+        _ => return Err(SmokeFailure::ShutdownBusy),
+    }
+    if osal::runtime_state() != RuntimeState::Running {
+        return Err(SmokeFailure::BusyRollback);
+    }
+
+    // Case 8: drop mutex → shutdown succeeds
+    drop(mutex);
+    osal::shutdown().map_err(|_| SmokeFailure::Shutdown)?;
+    if osal::runtime_state() != RuntimeState::Uninitialized {
+        return Err(SmokeFailure::ShutdownState);
+    }
+    trace_u64(c"heap_after_shutdown", sys::heap_free());
+
+    // Case 9: repeat shutdown
+    match osal::shutdown() {
+        Err(Error::NotInitialized) => {}
+        _ => return Err(SmokeFailure::NotInitialized),
+    }
+
+    // Case 10: reinitialize + shutdown
+    osal::initialize().map_err(|_| SmokeFailure::Reinitialize)?;
+    osal::shutdown().map_err(|_| SmokeFailure::Reshutdown)?;
+
+    Ok(())
+}
+
+fn validate_lifecycle_cycles() -> Result<(), SmokeFailure> {
+    const CYCLES: usize = 8;
+
+    for cycle in 0..CYCLES {
+        let baseline = sys::heap_free();
+
+        osal::initialize().map_err(|_| SmokeFailure::CycleInitialize)?;
+        let m = osal::backend::Mutex::new(cycle as u32)
+            .map_err(|_| SmokeFailure::CycleMutex)?;
+        drop(m);
+        osal::shutdown().map_err(|_| SmokeFailure::CycleShutdown)?;
+
+        let after = sys::heap_free();
+        if after != baseline {
+            return Err(SmokeFailure::CycleLeak);
+        }
+    }
+
+    trace_u64(c"lifecycle_cycles", CYCLES as u64);
     Ok(())
 }
 
@@ -197,6 +310,8 @@ fn run_smoke() -> Result<(), SmokeFailure> {
     validate_runtime_image()?;
     validate_shim()?;
     validate_allocator()?;
+    validate_lifecycle()?;
+    validate_lifecycle_cycles()?;
     Ok(())
 }
 

@@ -11,6 +11,9 @@ crate-type = ["staticlib"]
 
 [dependencies]
 osal-backend-freertos-sys = { path = "../../../crates/osal-backend-freertos-sys" }
+osal-backend-freertos = { path = "../../../crates/osal-backend-freertos" }
+osal-api = { path = "../../../crates/osal-api" }
+osal = { path = "../../../crates/osal", default-features = false, features = ["backend-freertos"] }
 
 [profile.dev]
 panic = "abort"
