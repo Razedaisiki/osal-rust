@@ -71,6 +71,7 @@
 
 /* Stack overflow checking.                                                   */
 #define configCHECK_FOR_STACK_OVERFLOW           2
+#define INCLUDE_uxTaskGetStackHighWaterMark      1
 
 /* Hooks.                                                                     */
 #define configUSE_MALLOC_FAILED_HOOK             1

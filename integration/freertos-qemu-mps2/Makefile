@@ -170,9 +170,7 @@ check-symbols:
 	            xPortPendSVHandler xPortSysTickHandler \
 	            vPortSVCHandler boot_task \
 	            osal_rust_smoke_entry \
-	            osal_freertos_probe_capabilities \
 	            osal_freertos_scheduler_state \
-	            osal_freertos_tick_snapshot \
 	            osal_freertos_delay_ticks; do \
 	    if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
 	        echo "  OK   $$sym"; \

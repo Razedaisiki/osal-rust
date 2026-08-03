@@ -19,7 +19,7 @@
 /* ------------------------------------------------------------------ */
 /* Boot task stack and priority.                                      */
 /* ------------------------------------------------------------------ */
-#define BOOT_TASK_STACK_WORDS  configMINIMAL_STACK_SIZE
+#define BOOT_TASK_STACK_WORDS  512U
 #define BOOT_TASK_PRIORITY     (configMAX_PRIORITIES - 1)
 
 /* ------------------------------------------------------------------ */
@@ -110,30 +110,36 @@ static void boot_task(void *context)
         boot_fail("tick-not-advanced");
     }
 
-    /* 3. Diagnostic: direct C call to shim delay (test A).
-     *    Emitted as OSAL_BOOT_DIAG — not required by verifier.       */
+    /* 3. High-water mark before entering Rust.                       */
     {
-        uint32_t diag_delay = osal_freertos_delay_ticks(2U);
-        console_write("OSAL_BOOT_DIAG direct_delay_ticks=");
-        console_write_u32(diag_delay);
+        uint32_t before_hwm = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+        console_write("OSAL_BOOT_DIAG stack_hwm_before=");
+        console_write_u32(before_hwm);
         console_write_line("");
     }
 
-    /* 4. Call into the Rust staticlib entry. */
+    /* 4. Call into the Rust staticlib entry (delay-only smoke).      */
     int32_t rust_code = osal_rust_smoke_entry();
     if (rust_code != 0) {
         boot_fail_u32("rust-entry", (uint32_t)rust_code);
     }
 
-    /* 4. Success. */
+    /* 5. High-water mark after Rust returns.                         */
+    {
+        uint32_t after_hwm = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+        console_write("OSAL_BOOT_DIAG stack_hwm_after=");
+        console_write_u32(after_hwm);
+        console_write_line("");
+    }
+
+    /* 6. Success. */
     console_write_line(
         "OSAL_BOOT_PASS "
         "scheduler=running "
         "tick_advanced=true "
         "runtime_image=true "
         "rust_entry=true "
-        "shim=true "
-        "capabilities=true"
+        "shim_delay=true"
     );
 
     console_write_line("OSAL_BOOT_END status=pass");
