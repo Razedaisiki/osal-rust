@@ -125,6 +125,36 @@ real FreeRTOS without depending on the OSAL Task implementation.
   Range guard prevents shift overflow on bogus phase values from
   the C FFI bridge.
 
+### Step 4A — Mutex Real-Kernel Contracts — Completed
+
+- `cases/mutex.rs`: 8 Mutex contracts validated on real FreeRTOS.
+- Infrastructure: `MutexTaskContext` with Box::leak/reclaim pattern,
+  `MutexOperation` enum (NoWait, AfterZero, AfterTicks,
+  AfterTicksExpectAcquire, Forever), `SchedulerResumeGuard` (RAII).
+- Rust native helper entry `mutex_helper_entry` — all MutexGuard
+  drops complete before `vTaskDelete(NULL)`.
+
+**Cases (all on real FreeRTOS Kernel V11.3.0, Cortex-M3, QEMU):**
+
+| Case | What it proves |
+|------|---------------|
+| `mutex_basic_clone` | Clone is heap no-op; last-drop reclaims native handle |
+| `mutex_non_recursive` | NoWait re-lock → LockFailed (same task) |
+| `mutex_nowait_zero` | Cross-task NoWait→LockFailed, After(ZERO)→Timeout |
+| `mutex_finite_timeout` | After(5ms)→Timeout, elapsed≥5 ticks |
+| `mutex_blocking_wake` | Helper blocks, controller releases; acquired_tick≥release_tick |
+| `mutex_forever_wake` | Forever acquires; finite watchdog; no spurious Timeout |
+| `mutex_scheduler_suspended` | Suspended: After/Forever→Busy, NoWait/AfterZero non-blocking |
+| `mutex_runtime_lease` | Active handle→Busy, failure-atomic; drop→shutdown→heap recovered |
+
+- Suite tracks `suite_baseline` for end-to-end heap recovery proof.
+- Stack margin: ~459 words (threshold 128). QEMU exit 0.
+- Verifier: all 8 Mutex cases + harness case required; 6 Mutex
+  OBJECT_PASS fields.
+
+**Deferred (not in Step 4A scope):** fairness, starvation prevention,
+priority inheritance, ISR calls, OOM injection, guard cross-task move.
+
 ### Step 1 — Integration Contract Neutralization — Completed
 
 - Integration identifiers neutralized: `ROUSSATL_FREERTOS_*` env vars →
