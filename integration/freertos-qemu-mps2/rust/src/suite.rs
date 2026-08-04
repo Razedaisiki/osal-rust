@@ -26,10 +26,6 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
         return e as i32;
     }
 
-    // ------------------------------------------------------------------
-    // Step 4A — Mutex real-kernel contracts.
-    // ------------------------------------------------------------------
-
     // Suite baseline: heap before any OSAL objects are created.
     let suite_baseline = sys::heap_free();
 
@@ -37,11 +33,29 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
         return SUITE_RUNTIME_INIT_FAILED;
     }
 
+    // ------------------------------------------------------------------
+    // Step 4A — Mutex real-kernel contracts.
+    // ------------------------------------------------------------------
     let mutex_result = cases::mutex::run_mutex_cases(tick_bits, suite_baseline);
 
-    // Always attempt cleanup regardless of case outcome — a leaked
-    // context holding a RuntimeLease can cause shutdown to fail.
-    // Preserve the primary error; shutdown failure is secondary.
+    // Primary: case errors.
+    if let Err(e) = mutex_result {
+        return -(e as i32);
+    }
+
+    // ------------------------------------------------------------------
+    // Step 4B — Semaphore real-kernel contracts.
+    // ------------------------------------------------------------------
+    let semaphore_result = cases::semaphore::run_semaphore_cases(tick_bits);
+
+    if let Err(e) = semaphore_result {
+        return -(e as i32);
+    }
+
+    // ------------------------------------------------------------------
+    // Final shutdown and heap gate (Mutex lifecycle + Semaphore
+    // lifecycle cases have reinitialized; one final shutdown).
+    // ------------------------------------------------------------------
     let runtime_state = osal::runtime_state();
     let shutdown_ok = match runtime_state {
         RuntimeState::Running => osal::shutdown().is_ok(),
@@ -49,29 +63,21 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
         _ => false,
     };
 
-    // Primary: case errors.
-    if let Err(e) = mutex_result {
-        return -(e as i32);
-    }
-
-    // Secondary: cleanup failures.
     if !shutdown_ok {
         return SUITE_RUNTIME_SHUTDOWN_FAILED;
     }
 
-    // Final heap gate: after final shutdown, heap must equal the
-    // suite baseline taken before any OSAL objects were created.
     if sys::heap_free() != suite_baseline {
         return SUITE_FINAL_HEAP_LEAK;
     }
 
     // ------------------------------------------------------------------
-    // Step 4B–4E — to be added.
+    // Step 4C–4E — to be added.
     // ------------------------------------------------------------------
 
     // --- object pass ---
     harness::console_line(
-        c"OSAL_OBJECT_PASS harness=true helper_self_delete=true idle_cleanup=true heap_recovered=true multi_helper=true tick_advance=true mutex=true mutex_clone=true mutex_timeout=true mutex_nowait=true mutex_blocking=true mutex_suspended=true mutex_lease=true",
+        c"OSAL_OBJECT_PASS harness=true helper_self_delete=true idle_cleanup=true heap_recovered=true multi_helper=true tick_advance=true mutex=true mutex_clone=true mutex_timeout=true mutex_nowait=true mutex_blocking=true mutex_suspended=true mutex_lease=true semaphore=true counting=true semaphore_timeout=true",
     );
 
     // --- end object protocol ---

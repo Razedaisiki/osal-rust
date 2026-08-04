@@ -9,3 +9,4 @@
 //!   Step 4E — timer.rs     (Timer scheduling, callback reentry)
 
 pub mod mutex;
+pub mod semaphore;

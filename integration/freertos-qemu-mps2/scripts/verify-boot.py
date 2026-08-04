@@ -56,6 +56,11 @@ REQUIRED_CASES = [
     "mutex_forever_wake",
     "mutex_scheduler_suspended",
     "mutex_runtime_lease",
+    "counting_core",
+    "counting_overflow",
+    "counting_nowait_zero",
+    "counting_finite_timeout",
+    "counting_clone",
 ]
 
 REQUIRED_OBJECT_PASS_FIELDS = [
@@ -72,6 +77,9 @@ REQUIRED_OBJECT_PASS_FIELDS = [
     "mutex_blocking=true",
     "mutex_suspended=true",
     "mutex_lease=true",
+    "semaphore=true",
+    "counting=true",
+    "semaphore_timeout=true",
 ]
 
 OBJECT_FIELD_STATUS = "status=pass"
