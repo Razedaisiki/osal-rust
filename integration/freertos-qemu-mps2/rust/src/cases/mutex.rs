@@ -14,6 +14,11 @@ use osal_api::traits::mutex::Mutex;
 use osal_backend_freertos_sys as sys;
 
 use crate::harness::{self, CaseState, HarnessError};
+
+unsafe extern "C" {
+    fn osal_test_scheduler_suspend();
+    fn osal_test_scheduler_resume();
+}
 use crate::harness::{
     PHASE_BEFORE_OPERATION, PHASE_EXITING, PHASE_OPERATION_COMPLETED, PHASE_STARTED,
 };
@@ -487,10 +492,122 @@ fn mutex_forever_wake(tick_bits: u8) -> Result<(), MutexError> {
 }
 
 // ------------------------------------------------------------------
+// SchedulerResumeGuard — RAII resume on drop.
+// ------------------------------------------------------------------
+
+struct SchedulerResumeGuard;
+
+impl SchedulerResumeGuard {
+    fn new() -> Self {
+        unsafe { osal_test_scheduler_suspend(); }
+        SchedulerResumeGuard
+    }
+}
+
+impl Drop for SchedulerResumeGuard {
+    fn drop(&mut self) {
+        unsafe { osal_test_scheduler_resume(); }
+    }
+}
+
+// ------------------------------------------------------------------
+// Case: mutex_scheduler_suspended
+// ------------------------------------------------------------------
+
+/// When the scheduler is suspended, After(d>0) and Forever must
+/// return Busy; NoWait and After(ZERO) remain non-blocking.
+fn mutex_scheduler_suspended(tick_bits: u8) -> Result<(), MutexError> {
+    let m = osal::backend::Mutex::new(1u32).map_err(|_| MutexError::Create)?;
+    let guard = m.lock(Timeout::NoWait).map_err(|_| MutexError::FirstLock)?;
+
+    {
+        // RAII: resume on any early return.
+        let _resume = SchedulerResumeGuard::new();
+
+        // NoWait — still non-blocking, must return LockFailed.
+        match m.lock(Timeout::NoWait) {
+            Err(Error::LockFailed) => {}
+            _ => return Err(MutexError::NoWaitNotFailed),
+        }
+
+        // After(ZERO) — still non-blocking, must return Timeout.
+        match m.lock(Timeout::After(core::time::Duration::ZERO)) {
+            Err(Error::Timeout) => {}
+            _ => return Err(MutexError::AfterZeroNotTimeout),
+        }
+
+        // After(d>0) — blocking, must return Busy when suspended.
+        match m.lock(Timeout::After(core::time::Duration::from_millis(1))) {
+            Err(Error::Busy) => {}
+            _ => return Err(MutexError::TimeoutNotFailed),
+        }
+
+        // Forever — blocking, must return Busy when suspended.
+        match m.lock(Timeout::Forever) {
+            Err(Error::Busy) => {}
+            _ => return Err(MutexError::BlockingNotAcquired),
+        }
+
+        // SchedulerResumeGuard drops here → scheduler resumed.
+    }
+
+    // Post-resume: NoWait must still work correctly.
+    drop(guard);
+    let _g = m.lock(Timeout::NoWait).map_err(|_| MutexError::FirstLock)?;
+
+    let _ = tick_bits;
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Case: mutex_runtime_lease
+// ------------------------------------------------------------------
+
+/// Active Mutex handle blocks shutdown.  After last handle drop,
+/// shutdown succeeds and heap returns to suite baseline.
+fn mutex_runtime_lease(_tick_bits: u8, suite_baseline: u64) -> Result<(), MutexError> {
+    // Create the final mutex handle after all other cases have run.
+    let m = osal::backend::Mutex::new(99u32).map_err(|_| MutexError::Create)?;
+
+    // Active handle: shutdown must be Busy and failure-atomic.
+    let heap_before = sys::heap_free();
+    match osal::shutdown() {
+        Err(Error::Busy) => {}
+        _ => return Err(MutexError::RelockNotFailed),
+    }
+    // Runtime must still be Running.
+    if osal::runtime_state() != osal_api::runtime::RuntimeState::Running {
+        return Err(MutexError::RelockAfterDrop);
+    }
+    // Heap must not have changed.
+    if sys::heap_free() != heap_before {
+        return Err(MutexError::CloneHeapLeak);
+    }
+
+    // Drop the last handle and shut down.
+    drop(m);
+    osal::shutdown().map_err(|_| MutexError::LastDropLeak)?;
+
+    if osal::runtime_state() != osal_api::runtime::RuntimeState::Uninitialized {
+        return Err(MutexError::RelockAfterDrop);
+    }
+
+    // Heap must return to suite baseline.
+    if sys::heap_free() != suite_baseline {
+        return Err(MutexError::LastDropLeak);
+    }
+
+    // Re-initialize so the suite can finish its protocol.
+    osal::initialize().map_err(|_| MutexError::Create)?;
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------
 // Public entry — called from the suite.
 // ------------------------------------------------------------------
 
-pub fn run_mutex_cases(tick_bits: u8) -> Result<(), MutexError> {
+pub fn run_mutex_cases(tick_bits: u8, suite_baseline: u64) -> Result<(), MutexError> {
     mutex_basic_clone(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=mutex_basic_clone");
 
@@ -508,6 +625,12 @@ pub fn run_mutex_cases(tick_bits: u8) -> Result<(), MutexError> {
 
     mutex_forever_wake(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=mutex_forever_wake");
+
+    mutex_scheduler_suspended(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=mutex_scheduler_suspended");
+
+    mutex_runtime_lease(tick_bits, suite_baseline)?;
+    harness::console_line(c"OSAL_CASE_PASS name=mutex_runtime_lease");
 
     Ok(())
 }

@@ -54,6 +54,8 @@ REQUIRED_CASES = [
     "mutex_finite_timeout",
     "mutex_blocking_wake",
     "mutex_forever_wake",
+    "mutex_scheduler_suspended",
+    "mutex_runtime_lease",
 ]
 
 REQUIRED_OBJECT_PASS_FIELDS = [
@@ -68,6 +70,8 @@ REQUIRED_OBJECT_PASS_FIELDS = [
     "mutex_timeout=true",
     "mutex_nowait=true",
     "mutex_blocking=true",
+    "mutex_suspended=true",
+    "mutex_lease=true",
 ]
 
 OBJECT_FIELD_STATUS = "status=pass"

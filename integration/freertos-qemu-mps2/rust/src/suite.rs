@@ -3,24 +3,18 @@
 //! Owns the object protocol envelope (`OSAL_OBJECT_BEGIN` /
 //! `OSAL_OBJECT_PASS` / `OSAL_OBJECT_END`) and delegates individual
 //! cases to their respective modules.
-//!
-//! Cases are added incrementally:
-//!
-//!   Step 4-0 — harness (harness.rs)
-//!   Step 4A  — Mutex   (cases/mutex.rs)
-//!   Step 4B  — Semaphore
-//!   Step 4C  — Queue
-//!   Step 4D  — Task
-//!   Step 4E  — Timer
+
+use osal_api::runtime::RuntimeState;
+use osal_backend_freertos_sys as sys;
 
 use crate::cases;
 use crate::harness;
 
 /// Top-level entry point for all managed-object real-kernel tests.
-///
-/// Called from the C boot task after Step 3C smoke and boot protocol
-/// markers have been emitted.
 pub fn run_object_suite(tick_bits: u8) -> i32 {
+    const SUITE_RUNTIME_INIT_FAILED: i32 = -150;
+    const SUITE_RUNTIME_SHUTDOWN_FAILED: i32 = -151;
+
     // --- begin object protocol ---
     harness::console_line(c"OSAL_OBJECT_BEGIN");
 
@@ -34,17 +28,27 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
     // ------------------------------------------------------------------
     // Step 4A — Mutex real-kernel contracts.
     // ------------------------------------------------------------------
-    // Runtime errors — fatal to the object suite.
-    const SUITE_RUNTIME_INIT_FAILED: i32 = -150;
-    const SUITE_RUNTIME_SHUTDOWN_FAILED: i32 = -151;
+
+    // Suite baseline: heap before any OSAL objects are created.
+    let suite_baseline = sys::heap_free();
 
     if osal::initialize().is_err() {
         return SUITE_RUNTIME_INIT_FAILED;
     }
 
-    let result = cases::mutex::run_mutex_cases(tick_bits);
+    let result = cases::mutex::run_mutex_cases(tick_bits, suite_baseline);
 
-    if osal::shutdown().is_err() {
+    // The lifecycle case may have shut down and reinitialized, or
+    // left the runtime Running.  Always attempt shutdown; ignore
+    // NotInitialized (already shut down).
+    let runtime_state = osal::runtime_state();
+    let shutdown_ok = match runtime_state {
+        RuntimeState::Running => osal::shutdown().is_ok(),
+        RuntimeState::Uninitialized => true,
+        _ => false,
+    };
+
+    if !shutdown_ok {
         return SUITE_RUNTIME_SHUTDOWN_FAILED;
     }
 
@@ -58,7 +62,7 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
 
     // --- object pass ---
     harness::console_line(
-        c"OSAL_OBJECT_PASS harness=true helper_self_delete=true idle_cleanup=true heap_recovered=true multi_helper=true tick_advance=true mutex=true mutex_clone=true mutex_timeout=true mutex_nowait=true mutex_blocking=true",
+        c"OSAL_OBJECT_PASS harness=true helper_self_delete=true idle_cleanup=true heap_recovered=true multi_helper=true tick_advance=true mutex=true mutex_clone=true mutex_timeout=true mutex_nowait=true mutex_blocking=true mutex_suspended=true mutex_lease=true",
     );
 
     // --- end object protocol ---
