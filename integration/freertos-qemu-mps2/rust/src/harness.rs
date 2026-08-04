@@ -139,8 +139,14 @@ impl CaseState {
         self.phase.load(Ordering::Acquire)
     }
 
+    /// Record a failure code, keeping the first (root-cause) error.
     pub fn set_result(&self, result: i32) {
-        self.result.store(result, Ordering::Release);
+        let _ = self.result.compare_exchange(
+            0,
+            result,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
     }
 
     pub fn get_result(&self) -> i32 {
@@ -183,7 +189,7 @@ impl CaseState {
 /// `context` must point to a valid **static** `CaseState` or be null.
 /// The caller must ensure the pointee outlives every native helper
 /// task that holds this context — even across early-return paths.
-unsafe fn state_from_context<'a>(context: *mut c_void) -> Option<&'a CaseState> {
+unsafe fn state_from_context(context: *mut c_void) -> Option<&'static CaseState> {
     if context.is_null() {
         return None;
     }
