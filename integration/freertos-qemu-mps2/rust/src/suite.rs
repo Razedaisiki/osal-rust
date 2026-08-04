@@ -37,11 +37,11 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
         return SUITE_RUNTIME_INIT_FAILED;
     }
 
-    let result = cases::mutex::run_mutex_cases(tick_bits, suite_baseline);
+    let mutex_result = cases::mutex::run_mutex_cases(tick_bits, suite_baseline);
 
-    // The lifecycle case may have shut down and reinitialized, or
-    // left the runtime Running.  Always attempt shutdown; ignore
-    // NotInitialized (already shut down).
+    // Always attempt cleanup regardless of case outcome — a leaked
+    // context holding a RuntimeLease can cause shutdown to fail.
+    // Preserve the primary error; shutdown failure is secondary.
     let runtime_state = osal::runtime_state();
     let shutdown_ok = match runtime_state {
         RuntimeState::Running => osal::shutdown().is_ok(),
@@ -49,12 +49,14 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
         _ => false,
     };
 
-    if !shutdown_ok {
-        return SUITE_RUNTIME_SHUTDOWN_FAILED;
+    // Primary: case errors.
+    if let Err(e) = mutex_result {
+        return -(e as i32);
     }
 
-    if let Err(e) = result {
-        return -(e as i32);
+    // Secondary: cleanup failures.
+    if !shutdown_ok {
+        return SUITE_RUNTIME_SHUTDOWN_FAILED;
     }
 
     // Final heap gate: after final shutdown, heap must equal the

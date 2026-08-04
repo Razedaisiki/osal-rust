@@ -128,7 +128,7 @@ real FreeRTOS without depending on the OSAL Task implementation.
 ### Step 4A — Mutex Real-Kernel Contracts — Completed
 
 - `cases/mutex.rs`: 8 Mutex contracts validated on real FreeRTOS.
-- Infrastructure: `MutexTaskContext` with Box::leak/reclaim pattern,
+- Infrastructure: `MutexTaskContext` with `Box::into_raw`/`Box::from_raw` pattern,
   `MutexOperation` enum (NoWait, AfterZero, AfterTicks,
   AfterTicksExpectAcquire, Forever), `SchedulerResumeGuard` (RAII).
 - Rust native helper entry `mutex_helper_entry` — all MutexGuard

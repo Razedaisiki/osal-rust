@@ -51,6 +51,7 @@ pub enum MutexError {
     ShutdownFailed = 141,
     ShutdownStateInvalid = 142,
     ControllerDelayFailed = 143,
+    HelperSpawnFailed = 144,
 }
 
 // ------------------------------------------------------------------
@@ -107,7 +108,7 @@ impl MutexTaskContext {
 // ------------------------------------------------------------------
 
 /// # Safety
-/// `context` must be a `Box::leak`'d `MutexTaskContext`.
+/// `context` must be a `Box::into_raw`'d `MutexTaskContext`.
 unsafe extern "C" fn mutex_helper_entry(context: *mut c_void) {
     // All MutexGuard and other drop work must complete inside this block.
     let result = {
@@ -361,7 +362,7 @@ fn mutex_finite_timeout(tick_bits: u8) -> Result<(), MutexError> {
 
     if rc != 0 {
         unsafe { drop(Box::from_raw(raw)); }
-        return Err(MutexError::NoWaitNotFailed);
+        return Err(MutexError::HelperSpawnFailed);
     }
 
     harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)
@@ -440,7 +441,7 @@ fn mutex_blocking_wake(tick_bits: u8) -> Result<(), MutexError> {
 
     unsafe { drop(Box::from_raw(raw)); }
 
-    if acquired < release_tick {
+    if acquired.wrapping_sub(release_tick) > (u32::MAX / 2) {
         return Err(MutexError::AcquiredBeforeRelease);
     }
 
@@ -502,7 +503,7 @@ fn mutex_forever_wake(tick_bits: u8) -> Result<(), MutexError> {
 
     unsafe { drop(Box::from_raw(raw)); }
 
-    if acquired < release_tick {
+    if acquired.wrapping_sub(release_tick) > (u32::MAX / 2) {
         return Err(MutexError::AcquiredBeforeRelease);
     }
 

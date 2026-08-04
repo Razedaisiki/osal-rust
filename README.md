@@ -82,7 +82,7 @@ Public APIs may change before version 1.0.
 | Queue Core        | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
 | Queue Blocking    | Validated | Deferred    | Validated   | Implemented| Validated¹  | Validated |
 | Queue ISR         | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
-| Mutex             | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
+| Mutex             | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
 | CountingSemaphore | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
 | BinarySemaphore   | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
 | Semaphore ISR     | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
