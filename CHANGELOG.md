@@ -116,6 +116,14 @@ real FreeRTOS without depending on the OSAL Task implementation.
 - Boot protocol reordered to precede object protocol.
 - Stack margin ~459 words (threshold 128).  QEMU exit code 0.
   All Step 3B/3C fields preserved.  `RUSTFLAGS="-D warnings"` clean.
+- Context lifetime: `CaseState` instances are `static` so context
+  pointers stay valid even when `run_harness_smoke` returns early on
+  an error path while a spawned helper is still running.
+- Phase ordering: `record_phase` enforces strict `current + 1`
+  transitions within `CREATED..=DONE`; skipped, backward, and
+  duplicate transitions set `RESULT_INVALID_PHASE` and are ignored.
+  Range guard prevents shift overflow on bogus phase values from
+  the C FFI bridge.
 
 ### Step 1 — Integration Contract Neutralization — Completed
 
