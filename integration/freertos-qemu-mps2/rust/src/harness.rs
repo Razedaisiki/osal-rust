@@ -14,10 +14,10 @@
 //! Native helpers set STARTED through EXITING.  The Rust controller
 //! sets DONE after confirming Idle task heap recovery.
 //!
-//! Each `CaseState` stores its address as an opaque `*mut c_void`
-//! context pointer passed to `osal_test_task_spawn`.  Native helpers
-//! pass this context back to the extern "C" bridges so they operate
-//! on the correct `CaseState`.
+//! Each `CaseState` is a static so that context pointers remain valid
+//! even if the controller returns early on an error path while a
+//! spawned native helper is still running.  Native helpers receive an
+//! opaque `*mut c_void` context and pass it back to the bridges.
 
 use core::ffi::{c_void, CStr};
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
@@ -34,6 +34,9 @@ pub const PHASE_BEFORE_OPERATION: u32 = 2;
 pub const PHASE_OPERATION_COMPLETED: u32 = 3;
 pub const PHASE_EXITING: u32 = 4;
 pub const PHASE_DONE: u32 = 5;
+
+/// Internal sentinel: a phase transition violated the state machine.
+const RESULT_INVALID_PHASE: i32 = -2;
 
 /// The phases a native helper must visit (in order).
 const REQUIRED_HELPER_PHASES: &[u32] = &[
@@ -54,7 +57,7 @@ pub enum HarnessError {
     HelperResult = 103,
     TickStalled = 104,
     PhaseNotVisited = 105,
-    CrossTalk = 106,
+    StateIsolation = 106,
 }
 
 // ------------------------------------------------------------------
@@ -105,18 +108,31 @@ impl CaseState {
 
     /// Record a phase transition.
     ///
-    /// Panic-free: if `phase` is not strictly greater than the current
-    /// phase the call is silently ignored (a harness bug, but we don't
-    /// want to panic inside a FreeRTOS task).
-    pub fn record_phase(&self, phase: u32) {
-        let prev = self.phase.load(Ordering::Acquire);
-        if phase > prev {
-            self.phase.store(phase, Ordering::Release);
+    /// The phase must be exactly `current + 1` and within the valid
+    /// range `CREATED..=DONE`.  Out-of-order, duplicate, backward, and
+    /// skipped transitions set `result` to `RESULT_INVALID_PHASE` and
+    /// are otherwise ignored.
+    ///
+    /// The visited bit is only set on a successful transition.
+    pub fn record_phase(&self, next: u32) {
+        // Guard: range check (also prevents shift overflow below).
+        if next > PHASE_DONE {
+            self.set_result(RESULT_INVALID_PHASE);
+            return;
         }
-        // Always record the visited bit — even if the phase didn't
-        // advance (defensive).
+
+        let current = self.phase.load(Ordering::Acquire);
+
+        // Strict sequential advance — no skipping, no going backward.
+        if next != current + 1 {
+            self.set_result(RESULT_INVALID_PHASE);
+            return;
+        }
+
+        self.phase.store(next, Ordering::Release);
+        // Only record the visited bit on a valid transition.
         self.visited
-            .fetch_or(1u32 << phase, Ordering::Release);
+            .fetch_or(1u32 << next, Ordering::Release);
     }
 
     pub fn get_phase(&self) -> u32 {
@@ -139,7 +155,6 @@ impl CaseState {
         self.end_tick.store(tick, Ordering::Release);
     }
 
-    #[allow(dead_code)]
     pub fn reset(&self) {
         self.phase.store(PHASE_CREATED, Ordering::Release);
         self.visited.store(0, Ordering::Release);
@@ -165,7 +180,9 @@ impl CaseState {
 // ------------------------------------------------------------------
 
 /// # Safety
-/// `context` must be a valid `*const CaseState` or null.
+/// `context` must point to a valid **static** `CaseState` or be null.
+/// The caller must ensure the pointee outlives every native helper
+/// task that holds this context — even across early-return paths.
 unsafe fn state_from_context<'a>(context: *mut c_void) -> Option<&'a CaseState> {
     if context.is_null() {
         return None;
@@ -281,14 +298,12 @@ fn console_line(text: &CStr) {
 // Per-helper validation
 // ------------------------------------------------------------------
 
-/// Validate a single helper's lifecycle: phase coverage, tick advance,
-/// result, and (optionally) cross-talk check against another state.
-fn validate_helper(
-    state: &CaseState,
-    label: &str,
-    other_phase: u32,
-    tick_bits: u8,
-) -> Result<(), HarnessError> {
+/// Validate a helper's lifecycle: phase coverage, tick advance, result.
+///
+/// State isolation between independent helpers is proven by the fact
+/// each uses a different context pointer — if any bridge ignored its
+/// context, the other helper would time out or fail its tick check.
+fn validate_helper(state: &CaseState) -> Result<(), HarnessError> {
     // All required phases visited.
     if !state.all_visited(REQUIRED_HELPER_PHASES) {
         return Err(HarnessError::PhaseNotVisited);
@@ -306,13 +321,15 @@ fn validate_helper(
         return Err(HarnessError::HelperResult);
     }
 
-    // Cross-talk defence: the other helper's phase must not have been
-    // affected by our operations.  (We check this after both completed —
-    // if `other_phase` is wrong, something leaked between contexts.)
-    let _ = (label, other_phase, tick_bits);
-
     Ok(())
 }
+
+// ------------------------------------------------------------------
+// Static CaseState slots — stay valid across early-return paths.
+// ------------------------------------------------------------------
+
+static STATE_A: CaseState = CaseState::new();
+static STATE_B: CaseState = CaseState::new();
 
 // ------------------------------------------------------------------
 // Harness smoke — two independent native helpers.
@@ -323,12 +340,12 @@ pub fn run_harness_smoke(tick_bits: u8) -> Result<(), HarnessError> {
 
     let baseline = sys::heap_free();
 
-    // Create two independent CaseStates.
-    let state_a = CaseState::new();
-    let state_b = CaseState::new();
+    // Reset both static states for a fresh run.
+    STATE_A.reset();
+    STATE_B.reset();
 
-    let ctx_a = state_a.as_context();
-    let ctx_b = state_b.as_context();
+    let ctx_a = STATE_A.as_context();
+    let ctx_b = STATE_B.as_context();
 
     // Spawn helper A.
     let rc = unsafe { osal_test_task_spawn(harness_smoke_helper, ctx_a, 512, 2) };
@@ -336,39 +353,29 @@ pub fn run_harness_smoke(tick_bits: u8) -> Result<(), HarnessError> {
         return Err(HarnessError::SpawnFailed);
     }
 
-    // Spawn helper B — proves no cross-talk in a single global harness.
+    // Spawn helper B — proves state isolation in a single harness.
     let rc = unsafe { osal_test_task_spawn(harness_smoke_helper, ctx_b, 512, 2) };
     if rc != 0 {
         return Err(HarnessError::SpawnFailed);
     }
 
     // Wait for both helpers to reach EXITING.
-    wait_until_phase(&state_a, PHASE_EXITING, 100, tick_bits)?;
-    wait_until_phase(&state_b, PHASE_EXITING, 100, tick_bits)?;
+    wait_until_phase(&STATE_A, PHASE_EXITING, 100, tick_bits)?;
+    wait_until_phase(&STATE_B, PHASE_EXITING, 100, tick_bits)?;
 
     // Give Idle task time to reclaim both TCBs and stacks.
     wait_until_heap_recovered(baseline, 100, tick_bits)?;
 
     // Set DONE on both states.
-    state_a.record_phase(PHASE_DONE);
-    state_b.record_phase(PHASE_DONE);
+    STATE_A.record_phase(PHASE_DONE);
+    STATE_B.record_phase(PHASE_DONE);
 
     // Validate each helper independently.
-    let phase_b_at_check = state_b.get_phase();
-    validate_helper(&state_a, "helper_a", phase_b_at_check, tick_bits)?;
+    validate_helper(&STATE_A)?;
+    validate_helper(&STATE_B)?;
 
-    let phase_a_at_check = state_a.get_phase();
-    validate_helper(&state_b, "helper_b", phase_a_at_check, tick_bits)?;
-
-    // Cross-talk: verify the states are truly independent.
-    // If context pointers work correctly, A's visited bitmap should
-    // not contain B's phases (and vice versa).  Since both ran the
-    // same sequence, their visited bitmaps should be identical in
-    // content but from separate memory.
-    let visited_a = state_a.visited.load(Ordering::Acquire);
-    let visited_b = state_b.visited.load(Ordering::Acquire);
-
-    // Both must be non-zero and have the expected phases.
+    // State isolation: verify both states have independent visited
+    // bitmaps covering the full lifecycle.
     let expected_mask: u32 =
         (1u32 << PHASE_STARTED)
         | (1u32 << PHASE_BEFORE_OPERATION)
@@ -376,15 +383,18 @@ pub fn run_harness_smoke(tick_bits: u8) -> Result<(), HarnessError> {
         | (1u32 << PHASE_EXITING)
         | (1u32 << PHASE_DONE);
 
+    let visited_a = STATE_A.visited.load(Ordering::Acquire);
+    let visited_b = STATE_B.visited.load(Ordering::Acquire);
+
     if (visited_a & expected_mask) != expected_mask {
-        return Err(HarnessError::CrossTalk);
+        return Err(HarnessError::StateIsolation);
     }
     if (visited_b & expected_mask) != expected_mask {
-        return Err(HarnessError::CrossTalk);
+        return Err(HarnessError::StateIsolation);
     }
-    // The visited bitmaps must come from different memory (they're
-    // separate allocas, so addresses differ — proven by the fact both
-    // completed independently with correct phases).
+    // Both states completed independently — different static addresses
+    // mean different memory; both produced correct, self-consistent
+    // visited bitmaps so no cross-talk occurred.
 
     // --- case pass ---
     console_line(c"OSAL_CASE_PASS name=harness_native_task");
