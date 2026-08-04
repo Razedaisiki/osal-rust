@@ -45,6 +45,12 @@ pub enum MutexError {
     ForeverTimeout = 135,
     AcquiredBeforeRelease = 136,
     BlockingValueUnchanged = 137,
+    ShutdownBusyNotReturned = 138,
+    BusyStateChanged = 139,
+    BusyHeapChanged = 140,
+    ShutdownFailed = 141,
+    ShutdownStateInvalid = 142,
+    ControllerDelayFailed = 143,
 }
 
 // ------------------------------------------------------------------
@@ -69,8 +75,10 @@ enum MutexOperation {
 // ------------------------------------------------------------------
 struct MutexTaskContext {
     state: CaseState,
-    /// Pointer to the controller-owned Mutex.
-    mutex_ptr: *const osal::backend::Mutex<u32>,
+    /// Clone of the controller's Mutex — the context owns this handle
+    /// so the helper's access remains valid even if the controller
+    /// returns early on an error path.
+    mutex: osal::backend::Mutex<u32>,
     operation: MutexOperation,
     /// Ticks elapsed between BEFORE_OPERATION and the lock attempt result.
     elapsed_ticks: AtomicU32,
@@ -85,16 +93,13 @@ impl MutexTaskContext {
     ) -> Self {
         Self {
             state: CaseState::new(),
-            mutex_ptr: mutex as *const osal::backend::Mutex<u32>,
+            mutex: mutex.clone(),
             operation,
             elapsed_ticks: AtomicU32::new(0),
             acquired_tick: AtomicU32::new(0),
         }
     }
 
-    fn as_context_ptr(&self) -> *mut c_void {
-        (self as *const Self).cast_mut().cast::<c_void>()
-    }
 }
 
 // ------------------------------------------------------------------
@@ -125,7 +130,7 @@ unsafe extern "C" fn mutex_helper_entry(context: *mut c_void) {
 }
 
 fn run_mutex_operation(ctx: &MutexTaskContext) -> i32 {
-    let mutex = unsafe { &*ctx.mutex_ptr };
+    let mutex = &ctx.mutex;
 
     match ctx.operation {
         MutexOperation::NoWait => match mutex.lock(Timeout::NoWait) {
@@ -144,8 +149,9 @@ fn run_mutex_operation(ctx: &MutexTaskContext) -> i32 {
             let end = sys::tick_snapshot();
 
             // Record elapsed regardless of outcome.
+            let caps = sys::capabilities();
             ctx.elapsed_ticks.store(
-                ticks_since(start, end) as u32,
+                harness::total_ticks_diff(end, start, caps.tick_bits) as u32,
                 Ordering::Release,
             );
 
@@ -190,36 +196,45 @@ fn run_mutex_operation(ctx: &MutexTaskContext) -> i32 {
 // Helpers
 // ------------------------------------------------------------------
 
-fn ticks_since(before: sys::TickSnapshot, after: sys::TickSnapshot) -> u64 {
-    // The test harness always calls capabilities() for tick_bits;
-    // 32-bit ticks are expected on this target.
-    let tb = ((before.overflow_count as u64) << 32) | before.tick_count as u64;
-    let ta = ((after.overflow_count as u64) << 32) | after.tick_count as u64;
-    ta.saturating_sub(tb)
-}
-
 /// Spawn a Rust native helper, wait for it to self-delete, verify
-/// phases, and reclaim the context Box.
+/// phases, wait for Idle-task TCB/stack reclamation, then reclaim
+/// the context Box.
+///
+/// On spawn failure the Box is immediately reclaimed.  On timeout or
+/// helper-error paths the context is intentionally leaked — the
+/// native task may still be running and its Mutex clone must remain
+/// valid.  The test then fails via QEMU non-zero exit.
 fn run_mutex_helper(
     ctx: Box<MutexTaskContext>,
     tick_bits: u8,
 ) -> Result<(), HarnessError> {
-    let ctx_ptr = ctx.as_context_ptr();
-    let ctx = Box::leak(ctx);
+    let raw = Box::into_raw(ctx);
+    let ctx_ref = unsafe { &*raw };
+
+    // Take a task-spawn baseline so we can wait for TCB/stack reclaim.
+    let task_baseline = sys::heap_free();
 
     let rc = unsafe {
-        harness::native_task_spawn(mutex_helper_entry, ctx_ptr, 1024, 2)
+        harness::native_task_spawn(mutex_helper_entry, raw.cast::<c_void>(), 1024, 2)
     };
 
     if rc != 0 {
+        // Spawn failed — helper never ran, safe to reclaim.
+        unsafe { drop(Box::from_raw(raw)); }
         return Err(HarnessError::SpawnFailed);
     }
 
-    harness::wait_until_phase(&ctx.state, PHASE_EXITING, 100, tick_bits)?;
-    harness::validate_helper(&ctx.state)?;
+    // Wait for the helper to self-delete.
+    harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)?;
+    harness::validate_helper(&ctx_ref.state)?;
 
-    // Reclaim the context.
-    unsafe { drop(Box::from_raw(ctx as *const MutexTaskContext as *mut MutexTaskContext)); }
+    // The helper has called vTaskDelete(NULL).  Wait for the Idle
+    // task to reclaim the TCB and stack before we reclaim the
+    // context (and its Mutex clone).
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)?;
+
+    // Safe: helper is gone; context and its Mutex clone can be dropped.
+    unsafe { drop(Box::from_raw(raw)); }
 
     Ok(())
 }
@@ -328,44 +343,45 @@ fn mutex_nowait_zero(tick_bits: u8) -> Result<(), MutexError> {
 /// Controller holds the mutex; helper calls After(5ms) and must get
 /// Timeout with elapsed_ticks >= 5.
 fn mutex_finite_timeout(tick_bits: u8) -> Result<(), MutexError> {
-    let caps = sys::capabilities();
-    // 5 ms at 1 kHz → 5 ticks.
     let timeout_ticks = 5u32;
 
     let m = osal::backend::Mutex::new(1u32).map_err(|_| MutexError::Create)?;
     let guard = m.lock(Timeout::NoWait).map_err(|_| MutexError::FirstLock)?;
 
-    let ctx = Box::new(MutexTaskContext::new(
+    let raw = Box::into_raw(Box::new(MutexTaskContext::new(
         &m,
         MutexOperation::AfterTicks { timeout_ticks },
-    ));
-    let ctx_ptr = ctx.as_context_ptr();
-    let ctx = Box::leak(ctx);
+    )));
+    let ctx_ref = unsafe { &*raw };
+    let task_baseline = sys::heap_free();
 
     let rc = unsafe {
-        harness::native_task_spawn(mutex_helper_entry, ctx_ptr, 1024, 2)
+        harness::native_task_spawn(mutex_helper_entry, raw.cast::<c_void>(), 1024, 2)
     };
 
     if rc != 0 {
+        unsafe { drop(Box::from_raw(raw)); }
         return Err(MutexError::NoWaitNotFailed);
     }
 
-    harness::wait_until_phase(&ctx.state, PHASE_EXITING, 100, tick_bits)
+    harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)
         .map_err(|_| MutexError::TimeoutNotFailed)?;
-    harness::validate_helper(&ctx.state)
+    harness::validate_helper(&ctx_ref.state)
         .map_err(|_| MutexError::TimeoutNotFailed)?;
 
-    let elapsed = ctx.elapsed_ticks.load(Ordering::Acquire);
-    unsafe { drop(Box::from_raw(ctx as *const MutexTaskContext as *mut MutexTaskContext)); }
+    // Read elapsed before reclaiming.
+    let elapsed = ctx_ref.elapsed_ticks.load(Ordering::Acquire);
 
+    // Wait for Idle task TCB/stack reclamation.
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| MutexError::TimeoutNotFailed)?;
+
+    unsafe { drop(Box::from_raw(raw)); }
     drop(guard);
 
-    // Must not return before the deadline.
     if elapsed < timeout_ticks {
         return Err(MutexError::ElapsedTooShort);
     }
-    // Allow the return to be later than the deadline (scheduler jitter).
-    let _ = caps;
 
     Ok(())
 }
@@ -381,49 +397,53 @@ fn mutex_blocking_wake(tick_bits: u8) -> Result<(), MutexError> {
     let m = osal::backend::Mutex::new(0u32).map_err(|_| MutexError::Create)?;
     let guard = m.lock(Timeout::NoWait).map_err(|_| MutexError::FirstLock)?;
 
-    let ctx = Box::new(MutexTaskContext::new(
+    let raw = Box::into_raw(Box::new(MutexTaskContext::new(
         &m,
         MutexOperation::AfterTicksExpectAcquire { timeout_ticks: 100 },
-    ));
-    let ctx_ptr = ctx.as_context_ptr();
-    let ctx = Box::leak(ctx);
+    )));
+    let ctx_ref = unsafe { &*raw };
+    let task_baseline = sys::heap_free();
 
     let rc = unsafe {
-        harness::native_task_spawn(mutex_helper_entry, ctx_ptr, 1024, 2)
+        harness::native_task_spawn(mutex_helper_entry, raw.cast::<c_void>(), 1024, 2)
     };
     if rc != 0 {
+        unsafe { drop(Box::from_raw(raw)); }
         return Err(MutexError::BlockingNotAcquired);
     }
 
     // Wait for the helper to enter the blocking lock call.
-    harness::wait_until_phase(&ctx.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+    harness::wait_until_phase(&ctx_ref.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
         .map_err(|_| MutexError::BlockingNotAcquired)?;
 
     // Hold the lock for at least 2 ticks to ensure the helper is truly
     // blocked in the native mutex take, not just en route.
-    sys::delay_ticks(2);
+    if sys::delay_ticks(2) != sys::DelayStatus::Ok {
+        return Err(MutexError::ControllerDelayFailed);
+    }
 
     // Record release tick before dropping the guard.
     let release_tick = sys::tick_snapshot().tick_count as u32;
-
     drop(guard);
 
     // Wait for the helper to acquire and complete.
-    harness::wait_until_phase(&ctx.state, PHASE_EXITING, 100, tick_bits)
+    harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)
         .map_err(|_| MutexError::BlockingNotAcquired)?;
-    harness::validate_helper(&ctx.state)
+    harness::validate_helper(&ctx_ref.state)
         .map_err(|_| MutexError::BlockingNotAcquired)?;
 
-    let acquired = ctx.acquired_tick.load(Ordering::Acquire);
+    let acquired = ctx_ref.acquired_tick.load(Ordering::Acquire);
 
-    unsafe { drop(Box::from_raw(ctx as *const MutexTaskContext as *mut MutexTaskContext)); }
+    // Wait for Idle task TCB/stack reclamation.
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| MutexError::BlockingNotAcquired)?;
 
-    // Causality: the helper must acquire AFTER the controller releases.
+    unsafe { drop(Box::from_raw(raw)); }
+
     if acquired < release_tick {
         return Err(MutexError::AcquiredBeforeRelease);
     }
 
-    // Verify the helper modified the value (proves it held the guard).
     let final_val = {
         let g = m.lock(Timeout::NoWait).map_err(|_| MutexError::FirstLock)?;
         *g
@@ -446,35 +466,41 @@ fn mutex_forever_wake(tick_bits: u8) -> Result<(), MutexError> {
     let m = osal::backend::Mutex::new(0u32).map_err(|_| MutexError::Create)?;
     let guard = m.lock(Timeout::NoWait).map_err(|_| MutexError::FirstLock)?;
 
-    let ctx = Box::new(MutexTaskContext::new(&m, MutexOperation::Forever));
-    let ctx_ptr = ctx.as_context_ptr();
-    let ctx = Box::leak(ctx);
+    let raw = Box::into_raw(Box::new(MutexTaskContext::new(&m, MutexOperation::Forever)));
+    let ctx_ref = unsafe { &*raw };
+    let task_baseline = sys::heap_free();
 
     let rc = unsafe {
-        harness::native_task_spawn(mutex_helper_entry, ctx_ptr, 1024, 2)
+        harness::native_task_spawn(mutex_helper_entry, raw.cast::<c_void>(), 1024, 2)
     };
     if rc != 0 {
+        unsafe { drop(Box::from_raw(raw)); }
         return Err(MutexError::BlockingNotAcquired);
     }
 
     // Wait for the helper to enter the blocking call.
-    harness::wait_until_phase(&ctx.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+    harness::wait_until_phase(&ctx_ref.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
         .map_err(|_| MutexError::BlockingNotAcquired)?;
 
-    sys::delay_ticks(2);
+    if sys::delay_ticks(2) != sys::DelayStatus::Ok {
+        return Err(MutexError::ControllerDelayFailed);
+    }
 
     let release_tick = sys::tick_snapshot().tick_count as u32;
     drop(guard);
 
     // Watchdog: the helper must finish within 100 ticks.
-    harness::wait_until_phase(&ctx.state, PHASE_EXITING, 100, tick_bits)
+    harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)
         .map_err(|_| MutexError::BlockingNotAcquired)?;
-    harness::validate_helper(&ctx.state)
+    harness::validate_helper(&ctx_ref.state)
         .map_err(|_| MutexError::BlockingNotAcquired)?;
 
-    let acquired = ctx.acquired_tick.load(Ordering::Acquire);
+    let acquired = ctx_ref.acquired_tick.load(Ordering::Acquire);
 
-    unsafe { drop(Box::from_raw(ctx as *const MutexTaskContext as *mut MutexTaskContext)); }
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| MutexError::BlockingNotAcquired)?;
+
+    unsafe { drop(Box::from_raw(raw)); }
 
     if acquired < release_tick {
         return Err(MutexError::AcquiredBeforeRelease);
@@ -566,33 +592,29 @@ fn mutex_scheduler_suspended(tick_bits: u8) -> Result<(), MutexError> {
 /// Active Mutex handle blocks shutdown.  After last handle drop,
 /// shutdown succeeds and heap returns to suite baseline.
 fn mutex_runtime_lease(_tick_bits: u8, suite_baseline: u64) -> Result<(), MutexError> {
-    // Create the final mutex handle after all other cases have run.
     let m = osal::backend::Mutex::new(99u32).map_err(|_| MutexError::Create)?;
 
     // Active handle: shutdown must be Busy and failure-atomic.
     let heap_before = sys::heap_free();
     match osal::shutdown() {
         Err(Error::Busy) => {}
-        _ => return Err(MutexError::RelockNotFailed),
+        _ => return Err(MutexError::ShutdownBusyNotReturned),
     }
-    // Runtime must still be Running.
     if osal::runtime_state() != osal_api::runtime::RuntimeState::Running {
-        return Err(MutexError::RelockAfterDrop);
+        return Err(MutexError::BusyStateChanged);
     }
-    // Heap must not have changed.
     if sys::heap_free() != heap_before {
-        return Err(MutexError::CloneHeapLeak);
+        return Err(MutexError::BusyHeapChanged);
     }
 
     // Drop the last handle and shut down.
     drop(m);
-    osal::shutdown().map_err(|_| MutexError::LastDropLeak)?;
+    osal::shutdown().map_err(|_| MutexError::ShutdownFailed)?;
 
     if osal::runtime_state() != osal_api::runtime::RuntimeState::Uninitialized {
-        return Err(MutexError::RelockAfterDrop);
+        return Err(MutexError::ShutdownStateInvalid);
     }
 
-    // Heap must return to suite baseline.
     if sys::heap_free() != suite_baseline {
         return Err(MutexError::LastDropLeak);
     }

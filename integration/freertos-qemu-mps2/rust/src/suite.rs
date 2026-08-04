@@ -14,6 +14,7 @@ use crate::harness;
 pub fn run_object_suite(tick_bits: u8) -> i32 {
     const SUITE_RUNTIME_INIT_FAILED: i32 = -150;
     const SUITE_RUNTIME_SHUTDOWN_FAILED: i32 = -151;
+    const SUITE_FINAL_HEAP_LEAK: i32 = -152;
 
     // --- begin object protocol ---
     harness::console_line(c"OSAL_OBJECT_BEGIN");
@@ -54,6 +55,12 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
 
     if let Err(e) = result {
         return -(e as i32);
+    }
+
+    // Final heap gate: after final shutdown, heap must equal the
+    // suite baseline taken before any OSAL objects were created.
+    if sys::heap_free() != suite_baseline {
+        return SUITE_FINAL_HEAP_LEAK;
     }
 
     // ------------------------------------------------------------------
