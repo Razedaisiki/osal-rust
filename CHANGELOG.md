@@ -164,6 +164,56 @@ real FreeRTOS without depending on the OSAL Task implementation.
 **Deferred (not in Step 4A scope):** fairness, starvation prevention,
 priority inheritance, ISR calls, OOM injection, guard cross-task move.
 
+### Step 4B — Semaphore Real-Kernel Contracts — Completed
+
+- `cases/semaphore.rs`: 18 Semaphore contracts validated on real FreeRTOS
+  (9 Counting + 7 Binary + 2 lifecycle/scheduler).
+- Infrastructure: `CountingTaskContext` / `BinaryTaskContext` each own a
+  semaphore clone (`Box::into_raw` pattern); `CountingOperation` /
+  `BinaryOperation` enums; `counting_helper_entry` /
+  `binary_helper_entry` Rust extern "C" native tasks.
+
+**CountingSemaphore cases (all on real FreeRTOS Kernel V11.3.0):**
+
+| Case | What it proves |
+|------|---------------|
+| `counting_core` | Invalid params rejected; max/count queries; acquire/release |
+| `counting_overflow` | Release at max→Overflow; count unchanged (failure-atomic) |
+| `counting_nowait_zero` | Empty: NoWait→Timeout, After(ZERO)→Timeout; available: both succeed |
+| `counting_finite_timeout` | After(5ms)→Timeout, elapsed≥5 ticks, count unchanged |
+| `counting_clone` | Clone heap no-op; last-drop reclaims native handle |
+| `counting_blocking_wake` | Helper blocks, release wakes; completion_tick≥release_tick |
+| `counting_forever_wake` | Forever acquires; controller watchdog; no spurious Timeout |
+| `counting_one_release_one_waiter` | Two helpers, one release→exactly one completes |
+| `counting_permit_accounting` | Two helpers, three releases→two wake+count=1 |
+
+**BinarySemaphore cases:**
+
+| Case | What it proves |
+|------|---------------|
+| `binary_core` | Unsig→release→sig→acquire→unsig |
+| `binary_overflow` | Second release→Overflow, stays signaled |
+| `binary_nowait_zero` | Unsig→Timeout; released→succeed+consume |
+| `binary_blocking_wake` | Helper blocks→release wakes→signal consumed |
+| `binary_forever_wake` | Forever acquire with controller watchdog |
+| `binary_two_waiters` | One release→exactly one completes |
+| `binary_clone` | Clone heap no-op; last-drop reclaims |
+
+**Lifecycle + scheduler:**
+
+| Case | What it proves |
+|------|---------------|
+| `semaphore_scheduler_suspended` | RAII guard; After/Forever→Busy; NoWait/AfterZero→Timeout |
+| `semaphore_runtime_lease` | Active→Busy atomic; drop→shutdown→heap=suite_baseline |
+
+- Per-helper TCB/stack recovery with `task_baseline` and `wait_until_heap_recovered`.
+- Suite: init → Mutex → Semaphore → final shutdown → heap gate → OBJECT_PASS.
+- Stack margin: ~459 words (threshold 128). QEMU exit 0.
+- Verifier: 27 total cases required; 15 OBJECT_PASS fields.
+
+**Deferred:** fairness, starvation prevention, ISR acquire/release,
+OOM injection, high-concurrency stress.
+
 ### Step 1 — Integration Contract Neutralization — Completed
 
 - Integration identifiers neutralized: `ROUSSATL_FREERTOS_*` env vars →

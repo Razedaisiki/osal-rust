@@ -12,8 +12,8 @@ across different platforms by switching the backend.
 ## Project Status
 
 **Latest completed milestone: P7F — FreeRTOS Timer Foundation — Completed.**
-**Current milestone: P7G Step 4A — Mutex Real-Kernel Contracts — Completed.**
-**Next: P7G Step 4B — Semaphore real-kernel contracts.**
+**Current milestone: P7G Step 4B — Semaphore Real-Kernel Contracts — Completed.**
+**Next: P7G Step 4C — Queue real-kernel contracts.**
 
 The POSIX backend fully implements the current non-deferred `osal-api`
 trait surface. The Mock backend implements the same surface with the
@@ -83,8 +83,8 @@ Public APIs may change before version 1.0.
 | Queue Blocking    | Validated | Deferred    | Validated   | Implemented| Validated¹  | Validated |
 | Queue ISR         | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
 | Mutex             | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
-| CountingSemaphore | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
-| BinarySemaphore   | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
+| CountingSemaphore | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
+| BinarySemaphore   | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
 | Semaphore ISR     | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
 | Clock             | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
 | Timer             | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
