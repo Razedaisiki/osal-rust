@@ -516,10 +516,130 @@ fn queue_send_finite_timeout(_tick_bits: u8) -> Result<(), QueueError> {
 }
 
 // ------------------------------------------------------------------
+// Case: queue_close_drain
+// ------------------------------------------------------------------
+
+fn queue_close_drain(_tick_bits: u8) -> Result<(), QueueError> {
+    let q = osal::backend::Queue::new(2, 4).map_err(|_| QueueError::Create)?;
+    q.send(&M0, Timeout::NoWait).map_err(|_| QueueError::FifoMismatch)?;
+    q.send(&M1, Timeout::NoWait).map_err(|_| QueueError::FifoMismatch)?;
+
+    q.close().map_err(|_| QueueError::CloseNotReturned)?;
+
+    // Send after close → QueueClosed.
+    match q.send(&M2, Timeout::NoWait) {
+        Err(Error::QueueClosed) => {}
+        _ => return Err(QueueError::CloseNotReturned),
+    }
+
+    // Drain existing messages.
+    let mut buf = [0u8; 4];
+    q.recv(&mut buf, Timeout::NoWait).map_err(|_| QueueError::CloseDrainMismatch)?;
+    if !payload_eq(&buf, &M0) { return Err(QueueError::CloseDrainMismatch); }
+    q.recv(&mut buf, Timeout::NoWait).map_err(|_| QueueError::CloseDrainMismatch)?;
+    if !payload_eq(&buf, &M1) { return Err(QueueError::CloseDrainMismatch); }
+
+    // Empty + closed → QueueClosed.
+    match q.recv(&mut buf, Timeout::NoWait) {
+        Err(Error::QueueClosed) => {}
+        _ => return Err(QueueError::CloseDrainMismatch),
+    }
+
+    if q.len().map_err(|_| QueueError::Create)? != 0 { return Err(QueueError::CloseDrainMismatch); }
+
+    // close() must be idempotent.
+    q.close().map_err(|_| QueueError::CloseNotReturned)?;
+    q.close().map_err(|_| QueueError::CloseNotReturned)?;
+
+    // Queries still work after close.
+    if q.capacity() != 2 { return Err(QueueError::CapacityMismatch); }
+    if q.msg_size() != 4 { return Err(QueueError::MessageSizeMismatch); }
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Case: queue_scheduler_suspended
+// ------------------------------------------------------------------
+
+fn queue_scheduler_suspended(_tick_bits: u8) -> Result<(), QueueError> {
+    unsafe extern "C" { fn osal_test_scheduler_suspend(); fn osal_test_scheduler_resume(); }
+    struct Guard;
+    impl Drop for Guard { fn drop(&mut self) { unsafe { osal_test_scheduler_resume(); } } }
+
+    let q = osal::backend::Queue::new(1, 4).map_err(|_| QueueError::Create)?;
+    q.send(&M0, Timeout::NoWait).map_err(|_| QueueError::FifoMismatch)?;
+
+    {
+        let _resume = Guard;
+        unsafe { osal_test_scheduler_suspend(); }
+
+        // Full: NoWait → QueueFull.
+        match q.send(&M1, Timeout::NoWait) {
+            Err(Error::QueueFull) => {}
+            _ => return Err(QueueError::NoWaitMapping),
+        }
+        // Full: After(ZERO) → Timeout.
+        match q.send(&M1, Timeout::After(core::time::Duration::ZERO)) {
+            Err(Error::Timeout) => {}
+            _ => return Err(QueueError::AfterZeroMapping),
+        }
+        // Full: After(d>0) → Busy (blocking).
+        match q.send(&M1, Timeout::After(core::time::Duration::from_millis(1))) {
+            Err(Error::Busy) => {}
+            _ => return Err(QueueError::BlockingNotBusy),
+        }
+        match q.send(&M1, Timeout::Forever) {
+            Err(Error::Busy) => {}
+            _ => return Err(QueueError::BlockingNotBusy),
+        }
+    }
+
+    // Post-resume: queue must work.
+    let mut buf = [0u8; 4];
+    q.recv(&mut buf, Timeout::NoWait).map_err(|_| QueueError::FifoMismatch)?;
+    q.send(&M1, Timeout::NoWait).map_err(|_| QueueError::FifoMismatch)?;
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Case: queue_runtime_lease
+// ------------------------------------------------------------------
+
+fn queue_runtime_lease(_tick_bits: u8, suite_baseline: u64) -> Result<(), QueueError> {
+    let q = osal::backend::Queue::new(1, 4).map_err(|_| QueueError::Create)?;
+
+    let heap_before = sys::heap_free();
+    match osal::shutdown() {
+        Err(Error::Busy) => {}
+        _ => return Err(QueueError::BlockingNotBusy),
+    }
+    if osal::runtime_state() != osal_api::runtime::RuntimeState::Running {
+        return Err(QueueError::BusyStateChanged);
+    }
+    if sys::heap_free() != heap_before {
+        return Err(QueueError::BusyHeapChanged);
+    }
+
+    drop(q);
+    osal::shutdown().map_err(|_| QueueError::LastDropLeak)?;
+    if osal::runtime_state() != osal_api::runtime::RuntimeState::Uninitialized {
+        return Err(QueueError::BusyStateChanged);
+    }
+    if sys::heap_free() != suite_baseline {
+        return Err(QueueError::SuiteHeapLeak);
+    }
+
+    osal::initialize().map_err(|_| QueueError::Create)?;
+    Ok(())
+}
+
+// ------------------------------------------------------------------
 // Public entry
 // ------------------------------------------------------------------
 
-pub fn run_queue_cases(tick_bits: u8) -> Result<(), QueueError> {
+pub fn run_queue_cases(tick_bits: u8, suite_baseline: u64) -> Result<(), QueueError> {
     queue_core_fifo(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=queue_core_fifo");
 
@@ -537,6 +657,15 @@ pub fn run_queue_cases(tick_bits: u8) -> Result<(), QueueError> {
 
     queue_send_finite_timeout(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=queue_send_finite_timeout");
+
+    queue_close_drain(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=queue_close_drain");
+
+    queue_scheduler_suspended(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=queue_scheduler_suspended");
+
+    queue_runtime_lease(tick_bits, suite_baseline)?;
+    harness::console_line(c"OSAL_CASE_PASS name=queue_runtime_lease");
 
     Ok(())
 }

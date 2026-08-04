@@ -80,6 +80,9 @@ REQUIRED_CASES = [
     "queue_clone_lifecycle",
     "queue_recv_finite_timeout",
     "queue_send_finite_timeout",
+    "queue_close_drain",
+    "queue_scheduler_suspended",
+    "queue_runtime_lease",
 ]
 
 REQUIRED_OBJECT_PASS_FIELDS = [
@@ -107,7 +110,9 @@ REQUIRED_OBJECT_PASS_FIELDS = [
     "queue=true",
     "queue_fifo=true",
     "queue_timeout=true",
-    "queue_blocking=true",
+    "queue_close=true",
+    "queue_suspended=true",
+    "queue_lease=true",
 ]
 
 OBJECT_FIELD_STATUS = "status=pass"

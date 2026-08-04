@@ -55,7 +55,7 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
     // ------------------------------------------------------------------
     // Step 4C — Queue real-kernel contracts.
     // ------------------------------------------------------------------
-    let queue_result = cases::queue::run_queue_cases(tick_bits);
+    let queue_result = cases::queue::run_queue_cases(tick_bits, suite_baseline);
 
     if let Err(e) = queue_result {
         return -(e as i32);
@@ -86,7 +86,7 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
 
     // --- object pass ---
     harness::console_line(
-        c"OSAL_OBJECT_PASS harness=true helper_self_delete=true idle_cleanup=true heap_recovered=true multi_helper=true tick_advance=true mutex=true mutex_clone=true mutex_timeout=true mutex_nowait=true mutex_blocking=true mutex_suspended=true mutex_lease=true semaphore=true counting=true binary=true semaphore_timeout=true semaphore_blocking=true semaphore_multi_waiter=true semaphore_suspended=true semaphore_lease=true queue=true queue_fifo=true queue_timeout=true queue_blocking=true",
+        c"OSAL_OBJECT_PASS harness=true helper_self_delete=true idle_cleanup=true heap_recovered=true multi_helper=true tick_advance=true mutex=true mutex_clone=true mutex_timeout=true mutex_nowait=true mutex_blocking=true mutex_suspended=true mutex_lease=true semaphore=true counting=true binary=true semaphore_timeout=true semaphore_blocking=true semaphore_multi_waiter=true semaphore_suspended=true semaphore_lease=true queue=true queue_fifo=true queue_timeout=true queue_close=true queue_suspended=true queue_lease=true",
     );
 
     // --- end object protocol ---
