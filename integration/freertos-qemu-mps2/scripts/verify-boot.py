@@ -78,6 +78,8 @@ REQUIRED_CASES = [
     "queue_wrong_size_precedence",
     "queue_nowait_zero",
     "queue_clone_lifecycle",
+    "queue_recv_finite_timeout",
+    "queue_send_finite_timeout",
 ]
 
 REQUIRED_OBJECT_PASS_FIELDS = [
@@ -104,6 +106,8 @@ REQUIRED_OBJECT_PASS_FIELDS = [
     "semaphore_lease=true",
     "queue=true",
     "queue_fifo=true",
+    "queue_timeout=true",
+    "queue_blocking=true",
 ]
 
 OBJECT_FIELD_STATUS = "status=pass"

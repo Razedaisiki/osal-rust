@@ -20,7 +20,7 @@
 /* ------------------------------------------------------------------ */
 /* Boot task stack and priority.                                      */
 /* ------------------------------------------------------------------ */
-#define BOOT_TASK_STACK_WORDS       1024U
+#define BOOT_TASK_STACK_WORDS       1280U
 #define MIN_BOOT_STACK_MARGIN_WORDS  128U
 #define BOOT_TASK_PRIORITY     (configMAX_PRIORITIES - 1)
 

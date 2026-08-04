@@ -42,7 +42,7 @@
 /* Allocation.                                                                */
 #define configSUPPORT_DYNAMIC_ALLOCATION         1
 #define configSUPPORT_STATIC_ALLOCATION          0
-#define configTOTAL_HEAP_SIZE                    (128U * 1024U)
+#define configTOTAL_HEAP_SIZE                    (384U * 1024U)
 
 /* Synchronisation primitives.                                                */
 #define configUSE_MUTEXES                        1

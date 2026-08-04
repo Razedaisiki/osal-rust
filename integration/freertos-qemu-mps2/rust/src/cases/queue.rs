@@ -457,6 +457,65 @@ fn queue_clone_lifecycle(_tick_bits: u8) -> Result<(), QueueError> {
 }
 
 // ------------------------------------------------------------------
+// Case: queue_recv_finite_timeout (controller-only, no helper)
+// ------------------------------------------------------------------
+
+fn queue_recv_finite_timeout(_tick_bits: u8) -> Result<(), QueueError> {
+    let timeout_ms = 5u32;
+    let q = osal::backend::Queue::new(1, 4).map_err(|_| QueueError::Create)?;
+
+    let mut buf = [0u8; 4];
+    let start = sys::tick_snapshot();
+    match q.recv(&mut buf, Timeout::After(core::time::Duration::from_millis(timeout_ms as u64))) {
+        Err(Error::Timeout) => {}
+        _ => return Err(QueueError::TimeoutNotReturned),
+    }
+    let end = sys::tick_snapshot();
+    let caps = sys::capabilities();
+    let elapsed = harness::total_ticks_diff(end, start, caps.tick_bits) as u32;
+    if elapsed < timeout_ms { return Err(QueueError::TimeoutTooEarly); }
+    if q.len().map_err(|_| QueueError::Create)? != 0 { return Err(QueueError::StateChangedOnTimeout); }
+
+    // Post-timeout: queue must still be usable.
+    q.send(&M0, Timeout::NoWait).map_err(|_| QueueError::FifoMismatch)?;
+    q.recv(&mut buf, Timeout::NoWait).map_err(|_| QueueError::FifoMismatch)?;
+    if !payload_eq(&buf, &M0) { return Err(QueueError::FifoMismatch); }
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Case: queue_send_finite_timeout (controller-only, no helper)
+// ------------------------------------------------------------------
+
+fn queue_send_finite_timeout(_tick_bits: u8) -> Result<(), QueueError> {
+    let timeout_ms = 5u32;
+    let q = osal::backend::Queue::new(1, 4).map_err(|_| QueueError::Create)?;
+    q.send(&M0, Timeout::NoWait).map_err(|_| QueueError::FifoMismatch)?;
+
+    let start = sys::tick_snapshot();
+    match q.send(&M1, Timeout::After(core::time::Duration::from_millis(timeout_ms as u64))) {
+        Err(Error::Timeout) => {}
+        _ => return Err(QueueError::TimeoutNotReturned),
+    }
+    let end = sys::tick_snapshot();
+    let caps = sys::capabilities();
+    let elapsed = harness::total_ticks_diff(end, start, caps.tick_bits) as u32;
+    if elapsed < timeout_ms { return Err(QueueError::TimeoutTooEarly); }
+    if q.len().map_err(|_| QueueError::Create)? != 1 { return Err(QueueError::StateChangedOnTimeout); }
+
+    // Post-timeout: original message still readable, queue usable.
+    let mut buf = [0u8; 4];
+    q.recv(&mut buf, Timeout::NoWait).map_err(|_| QueueError::FifoMismatch)?;
+    if !payload_eq(&buf, &M0) { return Err(QueueError::FifoMismatch); }
+    q.send(&M1, Timeout::NoWait).map_err(|_| QueueError::FifoMismatch)?;
+    q.recv(&mut buf, Timeout::NoWait).map_err(|_| QueueError::FifoMismatch)?;
+    if !payload_eq(&buf, &M1) { return Err(QueueError::FifoMismatch); }
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------
 // Public entry
 // ------------------------------------------------------------------
 
@@ -472,6 +531,12 @@ pub fn run_queue_cases(tick_bits: u8) -> Result<(), QueueError> {
 
     queue_clone_lifecycle(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=queue_clone_lifecycle");
+
+    queue_recv_finite_timeout(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=queue_recv_finite_timeout");
+
+    queue_send_finite_timeout(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=queue_send_finite_timeout");
 
     Ok(())
 }
