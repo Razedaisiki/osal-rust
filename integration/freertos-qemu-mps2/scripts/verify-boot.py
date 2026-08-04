@@ -74,6 +74,10 @@ REQUIRED_CASES = [
     "binary_clone",
     "semaphore_scheduler_suspended",
     "semaphore_runtime_lease",
+    "queue_core_fifo",
+    "queue_wrong_size_precedence",
+    "queue_nowait_zero",
+    "queue_clone_lifecycle",
 ]
 
 REQUIRED_OBJECT_PASS_FIELDS = [
@@ -98,6 +102,8 @@ REQUIRED_OBJECT_PASS_FIELDS = [
     "binary=true",
     "semaphore_suspended=true",
     "semaphore_lease=true",
+    "queue=true",
+    "queue_fifo=true",
 ]
 
 OBJECT_FIELD_STATUS = "status=pass"
