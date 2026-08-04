@@ -52,6 +52,8 @@ REQUIRED_CASES = [
     "mutex_non_recursive",
     "mutex_nowait_zero",
     "mutex_finite_timeout",
+    "mutex_blocking_wake",
+    "mutex_forever_wake",
 ]
 
 REQUIRED_OBJECT_PASS_FIELDS = [
@@ -65,6 +67,7 @@ REQUIRED_OBJECT_PASS_FIELDS = [
     "mutex_clone=true",
     "mutex_timeout=true",
     "mutex_nowait=true",
+    "mutex_blocking=true",
 ]
 
 OBJECT_FIELD_STATUS = "status=pass"

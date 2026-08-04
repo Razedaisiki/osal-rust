@@ -36,6 +36,10 @@ pub enum MutexError {
     AfterZeroNotTimeout = 131,
     TimeoutNotFailed = 132,
     ElapsedTooShort = 133,
+    BlockingNotAcquired = 134,
+    ForeverTimeout = 135,
+    AcquiredBeforeRelease = 136,
+    BlockingValueUnchanged = 137,
 }
 
 // ------------------------------------------------------------------
@@ -49,6 +53,10 @@ enum MutexOperation {
     AfterZero,
     /// `lock(After(d))` — expects Timeout, records elapsed ticks.
     AfterTicks { timeout_ticks: u32 },
+    /// `lock(After(d))` — expects to acquire, records acquired tick.
+    AfterTicksExpectAcquire { timeout_ticks: u32 },
+    /// `lock(Forever)` — expects to acquire (watchdog in controller).
+    Forever,
 }
 
 // ------------------------------------------------------------------
@@ -61,6 +69,8 @@ struct MutexTaskContext {
     operation: MutexOperation,
     /// Ticks elapsed between BEFORE_OPERATION and the lock attempt result.
     elapsed_ticks: AtomicU32,
+    /// Raw tick_count at the moment the lock was acquired.
+    acquired_tick: AtomicU32,
 }
 
 impl MutexTaskContext {
@@ -73,6 +83,7 @@ impl MutexTaskContext {
             mutex_ptr: mutex as *const osal::backend::Mutex<u32>,
             operation,
             elapsed_ticks: AtomicU32::new(0),
+            acquired_tick: AtomicU32::new(0),
         }
     }
 
@@ -136,6 +147,35 @@ fn run_mutex_operation(ctx: &MutexTaskContext) -> i32 {
             match result {
                 Err(Error::Timeout) => 0,
                 _ => -(MutexError::TimeoutNotFailed as i32),
+            }
+        }
+        MutexOperation::AfterTicksExpectAcquire { timeout_ticks } => {
+            let result = mutex.lock(Timeout::After(
+                core::time::Duration::from_millis(timeout_ticks as u64),
+            ));
+            match result {
+                Ok(mut guard) => {
+                    let snap = sys::tick_snapshot();
+                    ctx.acquired_tick.store(snap.tick_count as u32, Ordering::Release);
+                    *guard = guard.wrapping_add(1);
+                    drop(guard);
+                    0
+                }
+                _ => -(MutexError::BlockingNotAcquired as i32),
+            }
+        }
+        MutexOperation::Forever => {
+            let result = mutex.lock(Timeout::Forever);
+            match result {
+                Ok(mut guard) => {
+                    let snap = sys::tick_snapshot();
+                    ctx.acquired_tick.store(snap.tick_count as u32, Ordering::Release);
+                    *guard = guard.wrapping_add(1);
+                    drop(guard);
+                    0
+                }
+                Err(Error::Timeout) => -(MutexError::ForeverTimeout as i32),
+                _ => -(MutexError::BlockingNotAcquired as i32),
             }
         }
     }
@@ -326,6 +366,127 @@ fn mutex_finite_timeout(tick_bits: u8) -> Result<(), MutexError> {
 }
 
 // ------------------------------------------------------------------
+// Case: mutex_blocking_wake
+// ------------------------------------------------------------------
+
+/// Controller holds the mutex; helper blocks on After(100ms).
+/// Controller drops the guard → helper acquires.
+/// Verifies acquired_tick >= release_tick (acquire happens after release).
+fn mutex_blocking_wake(tick_bits: u8) -> Result<(), MutexError> {
+    let m = osal::backend::Mutex::new(0u32).map_err(|_| MutexError::Create)?;
+    let guard = m.lock(Timeout::NoWait).map_err(|_| MutexError::FirstLock)?;
+
+    let ctx = Box::new(MutexTaskContext::new(
+        &m,
+        MutexOperation::AfterTicksExpectAcquire { timeout_ticks: 100 },
+    ));
+    let ctx_ptr = ctx.as_context_ptr();
+    let ctx = Box::leak(ctx);
+
+    let rc = unsafe {
+        harness::native_task_spawn(mutex_helper_entry, ctx_ptr, 1024, 2)
+    };
+    if rc != 0 {
+        return Err(MutexError::BlockingNotAcquired);
+    }
+
+    // Wait for the helper to enter the blocking lock call.
+    harness::wait_until_phase(&ctx.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+        .map_err(|_| MutexError::BlockingNotAcquired)?;
+
+    // Hold the lock for at least 2 ticks to ensure the helper is truly
+    // blocked in the native mutex take, not just en route.
+    sys::delay_ticks(2);
+
+    // Record release tick before dropping the guard.
+    let release_tick = sys::tick_snapshot().tick_count as u32;
+
+    drop(guard);
+
+    // Wait for the helper to acquire and complete.
+    harness::wait_until_phase(&ctx.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| MutexError::BlockingNotAcquired)?;
+    harness::validate_helper(&ctx.state)
+        .map_err(|_| MutexError::BlockingNotAcquired)?;
+
+    let acquired = ctx.acquired_tick.load(Ordering::Acquire);
+
+    unsafe { drop(Box::from_raw(ctx as *const MutexTaskContext as *mut MutexTaskContext)); }
+
+    // Causality: the helper must acquire AFTER the controller releases.
+    if acquired < release_tick {
+        return Err(MutexError::AcquiredBeforeRelease);
+    }
+
+    // Verify the helper modified the value (proves it held the guard).
+    let final_val = {
+        let g = m.lock(Timeout::NoWait).map_err(|_| MutexError::FirstLock)?;
+        *g
+    };
+    if final_val != 1 {
+        return Err(MutexError::BlockingValueUnchanged);
+    }
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Case: mutex_forever_wake
+// ------------------------------------------------------------------
+
+/// Controller holds the mutex; helper calls Forever.
+/// Controller releases within a finite watchdog; helper must acquire
+/// and must NOT return Timeout.
+fn mutex_forever_wake(tick_bits: u8) -> Result<(), MutexError> {
+    let m = osal::backend::Mutex::new(0u32).map_err(|_| MutexError::Create)?;
+    let guard = m.lock(Timeout::NoWait).map_err(|_| MutexError::FirstLock)?;
+
+    let ctx = Box::new(MutexTaskContext::new(&m, MutexOperation::Forever));
+    let ctx_ptr = ctx.as_context_ptr();
+    let ctx = Box::leak(ctx);
+
+    let rc = unsafe {
+        harness::native_task_spawn(mutex_helper_entry, ctx_ptr, 1024, 2)
+    };
+    if rc != 0 {
+        return Err(MutexError::BlockingNotAcquired);
+    }
+
+    // Wait for the helper to enter the blocking call.
+    harness::wait_until_phase(&ctx.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+        .map_err(|_| MutexError::BlockingNotAcquired)?;
+
+    sys::delay_ticks(2);
+
+    let release_tick = sys::tick_snapshot().tick_count as u32;
+    drop(guard);
+
+    // Watchdog: the helper must finish within 100 ticks.
+    harness::wait_until_phase(&ctx.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| MutexError::BlockingNotAcquired)?;
+    harness::validate_helper(&ctx.state)
+        .map_err(|_| MutexError::BlockingNotAcquired)?;
+
+    let acquired = ctx.acquired_tick.load(Ordering::Acquire);
+
+    unsafe { drop(Box::from_raw(ctx as *const MutexTaskContext as *mut MutexTaskContext)); }
+
+    if acquired < release_tick {
+        return Err(MutexError::AcquiredBeforeRelease);
+    }
+
+    let final_val = {
+        let g = m.lock(Timeout::NoWait).map_err(|_| MutexError::FirstLock)?;
+        *g
+    };
+    if final_val != 1 {
+        return Err(MutexError::BlockingValueUnchanged);
+    }
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------
 // Public entry — called from the suite.
 // ------------------------------------------------------------------
 
@@ -341,6 +502,12 @@ pub fn run_mutex_cases(tick_bits: u8) -> Result<(), MutexError> {
 
     mutex_finite_timeout(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=mutex_finite_timeout");
+
+    mutex_blocking_wake(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=mutex_blocking_wake");
+
+    mutex_forever_wake(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=mutex_forever_wake");
 
     Ok(())
 }
