@@ -7,3 +7,5 @@
 //!   Step 4C — queue.rs     (Queue blocking, close-drain, broadcast)
 //!   Step 4D — task.rs      (Task lifecycle, join, self-delete, Idle cleanup)
 //!   Step 4E — timer.rs     (Timer scheduling, callback reentry)
+
+pub mod mutex;

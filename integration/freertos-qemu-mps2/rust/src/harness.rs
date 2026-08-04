@@ -65,7 +65,7 @@ pub enum HarnessError {
 // ------------------------------------------------------------------
 
 /// Type matching C `osal_test_task_entry_t`: `void (*)(void *context)`.
-type NativeTaskEntry = unsafe extern "C" fn(*mut c_void);
+pub type NativeTaskEntry = unsafe extern "C" fn(*mut c_void);
 
 unsafe extern "C" {
     /// Console line output (defined in main.c).
@@ -81,6 +81,22 @@ unsafe extern "C" {
 
     /// Harness smoke native helper entry (defined in main.c).
     fn harness_smoke_helper(context: *mut c_void);
+
+    /// Self-delete the calling native helper task (defined in test_task.c).
+    pub fn osal_test_task_exit() -> !;
+}
+
+/// Public wrapper — spawn a native FreeRTOS helper task.
+///
+/// # Safety
+/// `entry` must be a valid task entry point; `context` must outlive the task.
+pub unsafe fn native_task_spawn(
+    entry: NativeTaskEntry,
+    context: *mut c_void,
+    stack_words: u32,
+    priority: u32,
+) -> i32 {
+    unsafe { osal_test_task_spawn(entry, context, stack_words, priority) }
 }
 
 // ------------------------------------------------------------------
@@ -306,6 +322,10 @@ pub fn console_line(text: &CStr) {
 
 /// Validate a helper's lifecycle: phase coverage, tick advance, result.
 ///
+/// Tick validation is skipped when neither `start_tick` nor `end_tick`
+/// was recorded (both zero) — some operations are instantaneous and
+/// don't require a `vTaskDelay`.
+///
 /// State isolation between independent helpers is proven by the fact
 /// each uses a different context pointer — if any bridge ignored its
 /// context, the other helper would time out or fail its tick check.
@@ -315,11 +335,13 @@ pub fn validate_helper(state: &CaseState) -> Result<(), HarnessError> {
         return Err(HarnessError::PhaseNotVisited);
     }
 
-    // Tick must advance — at least 1 tick between start and end.
+    // If ticks were recorded, verify at least 1 tick of advance.
     let start = state.start_tick.load(Ordering::Acquire);
     let end = state.end_tick.load(Ordering::Acquire);
-    if end.wrapping_sub(start) < 1 {
-        return Err(HarnessError::TickStalled);
+    if start != 0 || end != 0 {
+        if end.wrapping_sub(start) < 1 {
+            return Err(HarnessError::TickStalled);
+        }
     }
 
     // Helper must not report an error.

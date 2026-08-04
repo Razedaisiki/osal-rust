@@ -48,6 +48,10 @@ MARKER_CASE_FAIL = "OSAL_CASE_FAIL"
 # Each completed sub-step adds its case name here.
 REQUIRED_CASES = [
     "harness_native_task",
+    "mutex_basic_clone",
+    "mutex_non_recursive",
+    "mutex_nowait_zero",
+    "mutex_finite_timeout",
 ]
 
 REQUIRED_OBJECT_PASS_FIELDS = [
@@ -57,6 +61,10 @@ REQUIRED_OBJECT_PASS_FIELDS = [
     "heap_recovered=true",
     "multi_helper=true",
     "tick_advance=true",
+    "mutex=true",
+    "mutex_clone=true",
+    "mutex_timeout=true",
+    "mutex_nowait=true",
 ]
 
 OBJECT_FIELD_STATUS = "status=pass"

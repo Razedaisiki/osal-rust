@@ -13,6 +13,7 @@
 //!   Step 4D  — Task
 //!   Step 4E  — Timer
 
+use crate::cases;
 use crate::harness;
 
 /// Top-level entry point for all managed-object real-kernel tests.
@@ -31,28 +32,33 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
     }
 
     // ------------------------------------------------------------------
-    // Step 4A — Mutex real-kernel contracts (to be added).
+    // Step 4A — Mutex real-kernel contracts.
     // ------------------------------------------------------------------
+    // Runtime errors — fatal to the object suite.
+    const SUITE_RUNTIME_INIT_FAILED: i32 = -150;
+    const SUITE_RUNTIME_SHUTDOWN_FAILED: i32 = -151;
+
+    if osal::initialize().is_err() {
+        return SUITE_RUNTIME_INIT_FAILED;
+    }
+
+    let result = cases::mutex::run_mutex_cases(tick_bits);
+
+    if osal::shutdown().is_err() {
+        return SUITE_RUNTIME_SHUTDOWN_FAILED;
+    }
+
+    if let Err(e) = result {
+        return -(e as i32);
+    }
 
     // ------------------------------------------------------------------
-    // Step 4B — Semaphore real-kernel contracts (to be added).
-    // ------------------------------------------------------------------
-
-    // ------------------------------------------------------------------
-    // Step 4C — Queue real-kernel contracts (to be added).
-    // ------------------------------------------------------------------
-
-    // ------------------------------------------------------------------
-    // Step 4D — Task real-kernel contracts (to be added).
-    // ------------------------------------------------------------------
-
-    // ------------------------------------------------------------------
-    // Step 4E — Timer real-kernel contracts (to be added).
+    // Step 4B–4E — to be added.
     // ------------------------------------------------------------------
 
     // --- object pass ---
     harness::console_line(
-        c"OSAL_OBJECT_PASS harness=true helper_self_delete=true idle_cleanup=true heap_recovered=true multi_helper=true tick_advance=true",
+        c"OSAL_OBJECT_PASS harness=true helper_self_delete=true idle_cleanup=true heap_recovered=true multi_helper=true tick_advance=true mutex=true mutex_clone=true mutex_timeout=true mutex_nowait=true",
     );
 
     // --- end object protocol ---
