@@ -214,6 +214,39 @@ priority inheritance, ISR calls, OOM injection, guard cross-task move.
 **Deferred:** fairness, starvation prevention, ISR acquire/release,
 OOM injection, high-concurrency stress.
 
+### Step 4C — Queue Real-Kernel Contracts — Completed
+
+- `cases/queue.rs`: 9 Queue contracts validated on real FreeRTOS
+  (all controller-side — no native helpers needed).
+- Infrastructure: `QueueSendContext` / `QueueRecvContext` each own a
+  Queue clone (`Box::into_raw` pattern); `SendOperation` / `RecvOperation`
+  enums.
+
+**Cases (all on real FreeRTOS Kernel V11.3.0, Cortex-M3, QEMU):**
+
+| Case | What it proves |
+|------|---------------|
+| `queue_core_fifo` | Invalid params rejected; capacity/msg_size/len/empty/full; FIFO |
+| `queue_wrong_size_precedence` | InvalidMessageSize priority over QueueClosed |
+| `queue_nowait_zero` | NoWait→QueueFull/QueueEmpty, After(ZERO)→Timeout |
+| `queue_clone_lifecycle` | Clone heap no-op; last-drop reclaims 3 native objects |
+| `queue_recv_finite_timeout` | recv(After(5ms))→Timeout, elapsed≥5 ticks |
+| `queue_send_finite_timeout` | send(After(5ms))→Timeout, elapsed≥5 ticks |
+| `queue_close_drain` | Close→drain existing, further send/recv→QueueClosed, idempotent |
+| `queue_scheduler_suspended` | After/Forever→Busy; NoWait/AfterZero non-blocking |
+| `queue_runtime_lease` | Active→Busy atomic; drop→shutdown→heap=suite_baseline |
+
+- configTOTAL_HEAP_SIZE: 128KB → 384KB (headroom for all suites).
+- BOOT_TASK_STACK_WORDS: 1024 → 1280 (Queue ops in controller context).
+- Stack margin: preserved above 128-word threshold. QEMU exit 0.
+- Verifier: 36 total cases required; queue/queue_fifo/queue_timeout/
+  queue_close/queue_suspended/queue_lease OBJECT_PASS fields.
+
+**Deferred:** blocking wake, multi-waiter wake-one, close-broadcast
+(require native Queue helpers — heap fragmentation on FreeRTOS heap_4
+prevents spawning additional 1024-word helpers after all existing
+Mutex+Semaphore cases; needs heap_5 or helper stack reduction).
+
 ### Step 1 — Integration Contract Neutralization — Completed
 
 - Integration identifiers neutralized: `ROUSSATL_FREERTOS_*` env vars →
