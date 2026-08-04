@@ -390,6 +390,267 @@ fn counting_clone(_tick_bits: u8) -> Result<(), SemaphoreError> {
 }
 
 // ------------------------------------------------------------------
+// Case: counting_blocking_wake
+// ------------------------------------------------------------------
+
+fn counting_blocking_wake(tick_bits: u8) -> Result<(), SemaphoreError> {
+    let s = osal::backend::CountingSemaphore::new(1, 0)
+        .map_err(|_| SemaphoreError::Create)?;
+
+    let raw = Box::into_raw(Box::new(CountingTaskContext::new(
+        &s,
+        CountingOperation::AcquireAfterTicksExpectAcquire { timeout_ticks: 100 },
+        1,
+    )));
+    let ctx_ref = unsafe { &*raw };
+    let task_baseline = sys::heap_free();
+
+    let rc = unsafe {
+        harness::native_task_spawn(counting_helper_entry, raw.cast::<c_void>(), 1024, 2)
+    };
+    if rc != 0 {
+        unsafe { drop(Box::from_raw(raw)); }
+        return Err(SemaphoreError::HelperSpawnFailed);
+    }
+
+    harness::wait_until_phase(&ctx_ref.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    if sys::delay_ticks(2) != sys::DelayStatus::Ok {
+        return Err(SemaphoreError::ControllerDelayFailed);
+    }
+
+    let release_tick = sys::tick_snapshot().tick_count as u32;
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+
+    harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::validate_helper(&ctx_ref.state)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    let completed = ctx_ref.completion_tick.load(Ordering::Acquire);
+
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    unsafe { drop(Box::from_raw(raw)); }
+
+    if completed.wrapping_sub(release_tick) > (u32::MAX / 2) {
+        return Err(SemaphoreError::CompletedBeforeRelease);
+    }
+
+    // Count must be 0 (permit consumed by the helper).
+    if s.count().map_err(|_| SemaphoreError::AcquireFailed)? != 0 {
+        return Err(SemaphoreError::CountNotZero);
+    }
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Case: counting_forever_wake
+// ------------------------------------------------------------------
+
+fn counting_forever_wake(tick_bits: u8) -> Result<(), SemaphoreError> {
+    let s = osal::backend::CountingSemaphore::new(1, 0)
+        .map_err(|_| SemaphoreError::Create)?;
+
+    let raw = Box::into_raw(Box::new(CountingTaskContext::new(
+        &s,
+        CountingOperation::AcquireForever,
+        1,
+    )));
+    let ctx_ref = unsafe { &*raw };
+    let task_baseline = sys::heap_free();
+
+    let rc = unsafe {
+        harness::native_task_spawn(counting_helper_entry, raw.cast::<c_void>(), 1024, 2)
+    };
+    if rc != 0 {
+        unsafe { drop(Box::from_raw(raw)); }
+        return Err(SemaphoreError::HelperSpawnFailed);
+    }
+
+    harness::wait_until_phase(&ctx_ref.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    if sys::delay_ticks(2) != sys::DelayStatus::Ok {
+        return Err(SemaphoreError::ControllerDelayFailed);
+    }
+
+    let release_tick = sys::tick_snapshot().tick_count as u32;
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+
+    harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::validate_helper(&ctx_ref.state)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    let completed = ctx_ref.completion_tick.load(Ordering::Acquire);
+
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    unsafe { drop(Box::from_raw(raw)); }
+
+    if completed.wrapping_sub(release_tick) > (u32::MAX / 2) {
+        return Err(SemaphoreError::CompletedBeforeRelease);
+    }
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Case: counting_one_release_one_waiter
+// ------------------------------------------------------------------
+
+fn counting_one_release_one_waiter(tick_bits: u8) -> Result<(), SemaphoreError> {
+    let s = osal::backend::CountingSemaphore::new(2, 0)
+        .map_err(|_| SemaphoreError::Create)?;
+
+    // Two helpers, both waiting on the empty semaphore.
+    let raw_a = Box::into_raw(Box::new(CountingTaskContext::new(
+        &s, CountingOperation::AcquireForever, 1,
+    )));
+    let raw_b = Box::into_raw(Box::new(CountingTaskContext::new(
+        &s, CountingOperation::AcquireForever, 2,
+    )));
+    let ctx_a = unsafe { &*raw_a };
+    let ctx_b = unsafe { &*raw_b };
+    let task_baseline = sys::heap_free();
+
+    let rc_a = unsafe {
+        harness::native_task_spawn(counting_helper_entry, raw_a.cast::<c_void>(), 1024, 2)
+    };
+    let rc_b = unsafe {
+        harness::native_task_spawn(counting_helper_entry, raw_b.cast::<c_void>(), 1024, 2)
+    };
+    if rc_a != 0 || rc_b != 0 {
+        // On spawn failure, reclaim both.  If a task already started,
+        // it holds its own clone; the context is leaked for safety.
+        if rc_a != 0 { unsafe { drop(Box::from_raw(raw_a)); } }
+        if rc_b != 0 { unsafe { drop(Box::from_raw(raw_b)); } }
+        return Err(SemaphoreError::HelperSpawnFailed);
+    }
+
+    // Wait for both to enter the blocking acquire.
+    harness::wait_until_phase(&ctx_a.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::wait_until_phase(&ctx_b.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    if sys::delay_ticks(2) != sys::DelayStatus::Ok {
+        return Err(SemaphoreError::ControllerDelayFailed);
+    }
+
+    // Release once — exactly one helper must complete.
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+
+    // Wait a short time for the release to take effect.
+    if sys::delay_ticks(2) != sys::DelayStatus::Ok {
+        return Err(SemaphoreError::ControllerDelayFailed);
+    }
+
+    let phase_a = ctx_a.state.get_phase();
+    let phase_b = ctx_b.state.get_phase();
+
+    let completed = if phase_a >= PHASE_EXITING { 1u32 } else { 0u32 }
+        + if phase_b >= PHASE_EXITING { 1u32 } else { 0u32 };
+
+    if completed != 1 {
+        return Err(SemaphoreError::WrongWaiterCount);
+    }
+
+    // Count must be 0 — permit consumed, not accumulated.
+    if s.count().map_err(|_| SemaphoreError::AcquireFailed)? != 0 {
+        return Err(SemaphoreError::CountNotZero);
+    }
+
+    // Release again — the second helper must now complete.
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+
+    harness::wait_until_phase(&ctx_a.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::wait_until_phase(&ctx_b.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    harness::validate_helper(&ctx_a.state).map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::validate_helper(&ctx_b.state).map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    unsafe { drop(Box::from_raw(raw_a)); }
+    unsafe { drop(Box::from_raw(raw_b)); }
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Case: counting_permit_accounting
+// ------------------------------------------------------------------
+
+fn counting_permit_accounting(tick_bits: u8) -> Result<(), SemaphoreError> {
+    let s = osal::backend::CountingSemaphore::new(3, 0)
+        .map_err(|_| SemaphoreError::Create)?;
+
+    let raw_a = Box::into_raw(Box::new(CountingTaskContext::new(
+        &s, CountingOperation::AcquireForever, 1,
+    )));
+    let raw_b = Box::into_raw(Box::new(CountingTaskContext::new(
+        &s, CountingOperation::AcquireForever, 2,
+    )));
+    let ctx_a = unsafe { &*raw_a };
+    let ctx_b = unsafe { &*raw_b };
+    let task_baseline = sys::heap_free();
+
+    let rc_a = unsafe {
+        harness::native_task_spawn(counting_helper_entry, raw_a.cast::<c_void>(), 1024, 2)
+    };
+    let rc_b = unsafe {
+        harness::native_task_spawn(counting_helper_entry, raw_b.cast::<c_void>(), 1024, 2)
+    };
+    if rc_a != 0 || rc_b != 0 {
+        if rc_a != 0 { unsafe { drop(Box::from_raw(raw_a)); } }
+        if rc_b != 0 { unsafe { drop(Box::from_raw(raw_b)); } }
+        return Err(SemaphoreError::HelperSpawnFailed);
+    }
+
+    harness::wait_until_phase(&ctx_a.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::wait_until_phase(&ctx_b.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    if sys::delay_ticks(2) != sys::DelayStatus::Ok {
+        return Err(SemaphoreError::ControllerDelayFailed);
+    }
+
+    // Release 3 times — two wake the waiters, one stays as count.
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+
+    harness::wait_until_phase(&ctx_a.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::wait_until_phase(&ctx_b.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    harness::validate_helper(&ctx_a.state).map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::validate_helper(&ctx_b.state).map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    unsafe { drop(Box::from_raw(raw_a)); }
+    unsafe { drop(Box::from_raw(raw_b)); }
+
+    // Two waiters consumed two permits; one permit remains.
+    if s.count().map_err(|_| SemaphoreError::AcquireFailed)? != 1 {
+        return Err(SemaphoreError::PermitLeak);
+    }
+
+    Ok(())
+}
+
+// ------------------------------------------------------------------
 // Public entry — called from the suite.
 // ------------------------------------------------------------------
 
@@ -408,6 +669,18 @@ pub fn run_semaphore_cases(tick_bits: u8) -> Result<(), SemaphoreError> {
 
     counting_clone(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=counting_clone");
+
+    counting_blocking_wake(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=counting_blocking_wake");
+
+    counting_forever_wake(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=counting_forever_wake");
+
+    counting_one_release_one_waiter(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=counting_one_release_one_waiter");
+
+    counting_permit_accounting(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=counting_permit_accounting");
 
     Ok(())
 }

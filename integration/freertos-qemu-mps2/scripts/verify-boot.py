@@ -61,6 +61,10 @@ REQUIRED_CASES = [
     "counting_nowait_zero",
     "counting_finite_timeout",
     "counting_clone",
+    "counting_blocking_wake",
+    "counting_forever_wake",
+    "counting_one_release_one_waiter",
+    "counting_permit_accounting",
 ]
 
 REQUIRED_OBJECT_PASS_FIELDS = [
@@ -80,6 +84,8 @@ REQUIRED_OBJECT_PASS_FIELDS = [
     "semaphore=true",
     "counting=true",
     "semaphore_timeout=true",
+    "semaphore_blocking=true",
+    "semaphore_multi_waiter=true",
 ]
 
 OBJECT_FIELD_STATUS = "status=pass"
