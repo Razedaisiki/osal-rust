@@ -65,6 +65,15 @@ REQUIRED_CASES = [
     "counting_forever_wake",
     "counting_one_release_one_waiter",
     "counting_permit_accounting",
+    "binary_core",
+    "binary_overflow",
+    "binary_nowait_zero",
+    "binary_blocking_wake",
+    "binary_forever_wake",
+    "binary_two_waiters",
+    "binary_clone",
+    "semaphore_scheduler_suspended",
+    "semaphore_runtime_lease",
 ]
 
 REQUIRED_OBJECT_PASS_FIELDS = [
@@ -86,6 +95,9 @@ REQUIRED_OBJECT_PASS_FIELDS = [
     "semaphore_timeout=true",
     "semaphore_blocking=true",
     "semaphore_multi_waiter=true",
+    "binary=true",
+    "semaphore_suspended=true",
+    "semaphore_lease=true",
 ]
 
 OBJECT_FIELD_STATUS = "status=pass"

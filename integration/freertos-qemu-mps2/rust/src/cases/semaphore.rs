@@ -11,8 +11,13 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use osal_api::error::Error;
 use osal_api::time::Timeout;
-use osal_api::traits::semaphore::CountingSemaphore;
+use osal_api::traits::semaphore::{BinarySemaphore, CountingSemaphore};
 use osal_backend_freertos_sys as sys;
+
+unsafe extern "C" {
+    fn osal_test_scheduler_suspend();
+    fn osal_test_scheduler_resume();
+}
 
 use crate::harness::{self, CaseState, HarnessError};
 use crate::harness::{
@@ -650,11 +655,469 @@ fn counting_permit_accounting(tick_bits: u8) -> Result<(), SemaphoreError> {
     Ok(())
 }
 
+// ==================================================================
+// Binary semaphore
+// ==================================================================
+
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+enum BinaryOperation {
+    AcquireNoWaitExpectTimeout,
+    AcquireAfterZeroExpectTimeout,
+    AcquireAfterTicks { timeout_ticks: u32 },
+    AcquireForever,
+}
+
+struct BinaryTaskContext {
+    state: CaseState,
+    semaphore: osal::backend::BinarySemaphore,
+    #[allow(dead_code)]
+    operation: BinaryOperation,
+    completion_tick: AtomicU32,
+    #[allow(dead_code)]
+    helper_id: u32,
+}
+
+impl BinaryTaskContext {
+    fn new(
+        semaphore: &osal::backend::BinarySemaphore,
+        operation: BinaryOperation,
+        helper_id: u32,
+    ) -> Self {
+        Self {
+            state: CaseState::new(),
+            semaphore: semaphore.clone(),
+            operation,
+            completion_tick: AtomicU32::new(0),
+            helper_id,
+        }
+    }
+}
+
+/// # Safety
+/// `context` must be a `Box::into_raw`'d `BinaryTaskContext`.
+unsafe extern "C" fn binary_helper_entry(context: *mut c_void) {
+    let result = {
+        let ctx = unsafe { &*(context as *const BinaryTaskContext) };
+        ctx.state.record_phase(PHASE_STARTED);
+        ctx.state.record_phase(PHASE_BEFORE_OPERATION);
+        run_binary_operation(ctx)
+    };
+    let ctx = unsafe { &*(context as *const BinaryTaskContext) };
+    ctx.state.set_result(result);
+    ctx.state.record_phase(PHASE_OPERATION_COMPLETED);
+    ctx.state.record_phase(PHASE_EXITING);
+    unsafe { harness::osal_test_task_exit(); }
+}
+
+fn run_binary_operation(ctx: &BinaryTaskContext) -> i32 {
+    let sem = &ctx.semaphore;
+    match ctx.operation {
+        BinaryOperation::AcquireNoWaitExpectTimeout => {
+            match sem.acquire(Timeout::NoWait) {
+                Err(Error::Timeout) => 0,
+                _ => -(SemaphoreError::NoWaitNotTimeout as i32),
+            }
+        }
+        BinaryOperation::AcquireAfterZeroExpectTimeout => {
+            match sem.acquire(Timeout::After(core::time::Duration::ZERO)) {
+                Err(Error::Timeout) => 0,
+                _ => -(SemaphoreError::AfterZeroNotTimeout as i32),
+            }
+        }
+        BinaryOperation::AcquireAfterTicks { timeout_ticks: _ } => {
+            match sem.acquire(Timeout::After(core::time::Duration::from_millis(100))) {
+                Ok(()) => {
+                    let snap = sys::tick_snapshot();
+                    ctx.completion_tick.store(snap.tick_count as u32, Ordering::Release);
+                    0
+                }
+                _ => -(SemaphoreError::BlockingNotAcquired as i32),
+            }
+        }
+        BinaryOperation::AcquireForever => {
+            match sem.acquire(Timeout::Forever) {
+                Ok(()) => {
+                    let snap = sys::tick_snapshot();
+                    ctx.completion_tick.store(snap.tick_count as u32, Ordering::Release);
+                    0
+                }
+                _ => -(SemaphoreError::BlockingNotAcquired as i32),
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// Binary cases
+// ------------------------------------------------------------------
+
+fn binary_core(_tick_bits: u8) -> Result<(), SemaphoreError> {
+    let s = osal::backend::BinarySemaphore::new()
+        .map_err(|_| SemaphoreError::Create)?;
+
+    if s.is_signaled().map_err(|_| SemaphoreError::AcquireFailed)? {
+        return Err(SemaphoreError::BinaryNotUnsignaled);
+    }
+
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+    if !s.is_signaled().map_err(|_| SemaphoreError::AcquireFailed)? {
+        return Err(SemaphoreError::BinaryNotSignaled);
+    }
+
+    s.acquire(Timeout::NoWait).map_err(|_| SemaphoreError::AcquireFailed)?;
+    if s.is_signaled().map_err(|_| SemaphoreError::AcquireFailed)? {
+        return Err(SemaphoreError::BinaryNotUnsignaled);
+    }
+
+    Ok(())
+}
+
+fn binary_overflow(_tick_bits: u8) -> Result<(), SemaphoreError> {
+    let s = osal::backend::BinarySemaphore::new()
+        .map_err(|_| SemaphoreError::Create)?;
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+
+    match s.release() {
+        Err(Error::Overflow) => {}
+        _ => return Err(SemaphoreError::OverflowNotReturned),
+    }
+
+    if !s.is_signaled().map_err(|_| SemaphoreError::AcquireFailed)? {
+        return Err(SemaphoreError::BinaryNotSignaled);
+    }
+
+    Ok(())
+}
+
+fn binary_nowait_zero(_tick_bits: u8) -> Result<(), SemaphoreError> {
+    let s = osal::backend::BinarySemaphore::new()
+        .map_err(|_| SemaphoreError::Create)?;
+
+    match s.acquire(Timeout::NoWait) {
+        Err(Error::Timeout) => {}
+        _ => return Err(SemaphoreError::NoWaitNotTimeout),
+    }
+    match s.acquire(Timeout::After(core::time::Duration::ZERO)) {
+        Err(Error::Timeout) => {}
+        _ => return Err(SemaphoreError::AfterZeroNotTimeout),
+    }
+
+    // After release, both should succeed and consume the signal.
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+    s.acquire(Timeout::NoWait).map_err(|_| SemaphoreError::AcquireFailed)?;
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+    s.acquire(Timeout::After(core::time::Duration::ZERO))
+        .map_err(|_| SemaphoreError::AcquireFailed)?;
+
+    Ok(())
+}
+
+fn binary_blocking_wake(tick_bits: u8) -> Result<(), SemaphoreError> {
+    let s = osal::backend::BinarySemaphore::new()
+        .map_err(|_| SemaphoreError::Create)?;
+
+    let raw = Box::into_raw(Box::new(BinaryTaskContext::new(
+        &s, BinaryOperation::AcquireAfterTicks { timeout_ticks: 100 }, 1,
+    )));
+    let ctx_ref = unsafe { &*raw };
+    let task_baseline = sys::heap_free();
+
+    let rc = unsafe {
+        harness::native_task_spawn(binary_helper_entry, raw.cast::<c_void>(), 1024, 2)
+    };
+    if rc != 0 {
+        unsafe { drop(Box::from_raw(raw)); }
+        return Err(SemaphoreError::HelperSpawnFailed);
+    }
+
+    harness::wait_until_phase(&ctx_ref.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    if sys::delay_ticks(2) != sys::DelayStatus::Ok {
+        return Err(SemaphoreError::ControllerDelayFailed);
+    }
+
+    let release_tick = sys::tick_snapshot().tick_count as u32;
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+
+    harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::validate_helper(&ctx_ref.state)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    let completed = ctx_ref.completion_tick.load(Ordering::Acquire);
+
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    unsafe { drop(Box::from_raw(raw)); }
+
+    if completed.wrapping_sub(release_tick) > (u32::MAX / 2) {
+        return Err(SemaphoreError::CompletedBeforeRelease);
+    }
+
+    if s.is_signaled().map_err(|_| SemaphoreError::AcquireFailed)? {
+        return Err(SemaphoreError::BinaryNotUnsignaled);
+    }
+
+    Ok(())
+}
+
+fn binary_forever_wake(tick_bits: u8) -> Result<(), SemaphoreError> {
+    let s = osal::backend::BinarySemaphore::new()
+        .map_err(|_| SemaphoreError::Create)?;
+
+    let raw = Box::into_raw(Box::new(BinaryTaskContext::new(
+        &s, BinaryOperation::AcquireForever, 1,
+    )));
+    let ctx_ref = unsafe { &*raw };
+    let task_baseline = sys::heap_free();
+
+    let rc = unsafe {
+        harness::native_task_spawn(binary_helper_entry, raw.cast::<c_void>(), 1024, 2)
+    };
+    if rc != 0 {
+        unsafe { drop(Box::from_raw(raw)); }
+        return Err(SemaphoreError::HelperSpawnFailed);
+    }
+
+    harness::wait_until_phase(&ctx_ref.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    if sys::delay_ticks(2) != sys::DelayStatus::Ok {
+        return Err(SemaphoreError::ControllerDelayFailed);
+    }
+
+    let release_tick = sys::tick_snapshot().tick_count as u32;
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+
+    harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::validate_helper(&ctx_ref.state)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    let completed = ctx_ref.completion_tick.load(Ordering::Acquire);
+
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    unsafe { drop(Box::from_raw(raw)); }
+
+    if completed.wrapping_sub(release_tick) > (u32::MAX / 2) {
+        return Err(SemaphoreError::CompletedBeforeRelease);
+    }
+
+    Ok(())
+}
+
+fn binary_two_waiters(tick_bits: u8) -> Result<(), SemaphoreError> {
+    let s = osal::backend::BinarySemaphore::new()
+        .map_err(|_| SemaphoreError::Create)?;
+
+    let raw_a = Box::into_raw(Box::new(BinaryTaskContext::new(
+        &s, BinaryOperation::AcquireForever, 1,
+    )));
+    let raw_b = Box::into_raw(Box::new(BinaryTaskContext::new(
+        &s, BinaryOperation::AcquireForever, 2,
+    )));
+    let ctx_a = unsafe { &*raw_a };
+    let ctx_b = unsafe { &*raw_b };
+    let task_baseline = sys::heap_free();
+
+    let rc_a = unsafe {
+        harness::native_task_spawn(binary_helper_entry, raw_a.cast::<c_void>(), 1024, 2)
+    };
+    let rc_b = unsafe {
+        harness::native_task_spawn(binary_helper_entry, raw_b.cast::<c_void>(), 1024, 2)
+    };
+    if rc_a != 0 || rc_b != 0 {
+        if rc_a != 0 { unsafe { drop(Box::from_raw(raw_a)); } }
+        if rc_b != 0 { unsafe { drop(Box::from_raw(raw_b)); } }
+        return Err(SemaphoreError::HelperSpawnFailed);
+    }
+
+    harness::wait_until_phase(&ctx_a.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::wait_until_phase(&ctx_b.state, PHASE_BEFORE_OPERATION, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    if sys::delay_ticks(2) != sys::DelayStatus::Ok {
+        return Err(SemaphoreError::ControllerDelayFailed);
+    }
+
+    // First release — exactly one helper completes.
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+    if sys::delay_ticks(2) != sys::DelayStatus::Ok {
+        return Err(SemaphoreError::ControllerDelayFailed);
+    }
+
+    let phase_a = ctx_a.state.get_phase();
+    let phase_b = ctx_b.state.get_phase();
+    let completed = if phase_a >= PHASE_EXITING { 1u32 } else { 0u32 }
+        + if phase_b >= PHASE_EXITING { 1u32 } else { 0u32 };
+    if completed != 1 {
+        return Err(SemaphoreError::WrongWaiterCount);
+    }
+
+    // Second release — second helper completes.
+    s.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+
+    harness::wait_until_phase(&ctx_a.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::wait_until_phase(&ctx_b.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    harness::validate_helper(&ctx_a.state).map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    harness::validate_helper(&ctx_b.state).map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| SemaphoreError::BlockingNotAcquired)?;
+    unsafe { drop(Box::from_raw(raw_a)); }
+    unsafe { drop(Box::from_raw(raw_b)); }
+
+    Ok(())
+}
+
+fn binary_clone(_tick_bits: u8) -> Result<(), SemaphoreError> {
+    let baseline = sys::heap_free();
+
+    let s1 = osal::backend::BinarySemaphore::new()
+        .map_err(|_| SemaphoreError::Create)?;
+    let heap_with_one = sys::heap_free();
+
+    let s2 = s1.clone();
+    if sys::heap_free() != heap_with_one {
+        return Err(SemaphoreError::CloneHeapLeak);
+    }
+
+    drop(s1);
+    s2.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+    s2.acquire(Timeout::NoWait).map_err(|_| SemaphoreError::AcquireFailed)?;
+
+    drop(s2);
+    if sys::heap_free() != baseline {
+        return Err(SemaphoreError::LastDropLeak);
+    }
+
+    Ok(())
+}
+
+// ==================================================================
+// Scheduler suspended + RuntimeLease
+// ==================================================================
+
+struct SchedulerResumeGuard;
+
+impl SchedulerResumeGuard {
+    fn new() -> Self {
+        unsafe { osal_test_scheduler_suspend(); }
+        SchedulerResumeGuard
+    }
+}
+
+impl Drop for SchedulerResumeGuard {
+    fn drop(&mut self) {
+        unsafe { osal_test_scheduler_resume(); }
+    }
+}
+
+fn semaphore_scheduler_suspended(_tick_bits: u8) -> Result<(), SemaphoreError> {
+    // Counting semaphore: empty.
+    let cs = osal::backend::CountingSemaphore::new(1, 0)
+        .map_err(|_| SemaphoreError::Create)?;
+    // Binary: unsignaled.
+    let bs = osal::backend::BinarySemaphore::new()
+        .map_err(|_| SemaphoreError::Create)?;
+
+    {
+        let _resume = SchedulerResumeGuard::new();
+
+        // Counting — zero-wait must return Timeout (non-blocking).
+        match cs.acquire(Timeout::NoWait) {
+            Err(Error::Timeout) => {}
+            _ => return Err(SemaphoreError::NoWaitNotTimeout),
+        }
+        match cs.acquire(Timeout::After(core::time::Duration::ZERO)) {
+            Err(Error::Timeout) => {}
+            _ => return Err(SemaphoreError::AfterZeroNotTimeout),
+        }
+        // Counting — blocking must return Busy.
+        match cs.acquire(Timeout::After(core::time::Duration::from_millis(1))) {
+            Err(Error::Busy) => {}
+            _ => return Err(SemaphoreError::AcquireNotTimeout),
+        }
+        match cs.acquire(Timeout::Forever) {
+            Err(Error::Busy) => {}
+            _ => return Err(SemaphoreError::AcquireNotTimeout),
+        }
+
+        // Binary — zero-wait must return Timeout.
+        match bs.acquire(Timeout::NoWait) {
+            Err(Error::Timeout) => {}
+            _ => return Err(SemaphoreError::NoWaitNotTimeout),
+        }
+        match bs.acquire(Timeout::After(core::time::Duration::ZERO)) {
+            Err(Error::Timeout) => {}
+            _ => return Err(SemaphoreError::AfterZeroNotTimeout),
+        }
+        // Binary — blocking must return Busy.
+        match bs.acquire(Timeout::After(core::time::Duration::from_millis(1))) {
+            Err(Error::Busy) => {}
+            _ => return Err(SemaphoreError::AcquireNotTimeout),
+        }
+        match bs.acquire(Timeout::Forever) {
+            Err(Error::Busy) => {}
+            _ => return Err(SemaphoreError::AcquireNotTimeout),
+        }
+    }
+
+    // Post-resume: acquire must work.
+    cs.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+    cs.acquire(Timeout::NoWait).map_err(|_| SemaphoreError::AcquireFailed)?;
+
+    bs.release().map_err(|_| SemaphoreError::OverflowNotReturned)?;
+    bs.acquire(Timeout::NoWait).map_err(|_| SemaphoreError::AcquireFailed)?;
+
+    Ok(())
+}
+
+fn semaphore_runtime_lease(_tick_bits: u8, suite_baseline: u64) -> Result<(), SemaphoreError> {
+    // Use a Counting semaphore as the final active handle.
+    let s = osal::backend::CountingSemaphore::new(1, 1)
+        .map_err(|_| SemaphoreError::Create)?;
+
+    let heap_before = sys::heap_free();
+    match osal::shutdown() {
+        Err(Error::Busy) => {}
+        _ => return Err(SemaphoreError::ShutdownBusyNotReturned),
+    }
+    if osal::runtime_state() != osal_api::runtime::RuntimeState::Running {
+        return Err(SemaphoreError::BusyStateChanged);
+    }
+    if sys::heap_free() != heap_before {
+        return Err(SemaphoreError::BusyHeapChanged);
+    }
+
+    drop(s);
+    osal::shutdown().map_err(|_| SemaphoreError::ShutdownFailed)?;
+
+    if osal::runtime_state() != osal_api::runtime::RuntimeState::Uninitialized {
+        return Err(SemaphoreError::ShutdownStateInvalid);
+    }
+
+    if sys::heap_free() != suite_baseline {
+        return Err(SemaphoreError::LastDropLeak);
+    }
+
+    osal::initialize().map_err(|_| SemaphoreError::Create)?;
+
+    Ok(())
+}
+
 // ------------------------------------------------------------------
 // Public entry — called from the suite.
 // ------------------------------------------------------------------
 
-pub fn run_semaphore_cases(tick_bits: u8) -> Result<(), SemaphoreError> {
+pub fn run_semaphore_cases(tick_bits: u8, suite_baseline: u64) -> Result<(), SemaphoreError> {
     counting_core(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=counting_core");
 
@@ -681,6 +1144,33 @@ pub fn run_semaphore_cases(tick_bits: u8) -> Result<(), SemaphoreError> {
 
     counting_permit_accounting(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=counting_permit_accounting");
+
+    binary_core(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=binary_core");
+
+    binary_overflow(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=binary_overflow");
+
+    binary_nowait_zero(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=binary_nowait_zero");
+
+    binary_blocking_wake(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=binary_blocking_wake");
+
+    binary_forever_wake(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=binary_forever_wake");
+
+    binary_two_waiters(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=binary_two_waiters");
+
+    binary_clone(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=binary_clone");
+
+    semaphore_scheduler_suspended(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=semaphore_scheduler_suspended");
+
+    semaphore_runtime_lease(tick_bits, suite_baseline)?;
+    harness::console_line(c"OSAL_CASE_PASS name=semaphore_runtime_lease");
 
     Ok(())
 }

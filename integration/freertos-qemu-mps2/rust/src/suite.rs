@@ -46,7 +46,7 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
     // ------------------------------------------------------------------
     // Step 4B — Semaphore real-kernel contracts.
     // ------------------------------------------------------------------
-    let semaphore_result = cases::semaphore::run_semaphore_cases(tick_bits);
+    let semaphore_result = cases::semaphore::run_semaphore_cases(tick_bits, suite_baseline);
 
     if let Err(e) = semaphore_result {
         return -(e as i32);
@@ -77,7 +77,7 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
 
     // --- object pass ---
     harness::console_line(
-        c"OSAL_OBJECT_PASS harness=true helper_self_delete=true idle_cleanup=true heap_recovered=true multi_helper=true tick_advance=true mutex=true mutex_clone=true mutex_timeout=true mutex_nowait=true mutex_blocking=true mutex_suspended=true mutex_lease=true semaphore=true counting=true semaphore_timeout=true semaphore_blocking=true semaphore_multi_waiter=true",
+        c"OSAL_OBJECT_PASS harness=true helper_self_delete=true idle_cleanup=true heap_recovered=true multi_helper=true tick_advance=true mutex=true mutex_clone=true mutex_timeout=true mutex_nowait=true mutex_blocking=true mutex_suspended=true mutex_lease=true semaphore=true counting=true binary=true semaphore_timeout=true semaphore_blocking=true semaphore_multi_waiter=true semaphore_suspended=true semaphore_lease=true",
     );
 
     // --- end object protocol ---
