@@ -89,15 +89,12 @@ struct CountingTaskContext {
     operation: CountingOperation,
     elapsed_ticks: AtomicU32,
     completion_tick: AtomicU32,
-    #[allow(dead_code)]
-    helper_id: u32,
 }
 
 impl CountingTaskContext {
     fn new(
         semaphore: &osal::backend::CountingSemaphore,
         operation: CountingOperation,
-        helper_id: u32,
     ) -> Self {
         Self {
             state: CaseState::new(),
@@ -105,7 +102,6 @@ impl CountingTaskContext {
             operation,
             elapsed_ticks: AtomicU32::new(0),
             completion_tick: AtomicU32::new(0),
-            helper_id,
         }
     }
 }
@@ -162,9 +158,9 @@ fn run_counting_operation(ctx: &CountingTaskContext) -> i32 {
                 _ => -(SemaphoreError::AcquireNotTimeout as i32),
             }
         }
-        CountingOperation::AcquireAfterTicksExpectAcquire { timeout_ticks: _ } => {
+        CountingOperation::AcquireAfterTicksExpectAcquire { timeout_ticks } => {
             let result = sem.acquire(Timeout::After(
-                core::time::Duration::from_millis(100),
+                core::time::Duration::from_millis(timeout_ticks as u64),
             ));
             match result {
                 Ok(()) => {
@@ -326,7 +322,6 @@ fn counting_finite_timeout(tick_bits: u8) -> Result<(), SemaphoreError> {
     let raw = Box::into_raw(Box::new(CountingTaskContext::new(
         &s,
         CountingOperation::AcquireAfterTicks { timeout_ticks },
-        1,
     )));
     let ctx_ref = unsafe { &*raw };
     let task_baseline = sys::heap_free();
@@ -405,7 +400,6 @@ fn counting_blocking_wake(tick_bits: u8) -> Result<(), SemaphoreError> {
     let raw = Box::into_raw(Box::new(CountingTaskContext::new(
         &s,
         CountingOperation::AcquireAfterTicksExpectAcquire { timeout_ticks: 100 },
-        1,
     )));
     let ctx_ref = unsafe { &*raw };
     let task_baseline = sys::heap_free();
@@ -462,7 +456,6 @@ fn counting_forever_wake(tick_bits: u8) -> Result<(), SemaphoreError> {
     let raw = Box::into_raw(Box::new(CountingTaskContext::new(
         &s,
         CountingOperation::AcquireForever,
-        1,
     )));
     let ctx_ref = unsafe { &*raw };
     let task_baseline = sys::heap_free();
@@ -513,10 +506,10 @@ fn counting_one_release_one_waiter(tick_bits: u8) -> Result<(), SemaphoreError> 
 
     // Two helpers, both waiting on the empty semaphore.
     let raw_a = Box::into_raw(Box::new(CountingTaskContext::new(
-        &s, CountingOperation::AcquireForever, 1,
+        &s, CountingOperation::AcquireForever,
     )));
     let raw_b = Box::into_raw(Box::new(CountingTaskContext::new(
-        &s, CountingOperation::AcquireForever, 2,
+        &s, CountingOperation::AcquireForever,
     )));
     let ctx_a = unsafe { &*raw_a };
     let ctx_b = unsafe { &*raw_b };
@@ -598,10 +591,10 @@ fn counting_permit_accounting(tick_bits: u8) -> Result<(), SemaphoreError> {
         .map_err(|_| SemaphoreError::Create)?;
 
     let raw_a = Box::into_raw(Box::new(CountingTaskContext::new(
-        &s, CountingOperation::AcquireForever, 1,
+        &s, CountingOperation::AcquireForever,
     )));
     let raw_b = Box::into_raw(Box::new(CountingTaskContext::new(
-        &s, CountingOperation::AcquireForever, 2,
+        &s, CountingOperation::AcquireForever,
     )));
     let ctx_a = unsafe { &*raw_a };
     let ctx_b = unsafe { &*raw_b };
@@ -674,22 +667,18 @@ struct BinaryTaskContext {
     #[allow(dead_code)]
     operation: BinaryOperation,
     completion_tick: AtomicU32,
-    #[allow(dead_code)]
-    helper_id: u32,
 }
 
 impl BinaryTaskContext {
     fn new(
         semaphore: &osal::backend::BinarySemaphore,
         operation: BinaryOperation,
-        helper_id: u32,
     ) -> Self {
         Self {
             state: CaseState::new(),
             semaphore: semaphore.clone(),
             operation,
             completion_tick: AtomicU32::new(0),
-            helper_id,
         }
     }
 }
@@ -725,8 +714,8 @@ fn run_binary_operation(ctx: &BinaryTaskContext) -> i32 {
                 _ => -(SemaphoreError::AfterZeroNotTimeout as i32),
             }
         }
-        BinaryOperation::AcquireAfterTicks { timeout_ticks: _ } => {
-            match sem.acquire(Timeout::After(core::time::Duration::from_millis(100))) {
+        BinaryOperation::AcquireAfterTicks { timeout_ticks } => {
+            match sem.acquire(Timeout::After(core::time::Duration::from_millis(timeout_ticks as u64))) {
                 Ok(()) => {
                     let snap = sys::tick_snapshot();
                     ctx.completion_tick.store(snap.tick_count as u32, Ordering::Release);
@@ -818,7 +807,7 @@ fn binary_blocking_wake(tick_bits: u8) -> Result<(), SemaphoreError> {
         .map_err(|_| SemaphoreError::Create)?;
 
     let raw = Box::into_raw(Box::new(BinaryTaskContext::new(
-        &s, BinaryOperation::AcquireAfterTicks { timeout_ticks: 100 }, 1,
+        &s, BinaryOperation::AcquireAfterTicks { timeout_ticks: 100 },
     )));
     let ctx_ref = unsafe { &*raw };
     let task_baseline = sys::heap_free();
@@ -868,7 +857,7 @@ fn binary_forever_wake(tick_bits: u8) -> Result<(), SemaphoreError> {
         .map_err(|_| SemaphoreError::Create)?;
 
     let raw = Box::into_raw(Box::new(BinaryTaskContext::new(
-        &s, BinaryOperation::AcquireForever, 1,
+        &s, BinaryOperation::AcquireForever,
     )));
     let ctx_ref = unsafe { &*raw };
     let task_baseline = sys::heap_free();
@@ -914,10 +903,10 @@ fn binary_two_waiters(tick_bits: u8) -> Result<(), SemaphoreError> {
         .map_err(|_| SemaphoreError::Create)?;
 
     let raw_a = Box::into_raw(Box::new(BinaryTaskContext::new(
-        &s, BinaryOperation::AcquireForever, 1,
+        &s, BinaryOperation::AcquireForever,
     )));
     let raw_b = Box::into_raw(Box::new(BinaryTaskContext::new(
-        &s, BinaryOperation::AcquireForever, 2,
+        &s, BinaryOperation::AcquireForever,
     )));
     let ctx_a = unsafe { &*raw_a };
     let ctx_b = unsafe { &*raw_b };
