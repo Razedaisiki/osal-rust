@@ -9,6 +9,7 @@ extern crate alloc;
 mod allocator;
 mod harness;
 mod cases;
+mod suite;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -357,10 +358,7 @@ pub extern "C" fn osal_rust_smoke_entry() -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn osal_test_object_entry() -> i32 {
     let caps = sys::capabilities();
-    match harness::run_harness_smoke(caps.tick_bits) {
-        Ok(()) => 0,
-        Err(e) => e as i32,
-    }
+    suite::run_object_suite(caps.tick_bits)
 }
 
 // ------------------------------------------------------------------

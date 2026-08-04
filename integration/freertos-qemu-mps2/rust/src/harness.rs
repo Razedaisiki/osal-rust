@@ -229,7 +229,7 @@ pub unsafe extern "C" fn osal_test_harness_record_end(context: *mut c_void, tick
 // ------------------------------------------------------------------
 
 /// Compute elapsed ticks between two snapshots (handles overflow).
-fn total_ticks_diff(after: TickSnapshot, before: TickSnapshot, bits: u8) -> u128 {
+pub fn total_ticks_diff(after: TickSnapshot, before: TickSnapshot, bits: u8) -> u128 {
     let ta = ((after.overflow_count as u128) << bits) | after.tick_count as u128;
     let tb = ((before.overflow_count as u128) << bits) | before.tick_count as u128;
     ta.saturating_sub(tb)
@@ -240,7 +240,7 @@ fn total_ticks_diff(after: TickSnapshot, before: TickSnapshot, bits: u8) -> u128
 /// result.
 ///
 /// Returns `Ok(())` when `state.get_phase() >= expected`.
-fn wait_until_phase(
+pub fn wait_until_phase(
     state: &CaseState,
     expected: u32,
     timeout_ticks: u32,
@@ -271,7 +271,7 @@ fn wait_until_phase(
 }
 
 /// Poll for heap to return to `baseline`, yielding 1 tick per iteration.
-fn wait_until_heap_recovered(
+pub fn wait_until_heap_recovered(
     baseline: u64,
     deadline_ticks: u32,
     tick_bits: u8,
@@ -296,7 +296,7 @@ fn wait_until_heap_recovered(
 }
 
 /// Emit a line to the UART via the C console bridge.
-fn console_line(text: &CStr) {
+pub fn console_line(text: &CStr) {
     unsafe { osal_test_console_line(text.as_ptr().cast::<i8>()); }
 }
 
@@ -309,7 +309,7 @@ fn console_line(text: &CStr) {
 /// State isolation between independent helpers is proven by the fact
 /// each uses a different context pointer — if any bridge ignored its
 /// context, the other helper would time out or fail its tick check.
-fn validate_helper(state: &CaseState) -> Result<(), HarnessError> {
+pub fn validate_helper(state: &CaseState) -> Result<(), HarnessError> {
     // All required phases visited.
     if !state.all_visited(REQUIRED_HELPER_PHASES) {
         return Err(HarnessError::PhaseNotVisited);
@@ -338,12 +338,18 @@ static STATE_A: CaseState = CaseState::new();
 static STATE_B: CaseState = CaseState::new();
 
 // ------------------------------------------------------------------
-// Harness smoke — two independent native helpers.
+// Harness case — two independent native helpers.
 // ------------------------------------------------------------------
 
-pub fn run_harness_smoke(tick_bits: u8) -> Result<(), HarnessError> {
-    console_line(c"OSAL_OBJECT_BEGIN");
-
+/// Run the native helper-task harness smoke test.
+///
+/// Spawns two independent native FreeRTOS helpers, verifies their
+/// full phase lifecycle and tick advance, confirms both self-delete
+/// and Idle-task TCB/stack reclamation, and checks state isolation.
+///
+/// Only emits `OSAL_CASE_PASS`.  The object protocol envelope
+/// (BEGIN / OBJECT_PASS / END) is owned by the suite.
+pub fn run_harness_case(tick_bits: u8) -> Result<(), HarnessError> {
     let baseline = sys::heap_free();
 
     // Reset both static states for a fresh run.
@@ -398,20 +404,8 @@ pub fn run_harness_smoke(tick_bits: u8) -> Result<(), HarnessError> {
     if (visited_b & expected_mask) != expected_mask {
         return Err(HarnessError::StateIsolation);
     }
-    // Both states completed independently — different static addresses
-    // mean different memory; both produced correct, self-consistent
-    // visited bitmaps so no cross-talk occurred.
 
-    // --- case pass ---
     console_line(c"OSAL_CASE_PASS name=harness_native_task");
-
-    // --- object pass ---
-    console_line(
-        c"OSAL_OBJECT_PASS harness=true helper_self_delete=true idle_cleanup=true heap_recovered=true multi_helper=true tick_advance=true",
-    );
-
-    // --- end object protocol ---
-    console_line(c"OSAL_OBJECT_END status=pass");
 
     Ok(())
 }
