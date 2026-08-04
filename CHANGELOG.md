@@ -148,6 +148,15 @@ real FreeRTOS without depending on the OSAL Task implementation.
 | `mutex_runtime_lease` | Active handle→Busy, failure-atomic; drop→shutdown→heap recovered |
 
 - Suite tracks `suite_baseline` for end-to-end heap recovery proof.
+  Final heap gate: `sys::heap_free() == suite_baseline` asserted after
+  final shutdown, before `OSAL_OBJECT_PASS`.
+- Per-helper TCB/stack recovery: each case records a `task_baseline`
+  before spawn and waits for heap recovery after helper self-delete.
+  `Box::into_raw` pattern for precise context lifetime control.
+- `MutexTaskContext` owns a Mutex clone (not a raw pointer) — helper
+  access remains valid even if the controller returns early on error.
+  Spawn failure reclaims context immediately.
+- `delay_ticks` return value checked in blocking cases.
 - Stack margin: ~459 words (threshold 128). QEMU exit 0.
 - Verifier: all 8 Mutex cases + harness case required; 6 Mutex
   OBJECT_PASS fields.
