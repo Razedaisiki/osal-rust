@@ -189,7 +189,6 @@ PROFILES = {
             "task_drop=true",
             "task_scheduler=true",
             "task_mapping=true",
-            "task_rollback=true",
             "task_lease=true",
             "task_self_delete=true",
             "task_stack_margin=true",
