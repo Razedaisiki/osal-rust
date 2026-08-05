@@ -11,7 +11,7 @@ INTEG_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$INTEG_DIR/build"
 ELF="$BUILD_DIR/freertos-qemu-mps2.elf"
 LOG="$BUILD_DIR/qemu.log"
-TIMEOUT_SEC=15
+TIMEOUT_SEC=30
 
 # ------------------------------------------------------------------
 # Check ELF exists

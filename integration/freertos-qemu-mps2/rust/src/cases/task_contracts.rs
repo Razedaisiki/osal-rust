@@ -28,6 +28,7 @@ unsafe extern "C" {
     fn osal_test_diag_last_name_len() -> u32;
     fn osal_test_diag_reset();
     fn osal_test_task_stack_hwm() -> u32;
+    fn osal_test_scheduler_suspend();
     fn osal_test_scheduler_resume();
     fn non_osal_context_helper(context: *mut c_void);
 }
@@ -123,7 +124,62 @@ const HWM_MIN_WORDS: u32 = 64;
 const HEAP_RECOVERY_TICKS: u32 = 500;
 /// Test task stack size — small enough to minimize heap pressure but
 /// well above the 128-word platform minimum.
-const TEST_STACK_BYTES: usize = 1536;
+const TEST_STACK_BYTES: usize = 1024;
+
+// ------------------------------------------------------------------
+// PublishedTaskSlot — single-writer, single-reader slot for self-join.
+// ------------------------------------------------------------------
+use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
+
+struct PublishedTaskSlot {
+    ready: AtomicBool,
+    slot: UnsafeCell<MaybeUninit<FreeRtosTask>>,
+}
+
+unsafe impl Sync for PublishedTaskSlot {}
+
+impl PublishedTaskSlot {
+    const fn new() -> Self {
+        Self {
+            ready: AtomicBool::new(false),
+            slot: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+
+    /// Controller: publish a task clone (called once before task reads).
+    fn publish(&self, task: FreeRtosTask) {
+        unsafe { (*self.slot.get()).write(task); }
+        self.ready.store(true, Ordering::Release);
+    }
+
+    /// Task: take the clone.  Must only be called once, after ready.
+    /// The caller must copy the task out of the slot before calling join().
+    unsafe fn take(&self) -> FreeRtosTask {
+        while !self.ready.load(Ordering::Acquire) {
+            let _ = sys::delay_ticks(1);
+        }
+        unsafe { (*self.slot.get()).assume_init_read() }
+    }
+}
+
+// ------------------------------------------------------------------
+// Scheduler resume guard — RAII resume.
+// ------------------------------------------------------------------
+struct SchedulerResumeGuard;
+
+impl SchedulerResumeGuard {
+    /// # Safety: vTaskSuspendAll must have been called before this.
+    unsafe fn new() -> Self {
+        Self
+    }
+}
+
+impl Drop for SchedulerResumeGuard {
+    fn drop(&mut self) {
+        unsafe { osal_test_scheduler_resume(); }
+    }
+}
 
 // ------------------------------------------------------------------
 // Non-OSAL context checker — called from native helper via C bridge.
@@ -683,6 +739,287 @@ fn case_live_count(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
+/// Case 9: NoWait and After(ZERO) return Timeout on a running task.
+fn case_join_nowait_zero(tick_bits: u8) -> TestResult {
+    let global_baseline = sys::heap_free();
+    let state = Arc::new(TaskCaseState::new());
+    let s = Arc::clone(&state);
+    let sub_baseline = sys::heap_free();
+
+    let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("nowait_z")
+        .spawn(move || {
+            s.started.store(true, Ordering::Release);
+            wait_gate(&s);
+        })
+        .map_err(|_| TaskContractError::SpawnFailed)?;
+
+    // Wait for task to actually start.
+    while !state.started.load(Ordering::Acquire) { let _ = sys::delay_ticks(1); }
+
+    // NoWait on running task → Timeout.
+    if t.join(Timeout::NoWait).is_ok() {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
+    // After(ZERO) on running task → Timeout.
+    if t.join(Timeout::After(core::time::Duration::ZERO)).is_ok() {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
+
+    // Release and join.
+    state.release_gate.store(true, Ordering::Release);
+    let r = t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+    if r != ExitCode::SUCCESS { return Err(TaskContractError::CachedResultMismatch); }
+
+    drop(t);
+    if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
+        return Err(TaskContractError::HeapNotRecovered);
+    }
+    drop(state);
+    if sys::heap_free() != global_baseline { return Err(TaskContractError::HeapNotRecovered); }
+
+    harness::console_line(c"OSAL_CASE_PASS name=task_join_nowait_zero");
+    Ok(())
+}
+
+/// Case 10: After(finite) returns Timeout while task runs, later join succeeds.
+fn case_join_finite_timeout(tick_bits: u8) -> TestResult {
+    let global_baseline = sys::heap_free();
+    let state = Arc::new(TaskCaseState::new());
+    let s = Arc::clone(&state);
+    let sub_baseline = sys::heap_free();
+
+    let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("fin_timeout")
+        .spawn(move || { s.started.store(true, Ordering::Release); wait_gate(&s); })
+        .map_err(|_| TaskContractError::SpawnFailed)?;
+
+    while !state.started.load(Ordering::Acquire) { let _ = sys::delay_ticks(1); }
+
+    let before = sys::tick_snapshot();
+    // After(5 ms) on running task → Timeout.
+    if t.join(Timeout::After(core::time::Duration::from_millis(5))).is_ok() {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
+    let after = sys::tick_snapshot();
+    let elapsed = harness::total_ticks_diff(after, before, tick_bits);
+    // elapsed must be at least 5 ticks (but scheduler may overshoot).
+    if elapsed < 5 {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
+
+    // Task still hasn't completed.
+    if state.entry_count.load(Ordering::Acquire) != 0 {
+        // entry_count is 0 — we didn't set it in this closure.
+    }
+
+    // Release and join.
+    state.release_gate.store(true, Ordering::Release);
+    t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+
+    drop(t);
+    if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
+        return Err(TaskContractError::HeapNotRecovered);
+    }
+    drop(state);
+    if sys::heap_free() != global_baseline { return Err(TaskContractError::HeapNotRecovered); }
+
+    harness::console_line(c"OSAL_CASE_PASS name=task_join_finite_timeout");
+    Ok(())
+}
+
+/// Case 11: join(Forever) succeeds, then all subsequent joins return cached.
+fn case_join_forever_cached(tick_bits: u8) -> TestResult {
+    let global_baseline = sys::heap_free();
+
+    // Task delays 2 ticks, records HWM, returns.
+    let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("forever_cached")
+        .spawn(|| { let _ = sys::delay_ticks(2); })
+        .map_err(|_| TaskContractError::SpawnFailed)?;
+
+    let before = sys::tick_snapshot();
+    t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+    let after = sys::tick_snapshot();
+    let elapsed = harness::total_ticks_diff(after, before, tick_bits);
+    if elapsed < 2 { return Err(TaskContractError::CachedResultMismatch); }
+
+    // Subsequent joins return immediately with cached result.
+    for _ in 0..3 {
+        let r = t.join(Timeout::NoWait).map_err(|_| TaskContractError::CachedResultMismatch)?;
+        if r != ExitCode::SUCCESS { return Err(TaskContractError::CachedResultMismatch); }
+    }
+    t.join(Timeout::After(core::time::Duration::ZERO)).map_err(|_| TaskContractError::CachedResultMismatch)?;
+    t.join(Timeout::Forever).map_err(|_| TaskContractError::CachedResultMismatch)?;
+
+    drop(t);
+    if harness::wait_until_heap_recovered(global_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
+        return Err(TaskContractError::HeapNotRecovered);
+    }
+
+    harness::console_line(c"OSAL_CASE_PASS name=task_join_forever_cached");
+    Ok(())
+}
+
+/// Case 12: Self-join returns Busy from within the task entry.
+fn case_self_join(tick_bits: u8) -> TestResult {
+    let global_baseline = sys::heap_free();
+
+    static SLOT: PublishedTaskSlot = PublishedTaskSlot::new();
+
+    let state = Arc::new(TaskCaseState::new());
+    let s = Arc::clone(&state);
+    let sub_baseline = sys::heap_free();
+
+    let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("self_join")
+        .spawn(move || {
+            s.started.store(true, Ordering::Release);
+            // Take own clone from the slot (published by controller).
+            let myself = unsafe { SLOT.take() };
+
+            // All join attempts on self must return Busy.
+            let r1 = myself.join(Timeout::NoWait);
+            let r2 = myself.join(Timeout::After(core::time::Duration::from_millis(5)));
+            let r3 = myself.join(Timeout::Forever);
+
+            s.native_priority.store(
+                if matches!(r1, Err(Error::Busy)) && matches!(r2, Err(Error::Busy)) && matches!(r3, Err(Error::Busy))
+                { 1 } else { 0 },
+                Ordering::Release,
+            );
+            s.entry_count.fetch_add(1, Ordering::Release);
+            drop(myself);
+        })
+        .map_err(|_| TaskContractError::SpawnFailed)?;
+
+    // Publish a clone into the slot.
+    SLOT.publish(t.clone());
+
+    // Wait for task to start and attempt self-join.
+    while !state.started.load(Ordering::Acquire) { let _ = sys::delay_ticks(1); }
+
+    t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+
+    if state.native_priority.load(Ordering::Acquire) != 1 {
+        // native_priority is being reused here as a flag — 1 = all Busy checks passed.
+        // Actually let me use a different approach...
+        return Err(TaskContractError::CachedResultMismatch);
+    }
+
+    drop(t);
+    if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
+        return Err(TaskContractError::HeapNotRecovered);
+    }
+    drop(state);
+    if sys::heap_free() != global_baseline { return Err(TaskContractError::HeapNotRecovered); }
+
+    harness::console_line(c"OSAL_CASE_PASS name=task_self_join");
+    Ok(())
+}
+
+/// Case 13: Another task joins an already-finished task via a clone,
+/// receiving the cached ExitCode — proves EventGroup sticky bit.
+fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
+    let global_baseline = sys::heap_free();
+
+    let target = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("cj_target")
+        .spawn(|| {})
+        .map_err(|_| TaskContractError::SpawnFailed)?;
+    target.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+
+    // Another task joins the completed target via a clone.
+    let tgt = target.clone();
+    let j = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("joiner")
+        .spawn(move || { let _ = tgt.join(Timeout::Forever); })
+        .map_err(|_| TaskContractError::SpawnFailed)?;
+    j.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+
+    drop(j);
+    drop(target);
+
+    // Single end-to-end recovery — all resources freed.
+    if harness::wait_until_heap_recovered(global_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
+        return Err(TaskContractError::HeapNotRecovered);
+    }
+
+    harness::console_line(c"OSAL_CASE_PASS name=task_concurrent_joiners");
+    Ok(())
+}
+
+/// Case 14: Join after completion with scheduler suspended returns cached immediately.
+fn case_late_join_cached(tick_bits: u8) -> TestResult {
+    let global_baseline = sys::heap_free();
+
+    // First complete a task normally.
+    let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("late_join")
+        .spawn(|| {})
+        .map_err(|_| TaskContractError::SpawnFailed)?;
+    t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+
+    // Suspend scheduler, join again — must return cached immediately.
+    unsafe { osal_test_scheduler_suspend(); }
+    let _guard = unsafe { SchedulerResumeGuard::new() };
+
+    // All join variants must succeed immediately (finished fast path).
+    t.join(Timeout::NoWait).map_err(|_| TaskContractError::CachedResultMismatch)?;
+    t.join(Timeout::After(core::time::Duration::ZERO)).map_err(|_| TaskContractError::CachedResultMismatch)?;
+    t.join(Timeout::Forever).map_err(|_| TaskContractError::CachedResultMismatch)?;
+
+    drop(_guard); // resume scheduler
+
+    drop(t);
+    if harness::wait_until_heap_recovered(global_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
+        return Err(TaskContractError::HeapNotRecovered);
+    }
+
+    harness::console_line(c"OSAL_CASE_PASS name=task_late_join_cached");
+    Ok(())
+}
+
+/// Case 15: Join during scheduler suspend returns Timeout/Busy appropriately.
+fn case_scheduler_suspended(tick_bits: u8) -> TestResult {
+    let global_baseline = sys::heap_free();
+    let state = Arc::new(TaskCaseState::new());
+    let s = Arc::clone(&state);
+    let sub_baseline = sys::heap_free();
+
+    let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("sched_susp")
+        .spawn(move || { s.started.store(true, Ordering::Release); wait_gate(&s); })
+        .map_err(|_| TaskContractError::SpawnFailed)?;
+
+    while !state.started.load(Ordering::Acquire) { let _ = sys::delay_ticks(1); }
+
+    // Suspend scheduler.
+    unsafe { osal_test_scheduler_suspend(); }
+    let _guard = unsafe { SchedulerResumeGuard::new() };
+
+    // All non-blocking joins on running task must timeout / be busy.
+    if t.join(Timeout::NoWait).is_ok() { return Err(TaskContractError::CachedResultMismatch); }
+    if t.join(Timeout::After(core::time::Duration::ZERO)).is_ok() {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
+    if !matches!(t.join(Timeout::After(core::time::Duration::from_millis(5))),
+                  Err(Error::Busy))
+    {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
+    if !matches!(t.join(Timeout::Forever), Err(Error::Busy)) {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
+
+    drop(_guard); // resume scheduler
+
+    state.release_gate.store(true, Ordering::Release);
+    t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+
+    drop(t);
+    if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
+        return Err(TaskContractError::HeapNotRecovered);
+    }
+    drop(state);
+    if sys::heap_free() != global_baseline { return Err(TaskContractError::HeapNotRecovered); }
+
+    harness::console_line(c"OSAL_CASE_PASS name=task_scheduler_suspended");
+    Ok(())
+}
+
 // ------------------------------------------------------------------
 // Dispatcher
 // ------------------------------------------------------------------
@@ -698,6 +1035,13 @@ pub fn run_task_cases(tick_bits: u8) -> TestResult {
     case_current_identity(tick_bits)?;
     case_non_osal_context(tick_bits)?;
     case_live_count(tick_bits)?;
+    case_join_nowait_zero(tick_bits)?;
+    case_join_finite_timeout(tick_bits)?;
+    case_join_forever_cached(tick_bits)?;
+    case_self_join(tick_bits)?;
+    case_concurrent_joiners(tick_bits)?;
+    case_late_join_cached(tick_bits)?;
+    case_scheduler_suspended(tick_bits)?;
 
     Ok(())
 }

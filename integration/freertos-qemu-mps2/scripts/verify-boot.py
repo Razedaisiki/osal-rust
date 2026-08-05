@@ -163,6 +163,13 @@ PROFILES = {
             "task_current_identity",
             "task_non_osal_context",
             "task_live_count",
+            "task_join_nowait_zero",
+            "task_join_finite_timeout",
+            "task_join_forever_cached",
+            "task_self_join",
+            "task_concurrent_joiners",
+            "task_late_join_cached",
+            "task_scheduler_suspended",
         ],
         "fields": [
             "profile=task",
