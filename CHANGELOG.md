@@ -214,7 +214,7 @@ priority inheritance, ISR calls, OOM injection, guard cross-task move.
 **Deferred:** fairness, starvation prevention, ISR acquire/release,
 OOM injection, high-concurrency stress.
 
-### Step 4C — Queue Real-Kernel Contracts — Completed
+### Step 4C-1 — Queue Core Real-Kernel Contracts — Completed
 
 - `cases/queue.rs`: 9 Queue contracts validated on real FreeRTOS
   (all controller-side — no native helpers needed).

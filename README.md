@@ -12,8 +12,8 @@ across different platforms by switching the backend.
 ## Project Status
 
 **Latest completed milestone: P7F — FreeRTOS Timer Foundation — Completed.**
-**Current milestone: P7G Step 4C — Queue Real-Kernel Contracts — Completed.**
-**Next: P7G Step 4D — Task real-kernel contracts.**
+**Current milestone: P7G Step 4C-1 — Queue Core Real-Kernel Contracts — Completed.**
+**Next: P7G Step 4C-2 — Queue Blocking and Close-Broadcast Contracts.**
 
 The POSIX backend fully implements the current non-deferred `osal-api`
 trait surface. The Mock backend implements the same surface with the
