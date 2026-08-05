@@ -219,6 +219,8 @@ check-symbols:
 	            osal_test_task_exit \
 	            osal_test_console_line \
 	            harness_smoke_helper \
+            non_osal_context_helper \
+            osal_test_record_non_osal_identity \
 	            pvPortMalloc vPortFree; do \
 	    if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
 	        echo "  OK   $$sym"; \

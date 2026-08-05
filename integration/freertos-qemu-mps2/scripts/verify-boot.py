@@ -155,6 +155,14 @@ PROFILES = {
     "task": {
         "cases": [
             "harness_native_task",
+            "task_builder_core",
+            "task_entry_once",
+            "task_handle_unique",
+            "task_stack_mapping",
+            "task_priority_mapping",
+            "task_current_identity",
+            "task_non_osal_context",
+            "task_live_count",
         ],
         "fields": [
             "profile=task",

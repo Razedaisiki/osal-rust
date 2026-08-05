@@ -44,6 +44,9 @@ extern int32_t osal_rust_smoke_entry(void);
 /* Rust object test entry (P7G Step 4).                                */
 extern int32_t osal_test_object_entry(void);
 
+/* Rust Task contract bridges (P7G Step 4D).                             */
+extern void osal_test_record_non_osal_identity(void);
+
 /* ------------------------------------------------------------------ */
 /* C bridges for the Rust integration crate.                          */
 /* ------------------------------------------------------------------ */
@@ -136,6 +139,30 @@ void harness_smoke_helper(void *context)
     if (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) {
         osal_test_harness_set_result(context, -1);
     }
+
+    osal_test_harness_set_phase(context,
+                                OSAL_TEST_PHASE_OPERATION_COMPLETED);
+
+    osal_test_harness_set_phase(context, OSAL_TEST_PHASE_EXITING);
+
+    osal_test_task_exit();
+}
+
+/* ------------------------------------------------------------------ */
+/* Native helper — non-OSAL context check (P7G Step 4D case 7).       */
+/*                                                                     */
+/* Calls back into Rust to record Task::current() and Task::count()    */
+/* from a native FreeRTOS context (no TLS identity, no RuntimeLease).  */
+/* ------------------------------------------------------------------ */
+void non_osal_context_helper(void *context)
+{
+    osal_test_harness_set_phase(context, OSAL_TEST_PHASE_STARTED);
+
+    osal_test_harness_set_phase(context,
+                                OSAL_TEST_PHASE_BEFORE_OPERATION);
+
+    /* Record Task::current() and Task::count() from native context. */
+    osal_test_record_non_osal_identity();
 
     osal_test_harness_set_phase(context,
                                 OSAL_TEST_PHASE_OPERATION_COMPLETED);
