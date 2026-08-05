@@ -8,8 +8,11 @@
 //!   Step 4D — task.rs      (Task lifecycle, join, self-delete, Idle cleanup)
 //!   Step 4E — timer.rs     (Timer scheduling, callback reentry)
 
+#[cfg(feature = "suite-aggregate")]
 pub mod mutex;
+#[cfg(feature = "suite-aggregate")]
 pub mod semaphore;
+#[cfg(feature = "suite-aggregate")]
 pub mod queue;
 
 #[cfg(feature = "suite-queue-blocking")]

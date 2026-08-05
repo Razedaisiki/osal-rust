@@ -13,7 +13,7 @@ use osal_api::time::Timeout;
 use osal_api::traits::queue::Queue;
 use osal_backend_freertos_sys as sys;
 
-use crate::harness::{self, CaseState, HarnessError};
+use crate::harness::{self, CaseState};
 
 unsafe extern "C" {
     fn osal_test_task_stack_hwm() -> u32;
@@ -56,7 +56,6 @@ pub enum QueueBlockingError {
     MessageLost = 407,
     CloseNotReturned = 408,
     CloseBroadcastFailed = 409,
-    StrandedWaiter = 410,
     LastDropLeak = 411,
     ControllerDelayFailed = 412,
     StackMarginTooSmall = 413,
