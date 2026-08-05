@@ -11,3 +11,6 @@
 pub mod mutex;
 pub mod semaphore;
 pub mod queue;
+
+#[cfg(feature = "suite-queue-blocking")]
+pub mod queue_blocking;

@@ -23,7 +23,7 @@ int32_t osal_test_task_spawn(osal_test_task_entry_t entry,
 
     if (entry == NULL || stack_words == 0U
         || priority >= (uint32_t)configMAX_PRIORITIES) {
-        return -1;
+        return OSAL_TEST_TASK_SPAWN_INVALID;
     }
 
     rc = xTaskCreate(entry,
@@ -33,7 +33,13 @@ int32_t osal_test_task_spawn(osal_test_task_entry_t entry,
                      (UBaseType_t)priority,
                      &handle);
 
-    return (rc == pdPASS) ? 0 : -1;
+    if (rc == pdPASS) {
+        return OSAL_TEST_TASK_SPAWN_OK;
+    }
+    if (rc == errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY) {
+        return OSAL_TEST_TASK_SPAWN_NO_MEMORY;
+    }
+    return OSAL_TEST_TASK_SPAWN_INTERNAL;
 }
 
 uint32_t osal_test_task_stack_hwm(void)

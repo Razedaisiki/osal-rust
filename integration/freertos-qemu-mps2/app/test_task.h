@@ -30,10 +30,23 @@ enum {
 typedef void (*osal_test_task_entry_t)(void *context);
 
 /* ------------------------------------------------------------------ */
+/* Spawn status codes.                                                */
+/* ------------------------------------------------------------------ */
+enum {
+    OSAL_TEST_TASK_SPAWN_OK        =  0,
+    OSAL_TEST_TASK_SPAWN_INVALID   = -1,
+    OSAL_TEST_TASK_SPAWN_NO_MEMORY = -2,
+    OSAL_TEST_TASK_SPAWN_INTERNAL  = -3,
+};
+
+/* ------------------------------------------------------------------ */
 /* Spawn a native FreeRTOS task.                                      */
 /*                                                                    */
-/* Returns 0 on success, -1 on failure.                               */
-/* Rejects entry==NULL, stack_words==0, priority>=configMAX_PRIORITIES.*/
+/* Returns OSAL_TEST_TASK_SPAWN_OK on success.                        */
+/* Rejects entry==NULL, stack_words==0, priority>=configMAX_PRIORITIES*/
+/* with OSAL_TEST_TASK_SPAWN_INVALID.                                 */
+/* Returns OSAL_TEST_TASK_SPAWN_NO_MEMORY if xTaskCreate fails with   */
+/* errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY.                              */
 /* ------------------------------------------------------------------ */
 int32_t osal_test_task_spawn(osal_test_task_entry_t entry,
                              void *context,

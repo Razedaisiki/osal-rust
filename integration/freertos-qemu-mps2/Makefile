@@ -108,6 +108,11 @@ $(BUILD):
 
 all: $(ELF) size
 
+# Feature flags for the Rust staticlib.
+#   make                          → suite-aggregate (default)
+#   make CARGO_FEATURES=suite-queue-blocking → queue-blocking
+CARGO_FEATURES ?= default
+
 # Pass the ARM cross-compiler and FreeRTOS include paths so the
 # -sys crate build.rs compiles the C shim with arm-none-eabi-gcc.
 RUST_BUILD_ENV  = CC_thumbv7m_none_eabi=$(CC)
@@ -124,7 +129,8 @@ CARGO_BUILD_LOG := $(abspath $(BUILD)/cargo-build.log)
 rust-staticlib: | $(BUILD)
 	@set -eu; \
 	cd $(RUST_DIR); \
-	env $(RUST_BUILD_ENV) $(CARGO) build -vv \
+	FEATURE_FLAGS=$$(if [ "$(CARGO_FEATURES)" = "default" ]; then echo ""; else echo "--no-default-features --features $(CARGO_FEATURES)"; fi); \
+	env $(RUST_BUILD_ENV) $(CARGO) build -vv $$FEATURE_FLAGS \
 	    >"$(CARGO_BUILD_LOG)" 2>&1 || { \
 	        status=$$?; \
 	        cat "$(CARGO_BUILD_LOG)"; \

@@ -99,6 +99,16 @@ pub unsafe fn native_task_spawn(
     unsafe { osal_test_task_spawn(entry, context, stack_words, priority) }
 }
 
+/// Spawn status codes — keep in sync with test_task.h.
+#[allow(dead_code)]
+pub const SPAWN_OK: i32 = 0;
+#[allow(dead_code)]
+pub const SPAWN_INVALID: i32 = -1;
+#[allow(dead_code)]
+pub const SPAWN_NO_MEMORY: i32 = -2;
+#[allow(dead_code)]
+pub const SPAWN_INTERNAL: i32 = -3;
+
 // ------------------------------------------------------------------
 // CaseState — per-helper progress with visited bitmap.
 // ------------------------------------------------------------------

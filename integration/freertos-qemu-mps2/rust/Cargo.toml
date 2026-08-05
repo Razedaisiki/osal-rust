@@ -15,6 +15,11 @@ osal-backend-freertos = { path = "../../../crates/osal-backend-freertos" }
 osal-api = { path = "../../../crates/osal-api" }
 osal = { path = "../../../crates/osal", default-features = false, features = ["backend-freertos"] }
 
+[features]
+default = ["suite-aggregate"]
+suite-aggregate = []
+suite-queue-blocking = []
+
 [profile.dev]
 panic = "abort"
 
