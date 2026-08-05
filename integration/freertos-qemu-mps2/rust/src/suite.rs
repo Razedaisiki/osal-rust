@@ -106,7 +106,7 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
     }
 
     harness::console_line(
-        c"OSAL_OBJECT_PASS profile=queue-blocking queue_blocking=true queue_forever=true helper_self_delete=true idle_cleanup=true heap_recovered=true",
+        c"OSAL_OBJECT_PASS profile=queue-blocking queue_blocking=true queue_forever=true queue_multi_waiter=true queue_close_broadcast=true queue_stack_margin=true queue_payload_accounting=true helper_self_delete=true idle_cleanup=true heap_recovered=true",
     );
     harness::console_line(c"OSAL_OBJECT_END status=pass");
 

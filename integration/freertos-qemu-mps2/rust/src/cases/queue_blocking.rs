@@ -1,8 +1,8 @@
 //! Queue blocking real-kernel contracts (P7G Step 4C-2).
 //!
 //! Isolated suite — validates blocking wake, Forever, multi-waiter
-//! wake-one, close-broadcast, timeout/wake race, and stress on a
-//! fresh FreeRTOS session without accumulated helper allocations.
+//! wake-one, close-broadcast, and controller-side throughput on a
+//! fresh FreeRTOS session.  Timeout/wake race is deferred to 4C-3.
 
 use alloc::boxed::Box;
 use core::ffi::c_void;
@@ -144,9 +144,9 @@ unsafe extern "C" fn queue_send_blocking_helper(context: *mut c_void) {
     };
     let ctx = unsafe { &*(context as *const QueueSendContext) };
     ctx.state.set_result(result);
+    ctx.helper_stack_hwm.store(unsafe { osal_test_task_stack_hwm() }, Ordering::Release);
     ctx.state.record_phase(PHASE_OPERATION_COMPLETED);
     ctx.state.record_phase(PHASE_EXITING);
-    ctx.helper_stack_hwm.store(unsafe { osal_test_task_stack_hwm() }, Ordering::Release);
     unsafe { harness::osal_test_task_exit(); }
 }
 
@@ -159,9 +159,9 @@ unsafe extern "C" fn queue_recv_blocking_helper(context: *mut c_void) {
     };
     let ctx = unsafe { &*(context as *const QueueRecvContext) };
     ctx.state.set_result(result);
+    ctx.helper_stack_hwm.store(unsafe { osal_test_task_stack_hwm() }, Ordering::Release);
     ctx.state.record_phase(PHASE_OPERATION_COMPLETED);
     ctx.state.record_phase(PHASE_EXITING);
-    ctx.helper_stack_hwm.store(unsafe { osal_test_task_stack_hwm() }, Ordering::Release);
     unsafe { harness::osal_test_task_exit(); }
 }
 
@@ -564,7 +564,10 @@ fn queue_one_recv_one_sender(tick_bits: u8) -> Result<(), QueueBlockingError> {
     if completed != 1 { return Err(QueueBlockingError::WrongWaiterCount); }
 
     // Recv the first helper's message — second sender wakes.
-    q.recv(&mut buf, Timeout::NoWait).map_err(|_| QueueBlockingError::TimeoutNotReturned)?;
+    let first = {
+        q.recv(&mut buf, Timeout::NoWait).map_err(|_| QueueBlockingError::TimeoutNotReturned)?;
+        u32::from_le_bytes(buf)
+    };
 
     harness::wait_until_phase(&ctx_a.state, PHASE_EXITING, 100, tick_bits)
         .map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
@@ -573,15 +576,23 @@ fn queue_one_recv_one_sender(tick_bits: u8) -> Result<(), QueueBlockingError> {
     harness::validate_helper(&ctx_a.state).map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
     harness::validate_helper(&ctx_b.state).map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
 
-    // Verify the second helper's message.
-    q.recv(&mut buf, Timeout::NoWait).map_err(|_| QueueBlockingError::TimeoutNotReturned)?;
-    let remaining = u32::from_le_bytes(buf);
+    // Recv the second helper's message.
+    let second = {
+        q.recv(&mut buf, Timeout::NoWait).map_err(|_| QueueBlockingError::TimeoutNotReturned)?;
+        u32::from_le_bytes(buf)
+    };
     if q.len().map_err(|_| QueueBlockingError::Create)? != 0 { return Err(QueueBlockingError::MessageLost); }
 
     // Both senders' outcomes must be SUCCESS.
     if ctx_a.outcome.load(Ordering::Acquire) != OUTCOME_SUCCESS { return Err(QueueBlockingError::TimeoutNotReturned); }
     if ctx_b.outcome.load(Ordering::Acquire) != OUTCOME_SUCCESS { return Err(QueueBlockingError::TimeoutNotReturned); }
-    let _ = remaining;
+
+    // Payload set must be {M1, M2}.
+    let m1 = u32::from_le_bytes(M1);
+    let m2 = u32::from_le_bytes(M2);
+    if !((first == m1 && second == m2) || (first == m2 && second == m1)) {
+        return Err(QueueBlockingError::MessageLost);
+    }
 
     harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
         .map_err(|_| QueueBlockingError::HeapNotRecovered)?;
@@ -744,7 +755,8 @@ fn queue_close_broadcast_senders(tick_bits: u8) -> Result<(), QueueBlockingError
 // Case: queue_throughput_cycle
 // ------------------------------------------------------------------
 
-/// Controller-side throughput: N send/recv interleaved, heap recovery.
+/// Controller-side FIFO/recovery loop: 64 interleaved NoWait send/recv
+/// cycles in the boot task — no producer/consumer helper tasks.
 fn queue_throughput_cycle(_tick_bits: u8) -> Result<(), QueueBlockingError> {
     const N: u32 = 64;
     let baseline = sys::heap_free();

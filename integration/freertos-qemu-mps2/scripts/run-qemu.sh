@@ -61,8 +61,13 @@ echo "QEMU exited normally (code 0)"
 # ------------------------------------------------------------------
 # Verify UART boot protocol
 # ------------------------------------------------------------------
+PROFILE="${PROFILE:-}"
+VERIFY_ARGS=("$LOG")
+if [ -n "$PROFILE" ]; then
+    VERIFY_ARGS+=(--profile "$PROFILE")
+fi
 echo ""
-python3 "$SCRIPT_DIR/verify-boot.py" "$LOG"
+python3 "$SCRIPT_DIR/verify-boot.py" "${VERIFY_ARGS[@]}"
 VERIFY_EXIT=$?
 
 if [ $VERIFY_EXIT -eq 0 ]; then

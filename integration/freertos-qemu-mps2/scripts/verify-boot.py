@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """verify-boot.py — validate OSAL FreeRTOS MPS2 boot and object protocols.
 
-Reads the QEMU UART log and checks that the boot protocol markers and
-object protocol markers are present, in order, and without error.
+Usage:
+  verify-boot.py <qemu.log> [--profile aggregate|queue-blocking]
+
+If --profile is omitted, the profile is auto-detected from
+OSAL_OBJECT_BEGIN profile=... in the log.
 """
 
+from __future__ import annotations
 import sys
 
 # ------------------------------------------------------------------
-# Boot protocol (P7G Step 2 + 3B + 3C)
+# Boot protocol (P7G Step 2 + 3B + 3C) — shared across profiles.
 # ------------------------------------------------------------------
 MARKER_BOOT_BEGIN = "OSAL_BOOT_BEGIN"
 MARKER_BOOT_PASS  = "OSAL_BOOT_PASS"
@@ -36,7 +40,7 @@ REQUIRED_PASS_FIELDS = [
 FIELD_STATUS = "status=pass"
 
 # ------------------------------------------------------------------
-# Object protocol (P7G Step 4)
+# Object protocol markers
 # ------------------------------------------------------------------
 MARKER_OBJECT_BEGIN = "OSAL_OBJECT_BEGIN"
 MARKER_OBJECT_PASS  = "OSAL_OBJECT_PASS"
@@ -45,80 +49,124 @@ MARKER_OBJECT_END   = "OSAL_OBJECT_END"
 MARKER_CASE_PASS = "OSAL_CASE_PASS"
 MARKER_CASE_FAIL = "OSAL_CASE_FAIL"
 
-# Each completed sub-step adds its case name here.
-REQUIRED_CASES = [
-    "harness_native_task",
-    "mutex_basic_clone",
-    "mutex_non_recursive",
-    "mutex_nowait_zero",
-    "mutex_finite_timeout",
-    "mutex_blocking_wake",
-    "mutex_forever_wake",
-    "mutex_scheduler_suspended",
-    "mutex_runtime_lease",
-    "counting_core",
-    "counting_overflow",
-    "counting_nowait_zero",
-    "counting_finite_timeout",
-    "counting_clone",
-    "counting_blocking_wake",
-    "counting_forever_wake",
-    "counting_one_release_one_waiter",
-    "counting_permit_accounting",
-    "binary_core",
-    "binary_overflow",
-    "binary_nowait_zero",
-    "binary_blocking_wake",
-    "binary_forever_wake",
-    "binary_two_waiters",
-    "binary_clone",
-    "semaphore_scheduler_suspended",
-    "semaphore_runtime_lease",
-    "queue_core_fifo",
-    "queue_wrong_size_precedence",
-    "queue_nowait_zero",
-    "queue_clone_lifecycle",
-    "queue_recv_finite_timeout",
-    "queue_send_finite_timeout",
-    "queue_close_drain",
-    "queue_scheduler_suspended",
-    "queue_runtime_lease",
-]
-
-REQUIRED_OBJECT_PASS_FIELDS = [
-    "harness=true",
-    "helper_self_delete=true",
-    "idle_cleanup=true",
-    "heap_recovered=true",
-    "multi_helper=true",
-    "tick_advance=true",
-    "mutex=true",
-    "mutex_clone=true",
-    "mutex_timeout=true",
-    "mutex_nowait=true",
-    "mutex_blocking=true",
-    "mutex_suspended=true",
-    "mutex_lease=true",
-    "semaphore=true",
-    "counting=true",
-    "semaphore_timeout=true",
-    "semaphore_blocking=true",
-    "semaphore_multi_waiter=true",
-    "binary=true",
-    "semaphore_suspended=true",
-    "semaphore_lease=true",
-    "queue=true",
-    "queue_fifo=true",
-    "queue_timeout=true",
-    "queue_close=true",
-    "queue_suspended=true",
-    "queue_lease=true",
-]
-
 OBJECT_FIELD_STATUS = "status=pass"
 
+# ------------------------------------------------------------------
+# Profile definitions
+# ------------------------------------------------------------------
 
-def verify(log_path: str) -> int:
+PROFILES = {
+    "aggregate": {
+        "cases": [
+            "harness_native_task",
+            "mutex_basic_clone",
+            "mutex_non_recursive",
+            "mutex_nowait_zero",
+            "mutex_finite_timeout",
+            "mutex_blocking_wake",
+            "mutex_forever_wake",
+            "mutex_scheduler_suspended",
+            "mutex_runtime_lease",
+            "counting_core",
+            "counting_overflow",
+            "counting_nowait_zero",
+            "counting_finite_timeout",
+            "counting_clone",
+            "counting_blocking_wake",
+            "counting_forever_wake",
+            "counting_one_release_one_waiter",
+            "counting_permit_accounting",
+            "binary_core",
+            "binary_overflow",
+            "binary_nowait_zero",
+            "binary_blocking_wake",
+            "binary_forever_wake",
+            "binary_two_waiters",
+            "binary_clone",
+            "semaphore_scheduler_suspended",
+            "semaphore_runtime_lease",
+            "queue_core_fifo",
+            "queue_wrong_size_precedence",
+            "queue_nowait_zero",
+            "queue_clone_lifecycle",
+            "queue_recv_finite_timeout",
+            "queue_send_finite_timeout",
+            "queue_close_drain",
+            "queue_scheduler_suspended",
+            "queue_runtime_lease",
+        ],
+        "fields": [
+            "harness=true",
+            "helper_self_delete=true",
+            "idle_cleanup=true",
+            "heap_recovered=true",
+            "multi_helper=true",
+            "tick_advance=true",
+            "mutex=true",
+            "mutex_clone=true",
+            "mutex_timeout=true",
+            "mutex_nowait=true",
+            "mutex_blocking=true",
+            "mutex_suspended=true",
+            "mutex_lease=true",
+            "semaphore=true",
+            "counting=true",
+            "binary=true",
+            "semaphore_timeout=true",
+            "semaphore_blocking=true",
+            "semaphore_multi_waiter=true",
+            "semaphore_suspended=true",
+            "semaphore_lease=true",
+            "queue=true",
+            "queue_fifo=true",
+            "queue_timeout=true",
+            "queue_close=true",
+            "queue_suspended=true",
+            "queue_lease=true",
+        ],
+    },
+    "queue-blocking": {
+        "cases": [
+            "harness_native_task",
+            "queue_helper_resource_probe",
+            "queue_recv_blocking_wake",
+            "queue_send_blocking_wake",
+            "queue_recv_forever_wake",
+            "queue_send_forever_wake",
+            "queue_one_send_one_receiver",
+            "queue_one_recv_one_sender",
+            "queue_close_broadcast_receivers",
+            "queue_close_broadcast_senders",
+            "queue_throughput_cycle",
+        ],
+        "fields": [
+            "profile=queue-blocking",
+            "queue_blocking=true",
+            "queue_forever=true",
+            "queue_multi_waiter=true",
+            "queue_close_broadcast=true",
+            "queue_stack_margin=true",
+            "queue_payload_accounting=true",
+            "helper_self_delete=true",
+            "idle_cleanup=true",
+            "heap_recovered=true",
+        ],
+    },
+}
+
+
+def detect_profile(text: str) -> str | None:
+    """Auto-detect the profile from OSAL_OBJECT_BEGIN."""
+    for line in text.splitlines():
+        if MARKER_OBJECT_BEGIN in line:
+            if "profile=queue-blocking" in line:
+                return "queue-blocking"
+            # If no profile marker, default to aggregate.
+            return "aggregate"
+    return None
+
+
+def verify(log_path: str, profile: str | None = None) -> int:
     """Return 0 on success, 1 on failure."""
     try:
         with open(log_path, "r") as f:
@@ -129,6 +177,17 @@ def verify(log_path: str) -> int:
 
     lines = text.splitlines()
     errors: list[str] = []
+
+    # Auto-detect profile if not specified.
+    if profile is None:
+        profile = detect_profile(text)
+    if profile is None or profile not in PROFILES:
+        print("FAIL: cannot determine profile (use --profile aggregate|queue-blocking)")
+        return 1
+
+    profile_def = PROFILES[profile]
+    REQUIRED_CASES = profile_def["cases"]
+    REQUIRED_OBJECT_PASS_FIELDS = profile_def["fields"]
 
     # ==============================================================
     # Boot protocol
@@ -226,7 +285,6 @@ def verify(log_path: str) -> int:
     obj_end_count = 0
     case_pass_lines: list[str] = []
 
-    # Also capture line indices for position checks.
     obj_begin_idx: int | None = None
     obj_pass_idx: int | None = None
     obj_end_idx: int | None = None
@@ -299,10 +357,9 @@ def verify(log_path: str) -> int:
 
     # --- CASE_PASS: extract names, validate position, reject unknown ---
     required_set: set[str] = set(REQUIRED_CASES)
-    seen_cases: dict[str, int] = {}          # name → line index
+    seen_cases: dict[str, int] = {}
 
     for idx, cl in case_pass_indices:
-        # Must have a name= token
         name_token = None
         for token in cl.split():
             if token.startswith("name="):
@@ -322,14 +379,12 @@ def verify(log_path: str) -> int:
             )
             continue
 
-        # Reject unknown cases
         if case_name not in required_set:
             errors.append(
                 f"unknown {MARKER_CASE_PASS} '{case_name}' at line {idx + 1}"
             )
             continue
 
-        # Reject duplicates
         if case_name in seen_cases:
             errors.append(
                 f"duplicate {MARKER_CASE_PASS} '{case_name}' "
@@ -339,7 +394,6 @@ def verify(log_path: str) -> int:
 
         seen_cases[case_name] = idx
 
-        # Position: must be between OBJECT_BEGIN and OBJECT_PASS
         if obj_begin_idx is not None and idx <= obj_begin_idx:
             errors.append(
                 f"{MARKER_CASE_PASS} '{case_name}' at line {idx + 1} "
@@ -351,7 +405,6 @@ def verify(log_path: str) -> int:
                 f"must precede {MARKER_OBJECT_PASS} (line {obj_pass_idx + 1})"
             )
 
-    # Each required case must appear exactly once
     for required in REQUIRED_CASES:
         if required not in seen_cases:
             errors.append(
@@ -389,12 +442,12 @@ def verify(log_path: str) -> int:
     # Report
     # ==============================================================
     if errors:
-        print("FAIL: boot/object protocol errors:")
+        print(f"FAIL ({profile}): boot/object protocol errors:")
         for err in errors:
             print(f"  - {err}")
         return 1
 
-    print("PASS: boot and object protocols valid")
+    print(f"PASS ({profile}): boot and object protocols valid")
     print(f"  {MARKER_BOOT_BEGIN}: {begin_count}")
     print(f"  {MARKER_BOOT_PASS}:  {pass_count}")
     print(f"  {MARKER_BOOT_END}:   {end_count}")
@@ -407,7 +460,20 @@ def verify(log_path: str) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <qemu.log>", file=sys.stderr)
+    args = sys.argv[1:]
+    profile_arg = None
+
+    # Parse --profile
+    for i, a in enumerate(args):
+        if a == "--profile" and i + 1 < len(args):
+            profile_arg = args[i + 1]
+            args.pop(i)
+            args.pop(i)
+            break
+
+    if len(args) != 1:
+        print(f"Usage: {sys.argv[0]} <qemu.log> [--profile aggregate|queue-blocking]",
+              file=sys.stderr)
         sys.exit(1)
-    sys.exit(verify(sys.argv[1]))
+
+    sys.exit(verify(args[0], profile_arg))

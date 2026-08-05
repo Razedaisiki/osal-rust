@@ -82,8 +82,9 @@ echo ""
 # ------------------------------------------------------------------
 # 5. Build
 # ------------------------------------------------------------------
-echo "--- Building firmware ---"
-make -C "$INTEG_DIR" all
+CARGO_FEATURES="${CARGO_FEATURES:-default}"
+echo "--- Building firmware (profile: $CARGO_FEATURES) ---"
+make -C "$INTEG_DIR" CARGO_FEATURES="$CARGO_FEATURES" all
 echo ""
 
 # ------------------------------------------------------------------
