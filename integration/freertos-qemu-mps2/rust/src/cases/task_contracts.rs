@@ -1156,6 +1156,79 @@ pub fn run_task_cases(tick_bits: u8) -> TestResult {
     case_drop_without_join(tick_bits)?;
     case_finished_handle_lease(tick_bits)?;
     case_spawn_rollback(tick_bits)?;
+    case_lifecycle_stress(tick_bits)?;
 
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Case 19: lifecycle stress
+// ------------------------------------------------------------------
+
+/// Case 19: Sequential and concurrent lifecycle stress with exact heap recovery.
+fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
+    let global_baseline = sys::heap_free();
+
+    // --- Sequential: 10 rounds of spawn/join/drop/heap-recover ---
+    for round in 0u32..10 {
+        let round_baseline = sys::heap_free();
+        let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("stress_seq")
+            .spawn(move || { let _ = round; })
+            .map_err(|_| TaskContractError::SpawnFailed)?;
+
+        let r = t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+        if r != ExitCode::SUCCESS { return Err(TaskContractError::CachedResultMismatch); }
+
+        // Cached joins after completion.
+        t.join(Timeout::NoWait).map_err(|_| TaskContractError::CachedResultMismatch)?;
+        t.join(Timeout::After(core::time::Duration::ZERO))
+            .map_err(|_| TaskContractError::CachedResultMismatch)?;
+
+        drop(t);
+        if harness::wait_until_heap_recovered(round_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
+            return Err(TaskContractError::HeapNotRecovered);
+        }
+    }
+
+    // --- Concurrent waves: 4 waves of 2 tasks each ---
+    for _wave in 0u32..4 {
+        let s1 = Arc::new(TaskCaseState::new());
+        let s2 = Arc::new(TaskCaseState::new());
+        let c1 = Arc::clone(&s1);
+        let c2 = Arc::clone(&s2);
+        let sub = sys::heap_free();
+
+        let t1 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("stress_a")
+            .spawn(move || { c1.started.store(true, Ordering::Release); wait_gate(&c1); })
+            .map_err(|_| TaskContractError::SpawnFailed)?;
+        let t2 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("stress_b")
+            .spawn(move || { c2.started.store(true, Ordering::Release); wait_gate(&c2); })
+            .map_err(|_| TaskContractError::SpawnFailed)?;
+
+        while !s1.started.load(Ordering::Acquire) || !s2.started.load(Ordering::Acquire) {
+            let _ = sys::delay_ticks(1);
+        }
+
+        // Verify handles distinct.
+        if t1.handle() == t2.handle() { return Err(TaskContractError::HandleInvalid); }
+
+        s1.release_gate.store(true, Ordering::Release);
+        s2.release_gate.store(true, Ordering::Release);
+
+        t1.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+        t2.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+
+        drop(t1); drop(t2);
+        if harness::wait_until_heap_recovered(sub, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
+            return Err(TaskContractError::HeapNotRecovered);
+        }
+        drop(s1); drop(s2);
+    }
+
+    if sys::heap_free() != global_baseline {
+        return Err(TaskContractError::HeapNotRecovered);
+    }
+
+    harness::console_line(c"OSAL_CASE_PASS name=task_lifecycle_stress");
     Ok(())
 }
