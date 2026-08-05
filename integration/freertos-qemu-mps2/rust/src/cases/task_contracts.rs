@@ -138,7 +138,7 @@ const HWM_MIN_WORDS: u32 = 64;
 const HEAP_RECOVERY_TICKS: u32 = 500;
 /// Test task stack size — small enough to minimize heap pressure but
 /// well above the 128-word platform minimum.
-const TEST_STACK_BYTES: usize = 1024;
+const TEST_STACK_BYTES: usize = 1536;
 
 // ------------------------------------------------------------------
 // PublishedTaskSlot — single-writer, single-reader slot for self-join.
@@ -929,27 +929,99 @@ fn case_self_join(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 13: Another task joins an already-finished task via a clone,
-/// receiving the cached ExitCode — proves EventGroup sticky bit.
+/// Case 13: Three joiners block concurrently on one gated target.
+/// All three return the same ExitCode — proves EventGroup sticky bit
+/// is not consumed by the first waking joiner.
 fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
+    let target_state = Arc::new(TaskCaseState::new());
+    let tc = Arc::clone(&target_state);
+
     let target = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("cj_target")
-        .spawn(|| {})
+        .spawn(move || {
+            tc.started.store(true, Ordering::Release);
+            tc.stack_hwm.store(task_stack_hwm(), Ordering::Release);
+            wait_gate(&tc);
+            tc.entry_count.fetch_add(1, Ordering::Release);
+        })
         .map_err(|_| TaskContractError::SpawnFailed)?;
-    target.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
 
-    // Another task joins the completed target via a clone.
-    let tgt = target.clone();
-    let j = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("joiner")
-        .spawn(move || { let _ = tgt.join(Timeout::Forever); })
+    // Joiner states — three independent Arcs.
+    let js0 = Arc::new(TaskCaseState::new());
+    let js1 = Arc::new(TaskCaseState::new());
+    let js2 = Arc::new(TaskCaseState::new());
+    let jc0 = Arc::clone(&js0);
+    let jc1 = Arc::clone(&js1);
+    let jc2 = Arc::clone(&js2);
+    let tgt0 = target.clone();
+    let tgt1 = target.clone();
+    let tgt2 = target.clone();
+
+    // Spawn 3 joiners — each blocks on target.join(Forever).
+    let j0 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("joiner_0")
+        .spawn(move || {
+            jc0.started.store(true, Ordering::Release);
+            let r = tgt0.join(Timeout::Forever);
+            jc0.native_priority.store(if r.is_ok() { 1 } else { 0 }, Ordering::Release);
+            jc0.stack_hwm.store(task_stack_hwm(), Ordering::Release);
+        })
         .map_err(|_| TaskContractError::SpawnFailed)?;
-    j.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+    let j1 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("joiner_1")
+        .spawn(move || {
+            jc1.started.store(true, Ordering::Release);
+            let r = tgt1.join(Timeout::Forever);
+            jc1.native_priority.store(if r.is_ok() { 1 } else { 0 }, Ordering::Release);
+            jc1.stack_hwm.store(task_stack_hwm(), Ordering::Release);
+        })
+        .map_err(|_| TaskContractError::SpawnFailed)?;
+    let j2 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("joiner_2")
+        .spawn(move || {
+            jc2.started.store(true, Ordering::Release);
+            let r = tgt2.join(Timeout::Forever);
+            jc2.native_priority.store(if r.is_ok() { 1 } else { 0 }, Ordering::Release);
+            jc2.stack_hwm.store(task_stack_hwm(), Ordering::Release);
+        })
+        .map_err(|_| TaskContractError::SpawnFailed)?;
 
-    drop(j);
+    // Wait for all 3 joiners to have started (blocked on EventGroup).
+    while !js0.started.load(Ordering::Acquire)
+        || !js1.started.load(Ordering::Acquire)
+        || !js2.started.load(Ordering::Acquire)
+    { let _ = sys::delay_ticks(1); }
+
+    // Release target — all 3 joiners wake.
+    target_state.release_gate.store(true, Ordering::Release);
+
+    // All joiners must return SUCCESS.
+    j0.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+    j1.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+    j2.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+
+    // All joiners got SUCCESS and HWM >= 64.
+    if js0.native_priority.load(Ordering::Acquire) != 1
+        || js0.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS
+        || js1.native_priority.load(Ordering::Acquire) != 1
+        || js1.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS
+        || js2.native_priority.load(Ordering::Acquire) != 1
+        || js2.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS
+    { return Err(TaskContractError::CachedResultMismatch); }
+
+    // Target entry_count must be exactly 1 after join.
+    target.join(Timeout::NoWait).map_err(|_| TaskContractError::CachedResultMismatch)?;
+    if target_state.entry_count.load(Ordering::Acquire) != 1 {
+        return Err(TaskContractError::EntryCountMismatch);
+    }
+    if target_state.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+        return Err(TaskContractError::StackHwmTooSmall);
+    }
+
+    drop(j0); drop(j1); drop(j2);
     drop(target);
+    drop(target_state);
+    drop(js0); drop(js1); drop(js2);
 
-    // Single end-to-end recovery — all resources freed.
+    // End-to-end recovery — all resources freed.
     if harness::wait_until_heap_recovered(global_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
         return Err(TaskContractError::HeapNotRecovered);
     }
