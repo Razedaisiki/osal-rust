@@ -242,10 +242,39 @@ OOM injection, high-concurrency stress.
 - Verifier: 36 total cases required; queue/queue_fifo/queue_timeout/
   queue_close/queue_suspended/queue_lease OBJECT_PASS fields.
 
-**Deferred:** blocking wake, multi-waiter wake-one, close-broadcast
-(require native Queue helpers — heap fragmentation on FreeRTOS heap_4
-prevents spawning additional 1024-word helpers after all existing
-Mutex+Semaphore cases; needs heap_5 or helper stack reduction).
+**Deferred:** timeout/wake race, close/timeout priority (require
+clock-control; deferred to Step 4C-3).
+
+### Step 4C-2 — Queue Blocking Real-Kernel Contracts — Completed
+
+- `cases/queue_blocking.rs`: 11 Queue blocking contracts validated
+  in an **isolated FreeRTOS session** (separate Cargo feature
+  `suite-queue-blocking`, independent QEMU run).
+- Root cause of aggregate-suite helper creation failure identified:
+  resource pressure from accumulated Mutex + Semaphore + Queue
+  allocations, not a Queue code defect.  Isolated suite at 1024 words
+  per helper works correctly.
+
+**Cases (isolated profile, real FreeRTOS Kernel V11.3.0, Cortex-M3):**
+
+| Case | What it proves |
+|------|---------------|
+| `queue_helper_resource_probe` | recv(After(5ms))→Timeout; stack HWM>=64; TCB/stack reclaimed |
+| `queue_recv_blocking_wake` | Helper blocks, controller sends → acquires; completion≥send tick |
+| `queue_send_blocking_wake` | Helper blocks, controller recvs → sends; completion≥recv tick |
+| `queue_recv_forever_wake` | Forever acquires; no spurious Timeout; controller watchdog |
+| `queue_send_forever_wake` | Forever send succeeds; controller watchdog |
+| `queue_one_send_one_receiver` | Two receivers, one send→exactly one wakes |
+| `queue_one_recv_one_sender` | Two senders, one recv→exactly one wakes |
+| `queue_close_broadcast_receivers` | Three receivers, close→all QueueClosed |
+| `queue_close_broadcast_senders` | Three senders, close→all QueueClosed; M0 drainable; close idempotent |
+| `queue_throughput_cycle` | 64 interleaved send/recv, FIFO, exact heap recovery |
+
+- Spawn diagnostics: `SPAWN_OK/INVALID/NO_MEMORY/INTERNAL` codes.
+- Helper stack HWM recorded per task.
+- Stack margin: 399 words (threshold 128) in queue-blocking profile.
+- Aggregate suite (36 cases) no regression.
+- Two QEMU profiles: `make` (aggregate) and `make CARGO_FEATURES=suite-queue-blocking`.
 
 ### Step 1 — Integration Contract Neutralization — Completed
 
