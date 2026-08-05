@@ -233,9 +233,10 @@ void  osal_freertos_heap_dealloc(void *pointer);
 
 #ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
 
-void osal_test_observe_task_create(const char *name,
-                                   uint32_t stack_words,
-                                   uint32_t priority);
+void osal_test_observe_task_create_attempt(const char *name,
+                                           uint32_t stack_words,
+                                           uint32_t priority);
+void osal_test_observe_task_create_result(int success);
 void osal_test_observe_event_group_create(void);
 void osal_test_observe_event_group_delete(void);
 

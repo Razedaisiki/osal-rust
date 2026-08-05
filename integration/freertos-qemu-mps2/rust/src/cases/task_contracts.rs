@@ -20,7 +20,8 @@ use crate::harness::{self, CaseState, PHASE_DONE, PHASE_EXITING};
 // Diagnostics FFI — C observer getters (only linked in suite-task).
 // ------------------------------------------------------------------
 unsafe extern "C" {
-    fn osal_test_diag_task_create_calls() -> u32;
+    fn osal_test_diag_task_create_attempts() -> u32;
+    fn osal_test_diag_task_create_successes() -> u32;
     fn osal_test_diag_event_group_creates() -> u32;
     fn osal_test_diag_event_group_deletes() -> u32;
     fn osal_test_diag_last_stack_words() -> u32;
@@ -33,7 +34,8 @@ unsafe extern "C" {
     fn non_osal_context_helper(context: *mut c_void);
 }
 
-fn diag_task_create_calls() -> u32 { unsafe { osal_test_diag_task_create_calls() } }
+fn diag_task_create_attempts() -> u32 { unsafe { osal_test_diag_task_create_attempts() } }
+fn diag_task_create_successes() -> u32 { unsafe { osal_test_diag_task_create_successes() } }
 fn diag_event_group_creates() -> u32 { unsafe { osal_test_diag_event_group_creates() } }
 fn diag_event_group_deletes() -> u32 { unsafe { osal_test_diag_event_group_deletes() } }
 fn diag_last_stack_words() -> u32 { unsafe { osal_test_diag_last_stack_words() } }
@@ -42,21 +44,33 @@ fn diag_last_name_len() -> u32 { unsafe { osal_test_diag_last_name_len() } }
 fn diag_reset() { unsafe { osal_test_diag_reset() } }
 fn task_stack_hwm() -> u32 { unsafe { osal_test_task_stack_hwm() } }
 
-struct DiagSnapshot { task_create_calls: u32, event_group_creates: u32, event_group_deletes: u32 }
+struct DiagSnapshot {
+    task_create_attempts: u32,
+    task_create_successes: u32,
+    event_group_creates: u32,
+    event_group_deletes: u32,
+}
 
 fn read_diag() -> DiagSnapshot {
     DiagSnapshot {
-        task_create_calls: diag_task_create_calls(),
+        task_create_attempts: diag_task_create_attempts(),
+        task_create_successes: diag_task_create_successes(),
         event_group_creates: diag_event_group_creates(),
         event_group_deletes: diag_event_group_deletes(),
     }
 }
 
-fn diag_create_delta(after: &DiagSnapshot, before: &DiagSnapshot) -> u32 {
-    after.task_create_calls.wrapping_sub(before.task_create_calls)
+fn diag_create_attempt_delta(after: &DiagSnapshot, before: &DiagSnapshot) -> u32 {
+    after.task_create_attempts.wrapping_sub(before.task_create_attempts)
+}
+fn diag_create_success_delta(after: &DiagSnapshot, before: &DiagSnapshot) -> u32 {
+    after.task_create_successes.wrapping_sub(before.task_create_successes)
 }
 fn diag_eg_create_delta(after: &DiagSnapshot, before: &DiagSnapshot) -> u32 {
     after.event_group_creates.wrapping_sub(before.event_group_creates)
+}
+fn diag_eg_delete_delta(after: &DiagSnapshot, before: &DiagSnapshot) -> u32 {
+    after.event_group_deletes.wrapping_sub(before.event_group_deletes)
 }
 
 // ------------------------------------------------------------------
@@ -300,7 +314,7 @@ fn case_builder_core(tick_bits: u8) -> TestResult {
             _ => return Err(TaskContractError::InvalidParamNotReturned),
         }
         let diag_after = read_diag();
-        if diag_create_delta(&diag_after, &diag_before) != 0 {
+        if diag_create_attempt_delta(&diag_after, &diag_before) != 0 {
             return Err(TaskContractError::DiagCreateDeltaNonZero);
         }
         if diag_eg_create_delta(&diag_after, &diag_before) != 0 {
@@ -324,7 +338,7 @@ fn case_builder_core(tick_bits: u8) -> TestResult {
             Err(Error::InvalidParameter) => {}
             _ => return Err(TaskContractError::InvalidParamNotReturned),
         }
-        if diag_create_delta(&read_diag(), &diag_before) != 0
+        if diag_create_attempt_delta(&read_diag(), &diag_before) != 0
             || diag_eg_create_delta(&read_diag(), &diag_before) != 0
         {
             return Err(TaskContractError::DiagCreateDeltaNonZero);
@@ -343,7 +357,7 @@ fn case_builder_core(tick_bits: u8) -> TestResult {
             Err(Error::InvalidParameter) => {}
             _ => return Err(TaskContractError::InvalidParamNotReturned),
         }
-        if diag_create_delta(&read_diag(), &diag_before) != 0
+        if diag_create_attempt_delta(&read_diag(), &diag_before) != 0
             || diag_eg_create_delta(&read_diag(), &diag_before) != 0
         {
             return Err(TaskContractError::DiagCreateDeltaNonZero);
@@ -524,7 +538,7 @@ fn case_stack_mapping(tick_bits: u8) -> TestResult {
             _ => return Err(TaskContractError::OverflowNotReturned),
         }
         let diag_after = read_diag();
-        if diag_create_delta(&diag_after, &diag_before) != 0
+        if diag_create_attempt_delta(&diag_after, &diag_before) != 0
             || diag_eg_create_delta(&diag_after, &diag_before) != 0
         {
             return Err(TaskContractError::DiagCreateDeltaNonZero);
@@ -1111,7 +1125,7 @@ fn case_spawn_rollback(_tick_bits: u8) -> TestResult {
             Err(Error::Overflow) => {}
             _ => return Err(TaskContractError::OverflowNotReturned),
         }
-        if diag_create_delta(&read_diag(), &diag_before) != 0
+        if diag_create_attempt_delta(&read_diag(), &diag_before) != 0
             || diag_eg_create_delta(&read_diag(), &diag_before) != 0
         {
             return Err(TaskContractError::DiagCreateDeltaNonZero);

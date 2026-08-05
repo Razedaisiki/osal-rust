@@ -422,6 +422,10 @@ uint32_t osal_freertos_task_create(
         return OSAL_FREERTOS_TASK_CREATE_INVALID;
     }
 
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+    osal_test_observe_task_create_attempt(name, stack_depth_words, priority);
+#endif
+
     result = xTaskCreate(
         (TaskFunction_t)entry,
         name,
@@ -429,6 +433,10 @@ uint32_t osal_freertos_task_create(
         parameter,
         (UBaseType_t)priority,
         &native_handle);
+
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+    osal_test_observe_task_create_result(result == pdPASS);
+#endif
 
     if (result != pdPASS) {
         return OSAL_FREERTOS_TASK_CREATE_OOM;
@@ -440,10 +448,6 @@ uint32_t osal_freertos_task_create(
     // by FreeRTOS (it does not accept NULL for the handle pointer),
     // but we discard the value immediately (ADR 0028 §4).
     (void)native_handle;
-
-#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
-    osal_test_observe_task_create(name, stack_depth_words, priority);
-#endif
 
     return OSAL_FREERTOS_TASK_CREATE_OK;
 }
