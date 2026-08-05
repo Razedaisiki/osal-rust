@@ -200,14 +200,15 @@ pub unsafe extern "C" fn osal_test_record_non_osal_identity() {
 
 type TestResult = core::result::Result<(), TaskContractError>;
 
-/// Spawn a simple task, join it, drop it, and verify heap recovery.
-/// Returns after heap is recovered and state dropped.
-fn spawn_join_drop_recover(
+/// Spawn a task, join it, drop the handle.  Heap recovery is the
+/// caller's responsibility so the baseline can be captured between
+/// state allocation and spawn.
+fn spawn_join_drop(
     name: &str,
-    tick_bits: u8,
     entry: impl FnOnce() + Send + 'static,
 ) -> TestResult {
     let t = FreeRtosTaskBuilder::new()
+        .stack_size(TEST_STACK_BYTES)
         .name(name)
         .spawn(entry)
         .map_err(|_| TaskContractError::SpawnFailed)?;
@@ -264,7 +265,7 @@ fn case_builder_core(tick_bits: u8) -> TestResult {
     // --- explicit empty name ---
     {
         let sub_baseline = sys::heap_free();
-        spawn_join_drop_recover("", tick_bits, || {})?;
+        spawn_join_drop("", || {})?;
         if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
             return Err(TaskContractError::HeapNotRecovered);
         }

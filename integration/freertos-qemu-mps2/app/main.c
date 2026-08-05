@@ -44,8 +44,10 @@ extern int32_t osal_rust_smoke_entry(void);
 /* Rust object test entry (P7G Step 4).                                */
 extern int32_t osal_test_object_entry(void);
 
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
 /* Rust Task contract bridges (P7G Step 4D).                             */
 extern void osal_test_record_non_osal_identity(void);
+#endif
 
 /* ------------------------------------------------------------------ */
 /* C bridges for the Rust integration crate.                          */
@@ -148,6 +150,7 @@ void harness_smoke_helper(void *context)
     osal_test_task_exit();
 }
 
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
 /* ------------------------------------------------------------------ */
 /* Native helper — non-OSAL context check (P7G Step 4D case 7).       */
 /*                                                                     */
@@ -171,6 +174,7 @@ void non_osal_context_helper(void *context)
 
     osal_test_task_exit();
 }
+#endif /* OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS */
 
 /* ------------------------------------------------------------------ */
 /* main                                                               */

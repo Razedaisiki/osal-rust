@@ -219,7 +219,6 @@ check-symbols:
 	            osal_test_task_exit \
 	            osal_test_console_line \
 	            harness_smoke_helper \
-            non_osal_context_helper \
 	            pvPortMalloc vPortFree; do \
 	    if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
 	        echo "  OK   $$sym"; \
@@ -233,7 +232,7 @@ check-symbols:
 	    fi; \
 	done
 	@if [ "$${CARGO_FEATURES:-}" = "suite-task" ]; then \
-	    for sym in osal_test_record_non_osal_identity; do \
+	    for sym in non_osal_context_helper osal_test_record_non_osal_identity; do \
 	        if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
 	            echo "  OK   $$sym"; \
 	        else \

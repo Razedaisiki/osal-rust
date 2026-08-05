@@ -83,6 +83,9 @@ unsafe extern "C" {
     fn harness_smoke_helper(context: *mut c_void);
 
     /// Self-delete the calling native helper task (defined in test_task.c).
+    /// Only called from C native helpers; the Rust declaration exists so
+    /// integration case modules can reference it.
+    #[allow(dead_code)]
     pub fn osal_test_task_exit() -> !;
 }
 
