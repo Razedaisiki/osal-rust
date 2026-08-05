@@ -56,7 +56,6 @@ pub enum QueueBlockingError {
     MessageLost = 407,
     CloseNotReturned = 408,
     CloseBroadcastFailed = 409,
-    LastDropLeak = 411,
     ControllerDelayFailed = 412,
     StackMarginTooSmall = 413,
     HeapNotRecovered = 414,
