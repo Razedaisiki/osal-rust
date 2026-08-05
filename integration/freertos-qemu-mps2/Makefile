@@ -220,7 +220,6 @@ check-symbols:
 	            osal_test_console_line \
 	            harness_smoke_helper \
             non_osal_context_helper \
-            osal_test_record_non_osal_identity \
 	            pvPortMalloc vPortFree; do \
 	    if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
 	        echo "  OK   $$sym"; \
@@ -233,6 +232,15 @@ check-symbols:
 	        echo "  UNEXPECTED $$sym"; exit 1; \
 	    fi; \
 	done
+	@if [ "$${CARGO_FEATURES:-}" = "suite-task" ]; then \
+	    for sym in osal_test_record_non_osal_identity; do \
+	        if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
+	            echo "  OK   $$sym"; \
+	        else \
+	            echo "  MISS $$sym"; exit 1; \
+	        fi; \
+	    done; \
+	fi
 	@echo "=== Linker script symbols ==="
 	@for sym in _sidata _sdata _edata _sbss _ebss; do \
 	    if $(NM) $(ELF) | grep -q " $$sym$$"; then \
