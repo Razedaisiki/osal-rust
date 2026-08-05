@@ -222,12 +222,24 @@ void *osal_freertos_heap_alloc(size_t size);
 void  osal_freertos_heap_dealloc(void *pointer);
 
 // ---------------------------------------------------------------------------
-// Capability struct — extended for Task support (ADR 0028 §7, §9)
-
-// New fields appended after the existing ones.  The struct remains
-// ABI-compatible with earlier versions (new fields zero when compiled
-// against older headers, detected by the shim via sizeof checks).
+// Integration diagnostics observers (P7G Step 4D)
+//
+// When OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS is defined, the shim calls
+// these observer functions so the integration firmware can track native
+// task-create and event-group create/delete calls without modifying the
+// OSAL API or production code paths.  The observer definitions are
+// provided by the integration test_task.c at link time.
 // ---------------------------------------------------------------------------
+
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+
+void osal_test_observe_task_create(const char *name,
+                                   uint32_t stack_words,
+                                   uint32_t priority);
+void osal_test_observe_event_group_create(void);
+void osal_test_observe_event_group_delete(void);
+
+#endif // OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
 
 #ifdef __cplusplus
 }

@@ -341,6 +341,11 @@ void osal_freertos_semaphore_delete(osal_freertos_semaphore_handle_t handle) {
 
 osal_freertos_event_group_handle_t osal_freertos_event_group_create(void) {
     EventGroupHandle_t h = xEventGroupCreate();
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+    if (h != NULL) {
+        osal_test_observe_event_group_create();
+    }
+#endif
     return (osal_freertos_event_group_handle_t)h;
 }
 
@@ -390,6 +395,9 @@ void osal_freertos_event_group_delete(
 {
     if (handle != NULL) {
         vEventGroupDelete((EventGroupHandle_t)handle);
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+        osal_test_observe_event_group_delete();
+#endif
     }
 }
 
@@ -432,6 +440,10 @@ uint32_t osal_freertos_task_create(
     // by FreeRTOS (it does not accept NULL for the handle pointer),
     // but we discard the value immediately (ADR 0028 §4).
     (void)native_handle;
+
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+    osal_test_observe_task_create(name, stack_depth_words, priority);
+#endif
 
     return OSAL_FREERTOS_TASK_CREATE_OK;
 }

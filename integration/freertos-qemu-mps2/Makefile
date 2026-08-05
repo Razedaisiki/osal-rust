@@ -111,13 +111,29 @@ all: $(ELF) size
 # Feature flags for the Rust staticlib.
 #   make                          → suite-aggregate (default)
 #   make CARGO_FEATURES=suite-queue-blocking → queue-blocking
+#   make CARGO_FEATURES=suite-task           → task
 CARGO_FEATURES ?= default
+
+# Task profile: enable integration diagnostics in both the sys shim and
+# the integration C files (test_task.c provides the observer definitions).
+ifeq ($(CARGO_FEATURES),suite-task)
+PROJECT_CFLAGS += -DOSAL_FREERTOS_INTEGRATION_DIAGNOSTICS=1
+endif
 
 # Pass the ARM cross-compiler and FreeRTOS include paths so the
 # -sys crate build.rs compiles the C shim with arm-none-eabi-gcc.
 RUST_BUILD_ENV  = CC_thumbv7m_none_eabi=$(CC)
 RUST_BUILD_ENV += AR_thumbv7m_none_eabi=$(AR)
-RUST_BUILD_ENV += CFLAGS_thumbv7m_none_eabi="-mthumb -mcpu=cortex-m3 -ffreestanding -ffunction-sections -fdata-sections"
+
+# Base CFLAGS for the C shim — extended per profile below.
+RUST_BASE_CFLAGS = -mthumb -mcpu=cortex-m3 -ffreestanding -ffunction-sections -fdata-sections
+
+# Task profile: enable integration diagnostics observers in the sys shim.
+ifeq ($(CARGO_FEATURES),suite-task)
+RUST_BUILD_ENV += CFLAGS_thumbv7m_none_eabi="$(RUST_BASE_CFLAGS) -DOSAL_FREERTOS_INTEGRATION_DIAGNOSTICS=1"
+else
+RUST_BUILD_ENV += CFLAGS_thumbv7m_none_eabi="$(RUST_BASE_CFLAGS)"
+endif
 RUST_BUILD_ENV += OSAL_FREERTOS_KERNEL_INCLUDE=$(abspath $(KERNEL)/include)
 RUST_BUILD_ENV += OSAL_FREERTOS_CONFIG_INCLUDE=$(abspath config)
 RUST_BUILD_ENV += OSAL_FREERTOS_PORT_INCLUDE=$(abspath $(KERNEL)/portable/GCC/ARM_CM3)

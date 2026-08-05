@@ -17,3 +17,6 @@ pub mod queue;
 
 #[cfg(feature = "suite-queue-blocking")]
 pub mod queue_blocking;
+
+#[cfg(feature = "suite-task")]
+pub mod task_contracts;

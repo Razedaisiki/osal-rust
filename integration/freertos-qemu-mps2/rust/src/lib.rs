@@ -1,8 +1,26 @@
 //! Rust integration staticlib for OSAL FreeRTOS QEMU MPS2 firmware.
 //!
 //! Step 3C — allocator + facade + RuntimeLifecycle smoke.
+//! Step 4  — managed-object real-kernel validation.
 
 #![no_std]
+
+// ------------------------------------------------------------------
+// Exactly one suite feature must be selected.
+// ------------------------------------------------------------------
+#[cfg(any(
+    all(feature = "suite-aggregate", feature = "suite-queue-blocking"),
+    all(feature = "suite-aggregate", feature = "suite-task"),
+    all(feature = "suite-queue-blocking", feature = "suite-task"),
+))]
+compile_error!("exactly one integration suite feature must be selected; multiple features are mutually exclusive");
+
+#[cfg(not(any(
+    feature = "suite-aggregate",
+    feature = "suite-queue-blocking",
+    feature = "suite-task",
+)))]
+compile_error!("at least one integration suite feature must be selected; use --features suite-aggregate, suite-queue-blocking, or suite-task");
 
 extern crate alloc;
 

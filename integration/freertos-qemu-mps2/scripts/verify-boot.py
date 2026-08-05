@@ -2,7 +2,7 @@
 """verify-boot.py — validate OSAL FreeRTOS MPS2 boot and object protocols.
 
 Usage:
-  verify-boot.py <qemu.log> [--profile aggregate|queue-blocking]
+  verify-boot.py <qemu.log> [--profile aggregate|queue-blocking|task]
 
 If --profile is omitted, the profile is auto-detected from
 OSAL_OBJECT_BEGIN profile=... in the log.
@@ -152,6 +152,18 @@ PROFILES = {
             "heap_recovered=true",
         ],
     },
+    "task": {
+        "cases": [
+            "harness_native_task",
+        ],
+        "fields": [
+            "profile=task",
+            "task=true",
+            "helper_self_delete=true",
+            "idle_cleanup=true",
+            "heap_recovered=true",
+        ],
+    },
 }
 
 
@@ -161,6 +173,8 @@ def detect_profile(text: str) -> str | None:
         if MARKER_OBJECT_BEGIN in line:
             if "profile=queue-blocking" in line:
                 return "queue-blocking"
+            if "profile=task" in line:
+                return "task"
             # If no profile marker, default to aggregate.
             return "aggregate"
     return None
@@ -472,7 +486,7 @@ if __name__ == "__main__":
             break
 
     if len(args) != 1:
-        print(f"Usage: {sys.argv[0]} <qemu.log> [--profile aggregate|queue-blocking]",
+        print(f"Usage: {sys.argv[0]} <qemu.log> [--profile aggregate|queue-blocking|task]",
               file=sys.stderr)
         sys.exit(1)
 

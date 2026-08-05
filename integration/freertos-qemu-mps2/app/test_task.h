@@ -83,4 +83,33 @@ void osal_test_harness_set_result(void *context, int32_t result);
 void osal_test_harness_record_start(void *context, uint32_t tick);
 void osal_test_harness_record_end(void *context, uint32_t tick);
 
+/* ------------------------------------------------------------------ */
+/* Integration diagnostics observers (P7G Step 4D).                    */
+/*                                                                     */
+/* Called from the OSAL sys C shim when OSAL_FREERTOS_INTEGRATION_     */
+/* DIAGNOSTICS is defined.  Track native task-create and EventGroup     */
+/* create/delete calls for the Task real-kernel contract suite.        */
+/* ------------------------------------------------------------------ */
+
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+
+void osal_test_observe_task_create(const char *name,
+                                   uint32_t stack_words,
+                                   uint32_t priority);
+void osal_test_observe_event_group_create(void);
+void osal_test_observe_event_group_delete(void);
+
+/* Getters — called from Rust test code to read current counters.      */
+uint32_t osal_test_diag_task_create_calls(void);
+uint32_t osal_test_diag_event_group_creates(void);
+uint32_t osal_test_diag_event_group_deletes(void);
+uint32_t osal_test_diag_last_stack_words(void);
+uint32_t osal_test_diag_last_native_priority(void);
+uint32_t osal_test_diag_last_name_len(void);
+
+/* Reset all diagnostic counters to zero.                               */
+void osal_test_diag_reset(void);
+
+#endif /* OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS */
+
 #endif /* TEST_TASK_H */

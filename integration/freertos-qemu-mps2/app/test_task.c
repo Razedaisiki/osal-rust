@@ -12,6 +12,87 @@
 #include "test_task.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include <string.h>
+
+/* ------------------------------------------------------------------ */
+/* Integration diagnostics counters (P7G Step 4D).                     */
+/* ------------------------------------------------------------------ */
+
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+
+static uint32_t diag_task_create_calls;
+static uint32_t diag_event_group_creates;
+static uint32_t diag_event_group_deletes;
+static uint32_t diag_last_stack_words;
+static uint32_t diag_last_native_priority;
+static uint32_t diag_last_name_len;
+
+void osal_test_observe_task_create(const char *name,
+                                   uint32_t stack_words,
+                                   uint32_t priority)
+{
+    diag_task_create_calls++;
+    diag_last_stack_words = stack_words;
+    diag_last_native_priority = priority;
+    if (name != NULL) {
+        size_t len = strlen(name);
+        diag_last_name_len = (uint32_t)(len > 0xFFFFFFFFu ? 0xFFFFFFFFu : len);
+    } else {
+        diag_last_name_len = 0;
+    }
+}
+
+void osal_test_observe_event_group_create(void)
+{
+    diag_event_group_creates++;
+}
+
+void osal_test_observe_event_group_delete(void)
+{
+    diag_event_group_deletes++;
+}
+
+uint32_t osal_test_diag_task_create_calls(void)
+{
+    return diag_task_create_calls;
+}
+
+uint32_t osal_test_diag_event_group_creates(void)
+{
+    return diag_event_group_creates;
+}
+
+uint32_t osal_test_diag_event_group_deletes(void)
+{
+    return diag_event_group_deletes;
+}
+
+uint32_t osal_test_diag_last_stack_words(void)
+{
+    return diag_last_stack_words;
+}
+
+uint32_t osal_test_diag_last_native_priority(void)
+{
+    return diag_last_native_priority;
+}
+
+uint32_t osal_test_diag_last_name_len(void)
+{
+    return diag_last_name_len;
+}
+
+void osal_test_diag_reset(void)
+{
+    diag_task_create_calls = 0;
+    diag_event_group_creates = 0;
+    diag_event_group_deletes = 0;
+    diag_last_stack_words = 0;
+    diag_last_native_priority = 0;
+    diag_last_name_len = 0;
+}
+
+#endif /* OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS */
 
 int32_t osal_test_task_spawn(osal_test_task_entry_t entry,
                              void *context,

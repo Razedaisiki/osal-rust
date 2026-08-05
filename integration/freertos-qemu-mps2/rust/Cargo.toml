@@ -19,6 +19,7 @@ osal = { path = "../../../crates/osal", default-features = false, features = ["b
 default = ["suite-aggregate"]
 suite-aggregate = []
 suite-queue-blocking = []
+suite-task = []
 
 [profile.dev]
 panic = "abort"

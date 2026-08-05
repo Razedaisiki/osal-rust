@@ -112,3 +112,52 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
 
     0
 }
+
+// ------------------------------------------------------------------
+// Task suite (suite-task feature)
+// ------------------------------------------------------------------
+
+#[cfg(feature = "suite-task")]
+pub fn run_object_suite(tick_bits: u8) -> i32 {
+    const SUITE_RUNTIME_INIT_FAILED: i32 = -170;
+    const SUITE_RUNTIME_SHUTDOWN_FAILED: i32 = -171;
+    const SUITE_FINAL_HEAP_LEAK: i32 = -172;
+
+    harness::console_line(c"OSAL_OBJECT_BEGIN profile=task");
+
+    if let Err(e) = harness::run_harness_case(tick_bits) {
+        return e as i32;
+    }
+
+    let profile_baseline = sys::heap_free();
+
+    if osal::initialize().is_err() {
+        return SUITE_RUNTIME_INIT_FAILED;
+    }
+
+    let task_result = cases::task_contracts::run_task_cases(tick_bits);
+
+    if let Err(e) = task_result {
+        return -(e as i32);
+    }
+
+    let runtime_state = osal::runtime_state();
+    let shutdown_ok = match runtime_state {
+        RuntimeState::Running => osal::shutdown().is_ok(),
+        RuntimeState::Uninitialized => true,
+        _ => false,
+    };
+    if !shutdown_ok {
+        return SUITE_RUNTIME_SHUTDOWN_FAILED;
+    }
+    if sys::heap_free() != profile_baseline {
+        return SUITE_FINAL_HEAP_LEAK;
+    }
+
+    harness::console_line(
+        c"OSAL_OBJECT_PASS profile=task task=true helper_self_delete=true idle_cleanup=true heap_recovered=true",
+    );
+    harness::console_line(c"OSAL_OBJECT_END status=pass");
+
+    0
+}
