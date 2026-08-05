@@ -170,6 +170,9 @@ PROFILES = {
             "task_concurrent_joiners",
             "task_late_join_cached",
             "task_scheduler_suspended",
+            "task_drop_without_join",
+            "task_finished_handle_lease",
+            "task_spawn_rollback",
         ],
         "fields": [
             "profile=task",

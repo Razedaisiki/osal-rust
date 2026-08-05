@@ -1020,6 +1020,117 @@ fn case_scheduler_suspended(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
+/// Case 16: Drop handle without join — task still completes independently.
+///
+/// After the lone handle is dropped, the task must finish via self-delete
+/// and the Idle task must reclaim native resources.  The suite's final
+/// shutdown serves as the proof that no RuntimeLease lingers.
+fn case_drop_without_join(tick_bits: u8) -> TestResult {
+    let state = Arc::new(TaskCaseState::new());
+    let s = Arc::clone(&state);
+    let global_baseline = sys::heap_free();  // After state Arc
+
+    let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("drop_nojoin")
+        .spawn(move || {
+            s.started.store(true, Ordering::Release);
+            wait_gate(&s);
+            s.entry_count.fetch_add(1, Ordering::Release);
+        })
+        .map_err(|_| TaskContractError::SpawnFailed)?;
+
+    while !state.started.load(Ordering::Acquire) { let _ = sys::delay_ticks(1); }
+
+    // Drop the ONLY external handle — task's trampoline still holds
+    // start.identity (RuntimeLease) and start.completion (EventGroup).
+    drop(t);
+
+    // Release gate — closure returns, trampoline publishes completion,
+    // drops start (releasing RuntimeLease + EventGroup), self-deletes.
+    state.release_gate.store(true, Ordering::Release);
+
+    // Wait for live count to return to 0.
+    while FreeRtosTask::count() > 0 { let _ = sys::delay_ticks(1); }
+
+    // Wait for Idle cleanup of TCB + stack, then drop state.
+    if harness::wait_until_heap_recovered(global_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
+        return Err(TaskContractError::HeapNotRecovered);
+    }
+    drop(state);
+
+    harness::console_line(c"OSAL_CASE_PASS name=task_drop_without_join");
+    Ok(())
+}
+
+/// Case 17: Finished task handle keeps RuntimeLease alive.
+///
+/// After join, count=0 but the handle holds a RuntimeLease via
+/// TaskIdentity._runtime_lease.  The lease is only released when
+/// the handle is dropped.  The suite's final shutdown verifies
+/// that shutdown succeeds after all handles are dropped.
+fn case_finished_handle_lease(tick_bits: u8) -> TestResult {
+    let global_baseline = sys::heap_free();
+
+    let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("lease")
+        .spawn(|| {})
+        .map_err(|_| TaskContractError::SpawnFailed)?;
+    t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+
+    // Entry finished — count must be back to 0.
+    if FreeRtosTask::count() != 0 {
+        return Err(TaskContractError::LiveCountMismatch);
+    }
+
+    // Drop handle → RuntimeLease released → EventGroup freed.
+    drop(t);
+
+    // Wait for Idle cleanup of native TCB + stack.
+    if harness::wait_until_heap_recovered(global_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
+        return Err(TaskContractError::HeapNotRecovered);
+    }
+
+    harness::console_line(c"OSAL_CASE_PASS name=task_finished_handle_lease");
+    Ok(())
+}
+
+/// Case 18: Spawn rollback — Overflow path cleans up with zero side effects.
+///
+/// OOM real-kernel validation is deferred to a future step — heap_4
+/// fragmentation on this platform blocks the EventGroup + Arc pre-allocations
+/// needed before xTaskCreate.  The OOM path is fully validated by the
+/// backend host test suite (freertos-test-fixture).
+fn case_spawn_rollback(_tick_bits: u8) -> TestResult {
+    let global_baseline = sys::heap_free();
+
+    // Overflow: stack_size(usize::MAX) → Error::Overflow, zero side effects.
+    {
+        let heap_before = sys::heap_free();
+        let count_before = FreeRtosTask::count();
+        let diag_before = read_diag();
+        match FreeRtosTaskBuilder::new().stack_size(usize::MAX).spawn(|| {}) {
+            Err(Error::Overflow) => {}
+            _ => return Err(TaskContractError::OverflowNotReturned),
+        }
+        if diag_create_delta(&read_diag(), &diag_before) != 0
+            || diag_eg_create_delta(&read_diag(), &diag_before) != 0
+        {
+            return Err(TaskContractError::DiagCreateDeltaNonZero);
+        }
+        if sys::heap_free() != heap_before {
+            return Err(TaskContractError::HeapNotRecovered);
+        }
+        if FreeRtosTask::count() != count_before {
+            return Err(TaskContractError::LiveCountMismatch);
+        }
+    }
+
+    if sys::heap_free() != global_baseline {
+        return Err(TaskContractError::HeapNotRecovered);
+    }
+
+    harness::console_line(c"OSAL_CASE_PASS name=task_spawn_rollback");
+    Ok(())
+}
+
 // ------------------------------------------------------------------
 // Dispatcher
 // ------------------------------------------------------------------
@@ -1042,6 +1153,9 @@ pub fn run_task_cases(tick_bits: u8) -> TestResult {
     case_concurrent_joiners(tick_bits)?;
     case_late_join_cached(tick_bits)?;
     case_scheduler_suspended(tick_bits)?;
+    case_drop_without_join(tick_bits)?;
+    case_finished_handle_lease(tick_bits)?;
+    case_spawn_rollback(tick_bits)?;
 
     Ok(())
 }
