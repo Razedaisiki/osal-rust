@@ -772,11 +772,11 @@ fn case_join_nowait_zero(tick_bits: u8) -> TestResult {
     while !state.started.load(Ordering::Acquire) { let _ = sys::delay_ticks(1); }
 
     // NoWait on running task → Timeout.
-    if t.join(Timeout::NoWait).is_ok() {
+    if !matches!(t.join(Timeout::NoWait), Err(Error::Timeout)) {
         return Err(TaskContractError::CachedResultMismatch);
     }
     // After(ZERO) on running task → Timeout.
-    if t.join(Timeout::After(core::time::Duration::ZERO)).is_ok() {
+    if !matches!(t.join(Timeout::After(core::time::Duration::ZERO)), Err(Error::Timeout)) {
         return Err(TaskContractError::CachedResultMismatch);
     }
 
@@ -804,31 +804,40 @@ fn case_join_finite_timeout(tick_bits: u8) -> TestResult {
     let sub_baseline = sys::heap_free();
 
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("fin_timeout")
-        .spawn(move || { s.started.store(true, Ordering::Release); wait_gate(&s); })
+        .spawn(move || {
+            s.started.store(true, Ordering::Release);
+            wait_gate(&s);
+            s.entry_count.fetch_add(1, Ordering::Release);
+        })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
     while !state.started.load(Ordering::Acquire) { let _ = sys::delay_ticks(1); }
 
     let before = sys::tick_snapshot();
-    // After(5 ms) on running task → Timeout.
-    if t.join(Timeout::After(core::time::Duration::from_millis(5))).is_ok() {
+    if !matches!(
+        t.join(Timeout::After(core::time::Duration::from_millis(5))),
+        Err(Error::Timeout)
+    ) {
         return Err(TaskContractError::CachedResultMismatch);
     }
     let after = sys::tick_snapshot();
     let elapsed = harness::total_ticks_diff(after, before, tick_bits);
-    // elapsed must be at least 5 ticks (but scheduler may overshoot).
     if elapsed < 5 {
         return Err(TaskContractError::CachedResultMismatch);
     }
 
-    // Task still hasn't completed.
+    // Task closure hasn't run yet — gate still held.
     if state.entry_count.load(Ordering::Acquire) != 0 {
-        // entry_count is 0 — we didn't set it in this closure.
+        return Err(TaskContractError::EntryCountMismatch);
     }
 
-    // Release and join.
+    // Release and join — must succeed.
     state.release_gate.store(true, Ordering::Release);
-    t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+    let r = t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+    if r != ExitCode::SUCCESS { return Err(TaskContractError::CachedResultMismatch); }
+    if state.entry_count.load(Ordering::Acquire) != 1 {
+        return Err(TaskContractError::EntryCountMismatch);
+    }
 
     drop(t);
     if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
@@ -1077,11 +1086,14 @@ fn case_scheduler_suspended(tick_bits: u8) -> TestResult {
     unsafe { osal_test_scheduler_suspend(); }
     let _guard = unsafe { SchedulerResumeGuard::new() };
 
-    // All non-blocking joins on running task must timeout / be busy.
-    if t.join(Timeout::NoWait).is_ok() { return Err(TaskContractError::CachedResultMismatch); }
-    if t.join(Timeout::After(core::time::Duration::ZERO)).is_ok() {
+    // Non-blocking on running+suspended → Timeout.
+    if !matches!(t.join(Timeout::NoWait), Err(Error::Timeout)) {
         return Err(TaskContractError::CachedResultMismatch);
     }
+    if !matches!(t.join(Timeout::After(core::time::Duration::ZERO)), Err(Error::Timeout)) {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
+    // Blocking on running+suspended → Busy.
     if !matches!(t.join(Timeout::After(core::time::Duration::from_millis(5))),
                   Err(Error::Busy))
     {
@@ -1134,7 +1146,7 @@ fn case_drop_without_join(tick_bits: u8) -> TestResult {
     drop(t);
 
     // Shutdown must be Busy (live RuntimeLease from trampoline's start).
-    if osal::shutdown().is_ok() {
+    if !matches!(osal::shutdown(), Err(Error::Busy)) {
         return Err(TaskContractError::RuntimeNotRunning);
     }
     if osal::runtime_state() != osal_api::runtime::RuntimeState::Running {
@@ -1174,7 +1186,11 @@ fn case_finished_handle_lease(tick_bits: u8) -> TestResult {
     }
 
     // Shutdown must be Busy (RuntimeLease from finished handle).
-    if osal::shutdown().is_ok() {
+    if !matches!(osal::shutdown(), Err(Error::Busy)) {
+        return Err(TaskContractError::RuntimeNotRunning);
+    }
+    // Runtime must still be Running after failed shutdown.
+    if osal::runtime_state() != osal_api::runtime::RuntimeState::Running {
         return Err(TaskContractError::RuntimeNotRunning);
     }
 
@@ -1193,15 +1209,18 @@ fn case_finished_handle_lease(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 18: Spawn rollback — Overflow + real OOM paths clean up fully.
+/// Case 18: Spawn rollback — overflow path with all-diag-zero proof.
 ///
-/// Uses dynamic free-heap reading to construct a stack request that
-/// guarantees xTaskCreate OOM while leaving enough headroom for the
-/// EventGroup + Arc pre-allocations (~1 KB) to succeed first.
-fn case_spawn_rollback(tick_bits: u8) -> TestResult {
+/// Real xTaskCreate OOM is deferred — the vApplicationMallocFailedHook
+/// converts any pvPortMalloc failure into a FATAL exit before Rust can
+/// observe Error::OutOfMemory.  An expected-OOM arm in the hook is
+/// needed before real-kernel OOM validation is possible.
+fn case_spawn_rollback(_tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
-    // Overflow: stack_size(usize::MAX) → Error::Overflow, zero side effects.
+    // Overflow: stack_size(usize::MAX) → Error::Overflow.
+    // All four diagnostic counters must be unchanged — overflow is
+    // caught before any pvPortMalloc or xTaskCreate call.
     {
         let heap_before = sys::heap_free();
         let count_before = FreeRtosTask::count();
@@ -1210,8 +1229,11 @@ fn case_spawn_rollback(tick_bits: u8) -> TestResult {
             Err(Error::Overflow) => {}
             _ => return Err(TaskContractError::OverflowNotReturned),
         }
-        if diag_create_attempt_delta(&read_diag(), &diag_before) != 0
-            || diag_eg_create_delta(&read_diag(), &diag_before) != 0
+        let diag_after = read_diag();
+        if diag_create_attempt_delta(&diag_after, &diag_before) != 0
+            || diag_create_success_delta(&diag_after, &diag_before) != 0
+            || diag_eg_create_delta(&diag_after, &diag_before) != 0
+            || diag_eg_delete_delta(&diag_after, &diag_before) != 0
         {
             return Err(TaskContractError::DiagCreateDeltaNonZero);
         }
@@ -1223,20 +1245,8 @@ fn case_spawn_rollback(tick_bits: u8) -> TestResult {
         }
     }
 
-    // Real OOM is deferred to a future step.
-    // heap_4 fragmentation after harness + initialize leaves no
-    // contiguous block large enough for EventGroup + Arc pre-allocations
-    // (~300 bytes from pvPortMalloc) when a stack larger than total
-    // heap is requested.  The Rust global allocator wraps pvPortMalloc
-    // with additional header+alignment padding, and heap_4's
-    // address-sorted free list can fragment the free space into
-    // non-contiguous blocks after the harness helper lifecycle.
-    //
-    // The OOM path is fully validated by the backend host test suite
-    // (freertos-test-fixture) which uses deterministic heap simulation.
-    // Real-kernel OOM validation will be revisited when the heap
-    // strategy is upgraded (e.g. heap_5 with multiple non-contiguous
-    // regions, or a bump allocator for small test allocations).
+    // Real OOM is deferred — requires expected-OOM hook arm.
+    // See hooks.c vApplicationMallocFailedHook.
 
     if sys::heap_free() != global_baseline {
         return Err(TaskContractError::HeapNotRecovered);
