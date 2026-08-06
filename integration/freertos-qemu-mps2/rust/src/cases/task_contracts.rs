@@ -130,10 +130,97 @@ impl TaskCaseState {
 // Helpers
 // ------------------------------------------------------------------
 
+/// Tick-bounded wait for a predicate.  Returns `Ok(())` when the
+/// predicate returns `true`, or `Err(())` on timeout.
+///
+/// `deadline_ticks` is the maximum number of ticks to wait before
+/// giving up.  Each iteration consumes at least 1 tick via `delay_ticks`.
+fn wait_until(
+    mut predicate: impl FnMut() -> bool,
+    deadline_ticks: u32,
+) -> Result<(), ()> {
+    let mut remaining = deadline_ticks;
+    while remaining > 0 {
+        if predicate() {
+            return Ok(());
+        }
+        let _ = sys::delay_ticks(1);
+        remaining = remaining.saturating_sub(1);
+    }
+    Err(())
+}
+
+/// Maximum ticks to wait for a task to start or a gate to be released.
+/// On real FreeRTOS with tick_rate=1000, this is 5 seconds.
+const WAIT_DEADLINE_TICKS: u32 = 5000;
+
 fn wait_gate(state: &TaskCaseState) {
     while !state.release_gate.load(Ordering::Acquire) {
         let _ = sys::delay_ticks(1);
     }
+}
+
+// ------------------------------------------------------------------
+// GateReleaseGuard — RAII gate release for error-path cleanup.
+//
+// When a case spawns gated tasks and may return Err before releasing
+// the gate, this guard ensures the gate is released on drop so the
+// spawned tasks don't spin forever.
+// ------------------------------------------------------------------
+struct GateReleaseGuard<'a> {
+    states: &'a [&'a TaskCaseState],
+    released: bool,
+}
+
+impl<'a> GateReleaseGuard<'a> {
+    fn new(states: &'a [&'a TaskCaseState]) -> Self {
+        Self { states, released: false }
+    }
+
+    /// Release all gates and mark the guard as consumed so the
+    /// Drop impl becomes a no-op.
+    fn release(mut self) {
+        self.released = true;
+        for s in self.states {
+            s.release_gate.store(true, Ordering::Release);
+        }
+    }
+}
+
+impl Drop for GateReleaseGuard<'_> {
+    fn drop(&mut self) {
+        if !self.released {
+            for s in self.states {
+                s.release_gate.store(true, Ordering::Release);
+            }
+        }
+    }
+}
+
+/// Wait for all tasks in `states` to signal `started`.  Bounded by
+/// `WAIT_DEADLINE_TICKS` — returns `Err(())` on timeout so the case
+/// can report a clear failure rather than hanging the suite.
+fn wait_all_started(states: &[&TaskCaseState]) -> Result<(), ()> {
+    wait_until(
+        || states.iter().all(|s| s.started.load(Ordering::Acquire)),
+        WAIT_DEADLINE_TICKS,
+    )
+}
+
+/// Wait for a single task to signal `started`.  Bounded.
+fn wait_started(state: &TaskCaseState) -> Result<(), ()> {
+    wait_until(
+        || state.started.load(Ordering::Acquire),
+        WAIT_DEADLINE_TICKS,
+    )
+}
+
+/// Wait for `FreeRtosTask::count()` to reach `target`.  Bounded.
+fn wait_count(target: usize) -> Result<(), ()> {
+    wait_until(
+        || FreeRtosTask::count() == target,
+        WAIT_DEADLINE_TICKS,
+    )
 }
 
 #[allow(dead_code)]
@@ -172,9 +259,16 @@ impl PublishedTaskSlot {
 
     /// Task: take the clone.  Must only be called once, after ready.
     /// The caller must copy the task out of the slot before calling join().
+    /// Bounded by WAIT_DEADLINE_TICKS — panics on timeout (the controller
+    /// must publish before the task calls take).
     unsafe fn take(&self) -> FreeRtosTask {
+        let mut remaining = WAIT_DEADLINE_TICKS;
         while !self.ready.load(Ordering::Acquire) {
+            if remaining == 0 {
+                panic!("PublishedTaskSlot::take timed out");
+            }
             let _ = sys::delay_ticks(1);
+            remaining = remaining.saturating_sub(1);
         }
         unsafe { (*self.slot.get()).assume_init_read() }
     }
@@ -469,12 +563,13 @@ fn case_handle_unique(tick_bits: u8) -> TestResult {
         wait_gate(&c3);
     }).map_err(|_| TaskContractError::SpawnFailed)?;
 
-    // Wait for all to start.
-    while !s1.started.load(Ordering::Acquire)
-        || !s2.started.load(Ordering::Acquire)
-        || !s3.started.load(Ordering::Acquire)
-    {
-        let _ = sys::delay_ticks(1);
+    // GateReleaseGuard: if we return Err before releasing gates,
+    // the guard releases them so tasks don't spin forever.
+    let _gate_guard = GateReleaseGuard::new(&[&s1, &s2, &s3]);
+
+    // Wait for all to start (bounded).
+    if wait_all_started(&[&s1, &s2, &s3]).is_err() {
+        return Err(TaskContractError::HandleInvalid);
     }
 
     let h1 = s1.current_handle.load(Ordering::Acquire);
@@ -487,9 +582,8 @@ fn case_handle_unique(tick_bits: u8) -> TestResult {
         return Err(TaskContractError::CurrentIdentityMismatch);
     }
 
-    s1.release_gate.store(true, Ordering::Release);
-    s2.release_gate.store(true, Ordering::Release);
-    s3.release_gate.store(true, Ordering::Release);
+    // Explicit release — consumes the guard so Drop is a no-op.
+    _gate_guard.release();
 
     t1.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
     t2.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
@@ -714,12 +808,13 @@ fn case_live_count(tick_bits: u8) -> TestResult {
         wait_gate(&c3);
     }).map_err(|_| TaskContractError::SpawnFailed)?;
 
+    // GateReleaseGuard: if we return Err before releasing gates,
+    // the guard releases them so tasks don't spin forever.
+    let _gate_guard = GateReleaseGuard::new(&[&s1, &s2, &s3]);
+
     // Wait for trampolines to run so LIVE_COUNT is incremented.
-    while !s1.started.load(Ordering::Acquire)
-        || !s2.started.load(Ordering::Acquire)
-        || !s3.started.load(Ordering::Acquire)
-    {
-        let _ = sys::delay_ticks(1);
+    if wait_all_started(&[&s1, &s2, &s3]).is_err() {
+        return Err(TaskContractError::LiveCountMismatch);
     }
 
     if FreeRtosTask::count() != count_baseline + 3 {
@@ -771,8 +866,12 @@ fn case_join_nowait_zero(tick_bits: u8) -> TestResult {
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
-    // Wait for task to actually start.
-    while !state.started.load(Ordering::Acquire) { let _ = sys::delay_ticks(1); }
+    let _gate_guard = GateReleaseGuard::new(&[&state]);
+
+    // Wait for task to actually start (bounded).
+    if wait_started(&state).is_err() {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
 
     // NoWait on running task → Timeout.
     if !matches!(t.join(Timeout::NoWait), Err(Error::Timeout)) {
@@ -784,7 +883,7 @@ fn case_join_nowait_zero(tick_bits: u8) -> TestResult {
     }
 
     // Release and join.
-    state.release_gate.store(true, Ordering::Release);
+    _gate_guard.release();
     let r = t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
     if r != ExitCode::SUCCESS { return Err(TaskContractError::CachedResultMismatch); }
 
@@ -814,7 +913,11 @@ fn case_join_finite_timeout(tick_bits: u8) -> TestResult {
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
-    while !state.started.load(Ordering::Acquire) { let _ = sys::delay_ticks(1); }
+    let _gate_guard = GateReleaseGuard::new(&[&state]);
+
+    if wait_started(&state).is_err() {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
 
     let before = sys::tick_snapshot();
     if !matches!(
@@ -835,7 +938,7 @@ fn case_join_finite_timeout(tick_bits: u8) -> TestResult {
     }
 
     // Release and join — must succeed.
-    state.release_gate.store(true, Ordering::Release);
+    _gate_guard.release();
     let r = t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
     if r != ExitCode::SUCCESS { return Err(TaskContractError::CachedResultMismatch); }
     if state.entry_count.load(Ordering::Acquire) != 1 {
@@ -919,8 +1022,10 @@ fn case_self_join(tick_bits: u8) -> TestResult {
     // Publish a clone into the slot.
     SLOT.publish(t.clone());
 
-    // Wait for task to start and attempt self-join.
-    while !state.started.load(Ordering::Acquire) { let _ = sys::delay_ticks(1); }
+    // Wait for task to start and attempt self-join (bounded).
+    if wait_started(&state).is_err() {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
 
     t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
 
@@ -996,14 +1101,17 @@ fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
+    // GateReleaseGuard: if we return Err before releasing the target
+    // gate, the guard releases it so the target task doesn't spin forever.
+    let _gate_guard = GateReleaseGuard::new(&[&target_state]);
+
     // Wait for all 3 joiners to have started (blocked on EventGroup).
-    while !js0.started.load(Ordering::Acquire)
-        || !js1.started.load(Ordering::Acquire)
-        || !js2.started.load(Ordering::Acquire)
-    { let _ = sys::delay_ticks(1); }
+    if wait_all_started(&[&js0, &js1, &js2]).is_err() {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
 
     // Release target — all 3 joiners wake.
-    target_state.release_gate.store(true, Ordering::Release);
+    _gate_guard.release();
 
     // All joiners must return SUCCESS.
     j0.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
@@ -1083,7 +1191,11 @@ fn case_scheduler_suspended(tick_bits: u8) -> TestResult {
         .spawn(move || { s.started.store(true, Ordering::Release); wait_gate(&s); })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
-    while !state.started.load(Ordering::Acquire) { let _ = sys::delay_ticks(1); }
+    let _gate_guard = GateReleaseGuard::new(&[&state]);
+
+    if wait_started(&state).is_err() {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
 
     // Suspend scheduler.
     unsafe { osal_test_scheduler_suspend(); }
@@ -1108,7 +1220,7 @@ fn case_scheduler_suspended(tick_bits: u8) -> TestResult {
 
     drop(_guard); // resume scheduler
 
-    state.release_gate.store(true, Ordering::Release);
+    _gate_guard.release();
     t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
 
     drop(t);
@@ -1143,7 +1255,11 @@ fn case_drop_without_join(tick_bits: u8) -> TestResult {
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
-    while !state.started.load(Ordering::Acquire) { let _ = sys::delay_ticks(1); }
+    let _gate_guard = GateReleaseGuard::new(&[&state]);
+
+    if wait_started(&state).is_err() {
+        return Err(TaskContractError::CachedResultMismatch);
+    }
 
     // Drop external handle — trampoline still holds RuntimeLease.
     drop(t);
@@ -1157,9 +1273,12 @@ fn case_drop_without_join(tick_bits: u8) -> TestResult {
     }
 
     // Release gate — task completes, trampoline releases lease, self-deletes.
-    state.release_gate.store(true, Ordering::Release);
+    _gate_guard.release();
 
-    while FreeRtosTask::count() > 0 { let _ = sys::delay_ticks(1); }
+    // Bounded wait for live count to drop to 0.
+    if wait_count(0).is_err() {
+        return Err(TaskContractError::LiveCountMismatch);
+    }
 
     if harness::wait_until_heap_recovered(global_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
         return Err(TaskContractError::HeapNotRecovered);
@@ -1434,10 +1553,11 @@ fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
             })
             .map_err(|_| TaskContractError::SpawnFailed)?;
 
-        while !s0.started.load(Ordering::Acquire)
-            || !s1.started.load(Ordering::Acquire)
-            || !s2.started.load(Ordering::Acquire)
-        { let _ = sys::delay_ticks(1); }
+        let _gate_guard = GateReleaseGuard::new(&[&s0, &s1, &s2]);
+
+        if wait_all_started(&[&s0, &s1, &s2]).is_err() {
+            return Err(TaskContractError::HandleInvalid);
+        }
 
         // All three handles must be pairwise distinct.
         if t0.handle() == t1.handle()
@@ -1451,9 +1571,7 @@ fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
             return Err(TaskContractError::LiveCountMismatch);
         }
 
-        s0.release_gate.store(true, Ordering::Release);
-        s1.release_gate.store(true, Ordering::Release);
-        s2.release_gate.store(true, Ordering::Release);
+        _gate_guard.release();
 
         t0.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
         t1.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
