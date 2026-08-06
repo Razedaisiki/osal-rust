@@ -1366,13 +1366,25 @@ fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
 
     // --- Sequential: 32 rounds of spawn/join/drop/heap-recover ---
     for _round in 0u32..32 {
+        let state = Arc::new(TaskCaseState::new());
+        let s = Arc::clone(&state);
         let sub = sys::heap_free();
+
         let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("str_seq")
-            .spawn(|| {})
+            .spawn(move || {
+                s.entry_count.fetch_add(1, Ordering::Release);
+                s.stack_hwm.store(task_stack_hwm(), Ordering::Release);
+            })
             .map_err(|_| TaskContractError::SpawnFailed)?;
 
         let r = t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
         if r != ExitCode::SUCCESS { return Err(TaskContractError::CachedResultMismatch); }
+        if state.entry_count.load(Ordering::Acquire) != 1 {
+            return Err(TaskContractError::EntryCountMismatch);
+        }
+        if state.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+            return Err(TaskContractError::StackHwmTooSmall);
+        }
 
         // Cached joins after completion.
         t.join(Timeout::NoWait).map_err(|_| TaskContractError::CachedResultMismatch)?;
@@ -1383,9 +1395,11 @@ fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
         if harness::wait_until_heap_recovered(sub, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
             return Err(TaskContractError::HeapNotRecovered);
         }
+        drop(state);
     }
 
     // --- Concurrent waves: 8 waves of 3 tasks each ---
+    let wave_count_baseline = FreeRtosTask::count();
     for _wave in 0u32..8 {
         let s0 = Arc::new(TaskCaseState::new());
         let s1 = Arc::new(TaskCaseState::new());
@@ -1396,13 +1410,28 @@ fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
         let sub = sys::heap_free();
 
         let t0 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("str_w0")
-            .spawn(move || { c0.started.store(true, Ordering::Release); wait_gate(&c0); })
+            .spawn(move || {
+                c0.started.store(true, Ordering::Release);
+                wait_gate(&c0);
+                c0.entry_count.fetch_add(1, Ordering::Release);
+                c0.stack_hwm.store(task_stack_hwm(), Ordering::Release);
+            })
             .map_err(|_| TaskContractError::SpawnFailed)?;
         let t1 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("str_w1")
-            .spawn(move || { c1.started.store(true, Ordering::Release); wait_gate(&c1); })
+            .spawn(move || {
+                c1.started.store(true, Ordering::Release);
+                wait_gate(&c1);
+                c1.entry_count.fetch_add(1, Ordering::Release);
+                c1.stack_hwm.store(task_stack_hwm(), Ordering::Release);
+            })
             .map_err(|_| TaskContractError::SpawnFailed)?;
         let t2 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("str_w2")
-            .spawn(move || { c2.started.store(true, Ordering::Release); wait_gate(&c2); })
+            .spawn(move || {
+                c2.started.store(true, Ordering::Release);
+                wait_gate(&c2);
+                c2.entry_count.fetch_add(1, Ordering::Release);
+                c2.stack_hwm.store(task_stack_hwm(), Ordering::Release);
+            })
             .map_err(|_| TaskContractError::SpawnFailed)?;
 
         while !s0.started.load(Ordering::Acquire)
@@ -1410,10 +1439,15 @@ fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
             || !s2.started.load(Ordering::Acquire)
         { let _ = sys::delay_ticks(1); }
 
-        if t0.handle() == t1.handle() || t1.handle() == t2.handle() {
+        // All three handles must be pairwise distinct.
+        if t0.handle() == t1.handle()
+            || t0.handle() == t2.handle()
+            || t1.handle() == t2.handle()
+        {
             return Err(TaskContractError::HandleInvalid);
         }
-        if FreeRtosTask::count() < 3 {
+        // Exact count: baseline + 3.
+        if FreeRtosTask::count() != wave_count_baseline + 3 {
             return Err(TaskContractError::LiveCountMismatch);
         }
 
@@ -1425,11 +1459,26 @@ fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
         t1.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
         t2.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
 
+        // Each entry exactly once + HWM >= 64.
+        if s0.entry_count.load(Ordering::Acquire) != 1
+            || s1.entry_count.load(Ordering::Acquire) != 1
+            || s2.entry_count.load(Ordering::Acquire) != 1
+        { return Err(TaskContractError::EntryCountMismatch); }
+        if s0.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS
+            || s1.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS
+            || s2.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS
+        { return Err(TaskContractError::StackHwmTooSmall); }
+
         drop(t0); drop(t1); drop(t2);
         if harness::wait_until_heap_recovered(sub, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
             return Err(TaskContractError::HeapNotRecovered);
         }
         drop(s0); drop(s1); drop(s2);
+
+        // Count must return to wave baseline.
+        if FreeRtosTask::count() != wave_count_baseline {
+            return Err(TaskContractError::LiveCountMismatch);
+        }
     }
 
     if sys::heap_free() != global_baseline {
