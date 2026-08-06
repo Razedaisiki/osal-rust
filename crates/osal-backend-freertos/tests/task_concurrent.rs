@@ -12,6 +12,7 @@
 use core::time::Duration;
 use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::thread;
+use std::time::Instant;
 
 use osal_api::error::Error;
 use osal_api::time::Timeout;
@@ -25,14 +26,45 @@ use osal_backend_freertos_sys::fixture;
 // and must not run concurrently.
 static TASK_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+const TASK_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Wait for all active runtime objects (RuntimeLease holders) to be
+/// released.  Returns the remaining count on timeout.
+fn wait_for_runtime_quiescence() -> Result<(), usize> {
+    let deadline = Instant::now() + TASK_TEARDOWN_TIMEOUT;
+    loop {
+        let active = runtime::active_objects();
+        if active == 0 {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(active);
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 struct TestGuard {
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 impl TestGuard {
     fn new() -> Self {
-        let lock = TASK_TEST_LOCK.lock().expect("task test lock poisoned");
-        let _ = runtime::shutdown();
+        let lock = TASK_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        // If a previous test panicked, it may have left live objects.
+        // Wait for quiescence so the next test starts from a clean slate.
+        if runtime::active_objects() != 0 {
+            wait_for_runtime_quiescence().expect("previous task test left live runtime objects");
+        }
+
+        match runtime::shutdown() {
+            Ok(()) | Err(Error::NotInitialized) => {}
+            Err(e) => panic!("pre-test runtime cleanup failed: {e:?}"),
+        }
+
         fixture::reset();
         runtime::initialize().expect("initialize");
         TestGuard { _lock: lock }
@@ -41,10 +73,24 @@ impl TestGuard {
 
 impl Drop for TestGuard {
     fn drop(&mut self) {
+        if let Err(active) = wait_for_runtime_quiescence() {
+            panic!(
+                "test did not quiesce before shutdown: \
+                 active runtime objects={active}"
+            );
+        }
+
         match runtime::shutdown() {
             Ok(()) | Err(Error::NotInitialized) => {}
-            Err(e) => panic!("test leaked runtime lease or object: {e:?}"),
+            Err(e) => {
+                panic!(
+                    "runtime shutdown failed after quiescence: \
+                     active_objects={}, error={e:?}",
+                    runtime::active_objects(),
+                );
+            }
         }
+
         fixture::reset();
     }
 }
@@ -222,7 +268,6 @@ fn two_joiners_receive_same_result() {
         h1.join().expect("h1");
         h2.join().expect("h2");
     }
-    thread::sleep(Duration::from_millis(20));
 }
 
 #[test]
@@ -242,7 +287,6 @@ fn late_joiner_receives_cached_result() {
         let result = handle.join().expect("late joiner panicked");
         assert_eq!(result, Ok(ExitCode::SUCCESS));
     }
-    thread::sleep(Duration::from_millis(20));
 }
 
 // ---------------------------------------------------------------------------
@@ -284,7 +328,6 @@ fn self_join_returns_busy() {
         // Main thread can still join the task.
         task.join(Timeout::Forever).expect("join");
     }
-    thread::sleep(Duration::from_millis(20));
 }
 
 // ---------------------------------------------------------------------------
@@ -309,8 +352,6 @@ fn drop_handle_does_not_cancel_task() {
             .expect("task should complete despite dropped handle");
         assert_eq!(result, 42);
     }
-    // Give the task trampoline time to drop its Arc and release the lease.
-    thread::sleep(Duration::from_millis(20));
 }
 
 // ---------------------------------------------------------------------------
@@ -334,8 +375,6 @@ fn finished_join_works_when_scheduler_not_started() {
 
         fixture::set_scheduler_state(osal_backend_freertos_sys::SchedulerState::Running);
     }
-    // Give the task trampoline time to fully exit.
-    thread::sleep(Duration::from_millis(20));
 }
 
 // ---------------------------------------------------------------------------
@@ -362,8 +401,6 @@ fn blocking_join_not_started_returns_not_initialized() {
 
         fixture::set_scheduler_state(osal_backend_freertos_sys::SchedulerState::Running);
     }
-    // The task may still be running — wait for it.
-    thread::sleep(Duration::from_millis(200));
 }
 
 // ---------------------------------------------------------------------------
@@ -388,9 +425,6 @@ fn shutdown_busy_while_task_running() {
 
         drop(task);
     }
-    // Allow the task trampoline thread to fully exit before guard Drop
-    // attempts runtime shutdown.
-    thread::sleep(Duration::from_millis(200));
 }
 
 #[test]
@@ -405,8 +439,6 @@ fn shutdown_busy_while_finished_handle_alive() {
         // Task is finished but handle is alive — RuntimeLease is held.
         assert_eq!(runtime::shutdown(), Err(Error::Busy));
     }
-    // Allow the task trampoline thread to fully exit and release its Arcs.
-    thread::sleep(Duration::from_millis(50));
 }
 
 #[test]
@@ -419,9 +451,6 @@ fn shutdown_succeeds_after_last_handle_drop() {
         task.join(Timeout::Forever).expect("join");
         drop(task);
     }
-    // Wait for trampoline thread to fully exit and release its
-    // RuntimeLease before guard Drop calls shutdown.
-    thread::sleep(Duration::from_millis(50));
 }
 
 // ---------------------------------------------------------------------------
@@ -434,24 +463,29 @@ fn stack_bytes_rounds_up_to_words() {
     {
         let caps = runtime::capabilities_for_test().expect("capabilities");
         let word_size = caps.stack_word_size as usize;
+        let minimal_words = caps.minimal_stack_depth_words as usize;
+
+        // Request one byte above the minimum word-aligned size.
+        // This must round up to minimal_words + 1, proving that
+        // the round-up logic works (not just the minimum clamp).
+        let requested_bytes = minimal_words
+            .checked_mul(word_size)
+            .and_then(|v| v.checked_add(1))
+            .expect("test stack size overflow");
+
+        let expected_words = minimal_words + 1;
 
         let task = FreeRtosTaskBuilder::new()
-            .stack_size(1) // 1 byte → 1 word
+            .stack_size(requested_bytes)
             .spawn(|| {})
             .expect("spawn");
         task.join(Timeout::Forever).expect("join");
         drop(task);
 
-        // Verify that the stack depth was at least the minimum.
         let stack_words = fixture::last_stack_depth_words() as usize;
-        assert!(
-            stack_words >= caps.minimal_stack_depth_words as usize,
-            "stack_words={stack_words} should be >= minimal={}",
-            caps.minimal_stack_depth_words
-        );
-        assert!(
-            stack_words >= 1,
-            "stack_words={stack_words} should be >= 1 byte worth ({word_size} byte words)"
+        assert_eq!(
+            stack_words, expected_words,
+            "stack_size({requested_bytes}) should round up to {expected_words} words, got {stack_words}"
         );
     }
 }
@@ -460,18 +494,19 @@ fn stack_bytes_rounds_up_to_words() {
 fn stack_clamps_to_minimum_native_depth() {
     let _guard = TestGuard::new();
     {
+        let caps = runtime::capabilities_for_test().expect("capabilities");
+
         let task = FreeRtosTaskBuilder::new()
-            .stack_size(1)
+            .stack_size(1) // 1 byte — must clamp to minimum stack depth
             .spawn(|| {})
             .expect("spawn");
         task.join(Timeout::Forever).expect("join");
         drop(task);
 
         let stack_words = fixture::last_stack_depth_words();
-        let caps = runtime::capabilities_for_test().expect("capabilities");
-        assert!(
-            stack_words >= caps.minimal_stack_depth_words,
-            "stack_words={stack_words} should be >= minimal={}",
+        assert_eq!(
+            stack_words, caps.minimal_stack_depth_words,
+            "stack_size(1) must clamp exactly to minimal_stack_depth_words={}, got {stack_words}",
             caps.minimal_stack_depth_words
         );
     }
@@ -508,10 +543,10 @@ fn native_priority_saturates() {
 
         let native_prio = fixture::last_native_priority();
         let caps = runtime::capabilities_for_test().expect("capabilities");
-        assert!(
-            native_prio < caps.max_priorities,
-            "native_prio={native_prio} should be < max_priorities={}",
-            caps.max_priorities
+        assert_eq!(
+            native_prio,
+            caps.max_priorities - 1,
+            "requested priority above native range must saturate to max_priorities-1"
         );
     }
 }
