@@ -9,6 +9,7 @@
 
 #include "console.h"
 #include "qemu_exit.h"
+#include "test_task.h"
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                            */
@@ -28,11 +29,53 @@ static void fatal(const char *kind, const char *detail)
 }
 
 /* ------------------------------------------------------------------ */
+/* Expected-OOM fixture (P7G Step 4D)                                  */
+/*                                                                     */
+/* Allows exactly one pvPortMalloc failure from the controller task    */
+/* during integration diagnostics, so that the real-kernel OOM test    */
+/* can observe xTaskCreate returning errCOULD_NOT_ALLOCATE... rather   */
+/* than the malloc-failed hook exiting QEMU.                           */
+/* ------------------------------------------------------------------ */
+
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+
+static TaskHandle_t expected_oom_owner;
+static volatile uint32_t expected_oom_remaining;
+
+void osal_test_expect_malloc_failure(void)
+{
+    expected_oom_owner = xTaskGetCurrentTaskHandle();
+    expected_oom_remaining = 1;
+}
+
+uint32_t osal_test_expected_malloc_failure_consumed(void)
+{
+    return (expected_oom_remaining == 0) ? 1U : 0U;
+}
+
+void osal_test_clear_expected_malloc_failure(void)
+{
+    expected_oom_owner = NULL;
+    expected_oom_remaining = 0;
+}
+
+#endif /* OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS */
+
+/* ------------------------------------------------------------------ */
 /* Hooks                                                              */
 /* ------------------------------------------------------------------ */
 
 void vApplicationMallocFailedHook(void)
 {
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+    if (expected_oom_remaining == 1
+        && xTaskGetCurrentTaskHandle() == expected_oom_owner)
+    {
+        expected_oom_remaining = 0;
+        return;
+    }
+#endif
+
     fatal("malloc-failure", NULL);
 }
 

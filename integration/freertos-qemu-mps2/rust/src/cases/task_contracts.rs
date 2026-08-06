@@ -28,6 +28,9 @@ unsafe extern "C" {
     fn osal_test_diag_last_native_priority() -> u32;
     fn osal_test_diag_last_name_len() -> u32;
     fn osal_test_diag_reset();
+    fn osal_test_expect_malloc_failure();
+    fn osal_test_expected_malloc_failure_consumed() -> u32;
+    fn osal_test_clear_expected_malloc_failure();
     fn osal_test_task_stack_hwm() -> u32;
     fn osal_test_scheduler_suspend();
     fn osal_test_scheduler_resume();
@@ -1215,7 +1218,7 @@ fn case_finished_handle_lease(tick_bits: u8) -> TestResult {
 /// converts any pvPortMalloc failure into a FATAL exit before Rust can
 /// observe Error::OutOfMemory.  An expected-OOM arm in the hook is
 /// needed before real-kernel OOM validation is possible.
-fn case_spawn_rollback(_tick_bits: u8) -> TestResult {
+fn case_spawn_rollback(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
     // Overflow: stack_size(usize::MAX) → Error::Overflow.
@@ -1245,8 +1248,73 @@ fn case_spawn_rollback(_tick_bits: u8) -> TestResult {
         }
     }
 
-    // Real OOM is deferred — requires expected-OOM hook arm.
-    // See hooks.c vApplicationMallocFailedHook.
+    // Real OOM: request more stack than available heap.
+    // The expected-OOM arm in hooks.c allows exactly one pvPortMalloc
+    // failure from the controller task to return instead of FATAL.
+    {
+        let heap_before = sys::heap_free();
+        let count_before = FreeRtosTask::count();
+        let diag_before = read_diag();
+
+        // Request just over the total free heap.  The EventGroup + Arc
+        // pre-allocations (~300 bytes) succeed first, then xTaskCreate
+        // fails on the stack+TCB allocation.
+        let oom_bytes: usize = (heap_before as usize).saturating_add(4096);
+
+        unsafe { osal_test_expect_malloc_failure(); }
+
+        let result = FreeRtosTaskBuilder::new()
+            .name("oom_probe")
+            .stack_size(oom_bytes)
+            .spawn(|| {});
+
+        // Must have consumed the expected failure.
+        let consumed = unsafe { osal_test_expected_malloc_failure_consumed() };
+        unsafe { osal_test_clear_expected_malloc_failure(); }
+
+        if consumed != 1 {
+            return Err(TaskContractError::SpawnFailed);
+        }
+
+        match result {
+            Err(Error::OutOfMemory) => {}
+            _ => { return Err(TaskContractError::SpawnFailed); }
+        }
+
+        let diag_after = read_diag();
+        // xTaskCreate was attempted but failed.
+        if diag_create_attempt_delta(&diag_after, &diag_before) != 1 {
+            return Err(TaskContractError::DiagCreateDeltaNonZero);
+        }
+        if diag_create_success_delta(&diag_after, &diag_before) != 0 {
+            return Err(TaskContractError::DiagCreateDeltaNonZero);
+        }
+        // EventGroup created (+1) then deleted (+1) during rollback.
+        if diag_eg_create_delta(&diag_after, &diag_before) != 1
+            || diag_eg_delete_delta(&diag_after, &diag_before) != 1
+        {
+            return Err(TaskContractError::DiagEgCreateDeltaNonZero);
+        }
+        if sys::heap_free() != heap_before {
+            return Err(TaskContractError::HeapNotRecovered);
+        }
+        if FreeRtosTask::count() != count_before {
+            return Err(TaskContractError::LiveCountMismatch);
+        }
+    }
+
+    // Prove path is not corrupted: normal task still works afterward.
+    {
+        let sub = sys::heap_free();
+        let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("recovery")
+            .spawn(|| {})
+            .map_err(|_| TaskContractError::SpawnFailed)?;
+        t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+        drop(t);
+        if harness::wait_until_heap_recovered(sub, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
+            return Err(TaskContractError::HeapNotRecovered);
+        }
+    }
 
     if sys::heap_free() != global_baseline {
         return Err(TaskContractError::HeapNotRecovered);

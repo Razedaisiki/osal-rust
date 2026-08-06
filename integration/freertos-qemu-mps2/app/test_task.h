@@ -112,6 +112,11 @@ uint32_t osal_test_diag_last_name_len(void);
 /* Reset all diagnostic counters to zero.                               */
 void osal_test_diag_reset(void);
 
+/* Expected-OOM fixture (P7G Step 4D).                                   */
+void osal_test_expect_malloc_failure(void);
+uint32_t osal_test_expected_malloc_failure_consumed(void);
+void osal_test_clear_expected_malloc_failure(void);
+
 #endif /* OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS */
 
 #endif /* TEST_TASK_H */
