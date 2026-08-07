@@ -33,8 +33,8 @@ pub enum TimerContractError {
     WorkerTaskCountIncreased = 607,
     WorkerHwmTooLow = 608,
 
-    // Heap
-    HeapNotRecovered = 690,
+    // Cleanup
+    WorkerCleanupFailed = 609,
 }
 
 type TestResult = Result<(), TimerContractError>;
@@ -142,6 +142,8 @@ fn case_timer_worker_lazy_identity() -> TestResult {
     }
 
     // Phase 2: first start creates the worker.
+    // Record public Task::count() baseline before the worker exists.
+    let public_task_count_baseline = FreeRtosTask::count() as u32;
     t.start().map_err(|_| TimerContractError::WorkerNotCreated)?;
     let diag_after_start = read_internal_diag();
     let attempts = internal_create_attempt_delta(&diag_after_start, &diag_still_before);
@@ -197,10 +199,9 @@ fn case_timer_worker_lazy_identity() -> TestResult {
     if callback_current_some.load(Ordering::Acquire) != 0 {
         return Err(TimerContractError::WorkerTaskCurrentNotNone);
     }
-    // Task::count() should not include the worker (0 or baseline only).
-    // We don't know exact baseline, but it must be a small number.
+    // Task::count() must not include the worker — exact baseline equality.
     let count = callback_count.load(Ordering::Acquire);
-    if count > 16 {
+    if count != public_task_count_baseline {
         return Err(TimerContractError::WorkerTaskCountIncreased);
     }
     let hwm = callback_hwm.load(Ordering::Acquire);
@@ -209,7 +210,8 @@ fn case_timer_worker_lazy_identity() -> TestResult {
     }
 
     // Cleanup: stop and drop timer.
-    t.stop().ok();
+    t.stop()
+        .map_err(|_| TimerContractError::WorkerCleanupFailed)?;
     drop(t);
 
     // Wait for heap recovery (timer deregistered, but worker stays alive).

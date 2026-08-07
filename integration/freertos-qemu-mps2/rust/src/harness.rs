@@ -91,8 +91,17 @@ unsafe extern "C" {
 
 /// Public wrapper — spawn a native FreeRTOS helper task.
 ///
+/// Only available for profiles that use native helper tasks
+/// (Task, Queue-blocking, Aggregate).  Profiles that don't need helpers
+/// (Timer) omit this so dead-code detection stays precise.
+///
 /// # Safety
 /// `entry` must be a valid task entry point; `context` must outlive the task.
+#[cfg(any(
+    feature = "suite-aggregate",
+    feature = "suite-queue-blocking",
+    feature = "suite-task",
+))]
 pub unsafe fn native_task_spawn(
     entry: NativeTaskEntry,
     context: *mut c_void,

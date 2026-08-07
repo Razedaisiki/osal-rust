@@ -2,7 +2,7 @@
 """verify-boot.py — validate OSAL FreeRTOS MPS2 boot and object protocols.
 
 Usage:
-  verify-boot.py <qemu.log> [--profile aggregate|queue-blocking|task]
+  verify-boot.py <qemu.log> [--profile aggregate|queue-blocking|task|timer]
 
 If --profile is omitted, the profile is auto-detected from
 OSAL_OBJECT_BEGIN profile=... in the log.
@@ -207,10 +207,11 @@ PROFILES = {
         "fields": [
             "profile=timer",
             "timer=true",
-            "timer_builder=true",
             "timer_worker=true",
             "timer_identity=true",
+            "timer_stack_margin=true",
             # Remaining fields added as cases land:
+            # "timer_builder=true",
             # "timer_one_shot=true",
             # "timer_periodic=true",
             # "timer_control=true",
@@ -225,7 +226,6 @@ PROFILES = {
             # "timer_self_shutdown=true",
             # "timer_lease=true",
             # "timer_self_delete=true",
-            # "timer_stack_margin=true",
             "helper_self_delete=true",
             "idle_cleanup=true",
             "heap_recovered=true",
