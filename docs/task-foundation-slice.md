@@ -219,10 +219,11 @@ rejection, 50-cycle stress.
 |---------|-----------|-----------------|
 | Mock | Validated | Foundation (sync) |
 | POSIX | Validated | Validated |
-| FreeRTOS | Implemented | Implemented |
+| FreeRTOS | Validated | Validated |
 
-FreeRTOS promotion to Validated requires real FreeRTOS kernel
-runtime tests (QEMU or physical MCU).
+FreeRTOS validated on FreeRTOS Kernel V11.3.0, ARM_CM3, Cortex-M3 under
+QEMU mps2-an385. This is real-kernel validation, not physical-MCU
+validation.
 
 ## Deferred
 

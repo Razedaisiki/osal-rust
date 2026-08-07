@@ -1,13 +1,14 @@
-# FreeRTOS QEMU MPS2 Cortex-M3 Boot Firmware
+# FreeRTOS QEMU MPS2 Cortex-M3 Integration Firmware
 
-C-only FreeRTOS kernel boot test targeting the ARM MPS2-AN385 board
-emulated by QEMU.
+OSAL real-kernel validation firmware targeting the ARM MPS2-AN385 board
+emulated by QEMU, running FreeRTOS Kernel V11.3.0.
 
 ## Purpose
 
-Verify that FreeRTOS Kernel V11.3.0 boots on a Cortex-M3, schedules
-a native C task, advances the SysTick timer, and wakes a task from
-`vTaskDelay`. All output goes through UART0 and is machine-parsable.
+Verify OSAL managed-object contracts on a real FreeRTOS kernel (Cortex-M3,
+SysTick, heap_4.c) under QEMU. Each managed-object suite compiles as an
+independent firmware profile and is validated via machine-parsable UART
+output with a strict verifier.
 
 ## Prerequisites
 
@@ -18,7 +19,9 @@ sudo apt-get install gcc-arm-none-eabi qemu-system-arm make python3
 ## Build
 
 ```bash
-make
+make                                    # aggregate suite (Mutex + Semaphore + Queue Core)
+make CARGO_FEATURES=suite-queue-blocking  # Queue Blocking isolated suite
+make CARGO_FEATURES=suite-task            # Task real-kernel contract suite
 ```
 
 Output in `build/`:
@@ -29,9 +32,25 @@ Output in `build/`:
 ## Run
 
 ```bash
-make verify                    # build + symbol check
-scripts/run-qemu.sh           # boot in QEMU, verify output
+make verify                                  # build + symbol check (aggregate)
+make verify CARGO_FEATURES=suite-task        # build + symbol check (Task)
+PROFILE=task scripts/run-qemu.sh             # boot in QEMU, verify output
 ```
+
+## Profiles
+
+| Profile | Cargo Feature | Cases | Description |
+|---------|--------------|-------|-------------|
+| `suite-aggregate` | (default) | 36 | Mutex (8) + Semaphore (18) + Queue Core (9) + harness (1) |
+| `suite-queue-blocking` | `suite-queue-blocking` | 11 | Queue Blocking isolated (independent QEMU run) |
+| `suite-task` | `suite-task` | 20 | Task real-kernel contracts (1 harness + 19 Task cases) |
+
+### suite-task
+
+20 required cases with strict profile-aware verifier. Final shutdown +
+exact heap recovery required before OBJECT_PASS. Sealing evidence:
+TaskExitProbe (unified HWM), DropProbe (exact-once teardown), join-wait
+diagnostics (concurrent blocking proof).
 
 ## Boot Protocol
 

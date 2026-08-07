@@ -11,9 +11,9 @@ across different platforms by switching the backend.
 
 ## Project Status
 
-**Latest completed milestone: P7F — FreeRTOS Timer Foundation — Completed.**
-**Current milestone: P7G Step 4C-2 — Queue Blocking Real-Kernel Contracts — Completed.**
-**Next: P7G Step 4D — Task real-kernel contracts.**
+**Latest completed milestone: P7G Step 4D — Task Real-Kernel Contracts — Completed.**
+**Current milestone: P7G Step 4D — Task Real-Kernel Contracts — Completed.**
+**Next: P7G Step 4E — Timer real-kernel contracts.**
 
 The POSIX backend fully implements the current non-deferred `osal-api`
 trait surface. The Mock backend implements the same surface with the
@@ -90,7 +90,7 @@ Public APIs may change before version 1.0.
 | Timer             | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
 | Timer ISR         | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
 | System            | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
-| Task Foundation   | Validated | Foundation  | Validated   | Implemented| Foundation  | Validated |
+| Task Foundation   | Validated | Foundation  | Validated   | Validated  | Validated   | Validated |
 | Runtime Lifecycle | Validated | Implemented | Validated   | Implemented| Implemented | Implemented |
 | ISR Extensions    | Planned   | N/A         | N/A         | Planned    | Planned     | Planned   |
 | BSP               | Planned   | N/A         | N/A         | N/A        | N/A         | N/A       |

@@ -214,6 +214,63 @@ priority inheritance, ISR calls, OOM injection, guard cross-task move.
 **Deferred:** fairness, starvation prevention, ISR acquire/release,
 OOM injection, high-concurrency stress.
 
+### Step 4D — Task Real-Kernel Contracts — Completed
+
+- `cases/task_contracts.rs`: 19 Task contracts + 1 harness case validated
+  on real FreeRTOS Kernel V11.3.0 (Cortex-M3, QEMU mps2-an385).
+- `TaskExitProbe`: unified Drop-based HWM recording for every spawned
+  OSAL Task, replacing ad-hoc `task_stack_hwm()` calls.
+- `DropProbe`: exact-once closure-capture teardown proof for OOM rollback.
+- Join-wait diagnostics: C shim observers in `xEventGroupWaitBits` prove
+  all concurrent joiners were simultaneously blocked.
+- `TaskCaseState` with `Arc<AtomicU32>` for `stack_hwm`; `GateReleaseGuard<N>`
+  RAII gate release for error-path cleanup.
+- Expected-OOM fixture in `vApplicationMallocFailedHook`.
+- Two-layer heap baseline: allocate test state → baseline → production ops →
+  verify heap == baseline → drop test state → verify heap == global_baseline.
+
+**Cases validated (profile: suite-task / PROFILE=task, 20 total):**
+
+1 native harness case + 19 Task contract cases:
+
+| Case | What it proves |
+|------|---------------|
+| `harness_native_task` | Native helper-task harness works |
+| `task_builder_invalid` | Builder parameter validation (zero stack, overlong name, NUL) |
+| `task_stack_mapping` | Stack bytes→words rounding + HWM >= 64 words |
+| `task_priority_mapping` | Priority saturation to `configMAX_PRIORITIES-1` |
+| `task_current_tls` | `Task::current()` returns Some(handle) inside OSAL task |
+| `task_native_non_osal` | `Task::current()` returns None from native non-OSAL context |
+| `task_live_count` | `Task::count()` reflects executing entries only |
+| `task_nowait` | NoWait poll: Ok(ExitCode) if finished, Timeout otherwise |
+| `task_after_zero` | After(ZERO): same as NoWait |
+| `task_finite_timeout_retry` | Finite timeout → Timeout, retry succeeds |
+| `task_join_forever_cached` | Forever join + cached code on repeated join |
+| `task_self_join_busy` | Self-join returns Busy |
+| `task_concurrent_joiners` | Three concurrent joiners all blocked in EventGroup wait, all get SUCCESS |
+| `task_late_join_cached` | Late join under scheduler suspension reads cached code |
+| `task_scheduler_suspended` | Suspended: blocking join → Busy |
+| `task_drop_without_join` | Drop handle without join, task continues to completion |
+| `task_finished_handle_lease` | Finished handle holds RuntimeLease, drop releases |
+| `task_spawn_rollback` | Real xTaskCreate OOM: attempt+1/success+0, EventGroup create/delete once, closure DropProbe exactly once, Task count unchanged, heap exact recovery, recovery task proves runtime intact |
+| `task_lifecycle_sequential` | 32 sequential spawn→join→drop rounds, per-task HWM |
+| `task_lifecycle_concurrent` | 8 waves × 3 concurrent tasks, per-task HWM, self-delete + Idle cleanup |
+
+**Sealing evidence:**
+
+- `TaskExitProbe` on every task exit records HWM via `osal_test_task_stack_hwm()`
+- `DropProbe` exact-once counter proves closure teardown on OOM rollback
+- Join-wait diagnostics: `attempts_delta == 3` and `returns_delta == 0` before
+  releasing target; all joiners require `ExitCode::SUCCESS`
+- All 20 cases check `check_all_hwm()` (HWM >= 64 words per task)
+- Final shutdown: profile heap == profile_baseline → OSAL_OBJECT_PASS
+
+**Verification scope:** real FreeRTOS kernel under QEMU.
+Physical MCU validation remains outstanding.
+
+**Sealing baseline:** `c97581404f158abc6f7d99b91619b06b9552bf49`
+**CI:** #133 — Success (9 jobs green, 3 QEMU artifacts)
+
 ### Step 4C-1 — Queue Core Real-Kernel Contracts — Completed
 
 - `cases/queue.rs`: 9 Queue contracts validated on real FreeRTOS
