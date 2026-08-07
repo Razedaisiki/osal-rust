@@ -1,7 +1,7 @@
 //! Timer real-kernel contracts (P7G Step 4E).
 //!
-//! Commit 2 — Timer core, one-shot, periodic, deadline, and
-//! coalescing contracts on real FreeRTOS V11.3.0 (QEMU mps2-an385).
+//! Commit 2B — hardened evidence for core, deadline, and coalescing
+//! contracts on real FreeRTOS V11.3.0 (QEMU mps2-an385).
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -42,15 +42,20 @@ pub enum TimerContractError {
     TimerOneShotRearmed = 622,
     TimerPeriodicCountTooLow = 623,
     TimerPeriodicTicksNonMonotonic = 624,
+    TimerPeriodicFirstCallbackTooEarly = 625,
 
     TimerResetOnStoppedNoCallback = 630,
     TimerResetOnRunningEarlyCallback = 631,
+    TimerStartOnRunningNotReset = 632,
 
     TimerStopCallbackFired = 640,
     TimerStopNotIdempotent = 641,
 
     TimerChangePeriodEarlyCallback = 650,
     TimerChangePeriodFirstDeadlineWrong = 651,
+    TimerChangePeriodOnStoppedFiredEarly = 652,
+    TimerChangePeriodZeroNotRejected = 653,
+    TimerChangePeriodNewPeriodNotEffective = 654,
 
     TimerCoalescingBurstDetected = 660,
 
@@ -94,6 +99,8 @@ fn raw_tick_snap(raw: u32) -> sys::TickSnapshot {
 // TimerCaseState
 // ------------------------------------------------------------------
 pub struct TimerCaseState {
+    /// Publish-store: written LAST, after all per-callback data is
+    /// visible.  Controller polls this with Acquire.
     pub callback_count: AtomicU32,
     pub callback_tick_0: AtomicU32,
     pub callback_tick_1: AtomicU32,
@@ -114,19 +121,36 @@ impl TimerCaseState {
         }
     }
 
+    /// Record one callback firing.
+    ///
+    /// All per-callback data is stored with Relaxed ordering; the
+    /// callback_count publish-store with Release happens LAST so the
+    /// controller never observes a new count before the tick/HWM data
+    /// backing it is visible.
+    ///
+    /// Timer worker serialises callbacks for a single timer, so no
+    /// `fetch_add` is needed for mutual exclusion — a simple load +
+    /// store is sufficient and avoids a spurious AcqRel barrier that
+    /// would not actually protect the data it's meant to guard.
     pub fn record(&self) {
         if FreeRtosTask::current().is_some() {
-            self.callback_task_current_some.store(1, Ordering::Release);
+            self.callback_task_current_some.store(1, Ordering::Relaxed);
         }
+
         let raw = sys::tick_snapshot().tick_count as u32;
-        let idx = self.callback_count.fetch_add(1, Ordering::AcqRel);
+        let idx = self.callback_count.load(Ordering::Relaxed);
+
         match idx {
-            0 => self.callback_tick_0.store(raw, Ordering::Release),
-            1 => self.callback_tick_1.store(raw, Ordering::Release),
-            2 => self.callback_tick_2.store(raw, Ordering::Release),
+            0 => self.callback_tick_0.store(raw, Ordering::Relaxed),
+            1 => self.callback_tick_1.store(raw, Ordering::Relaxed),
+            2 => self.callback_tick_2.store(raw, Ordering::Relaxed),
             _ => {}
         }
-        self.callback_hwm.store(task_stack_hwm(), Ordering::Release);
+
+        self.callback_hwm.store(task_stack_hwm(), Ordering::Relaxed);
+
+        // Publish: all data above is now visible to any Acquire reader.
+        self.callback_count.store(idx + 1, Ordering::Release);
     }
 }
 
@@ -156,6 +180,7 @@ fn wait_for_callback_count(state: &TimerCaseState, target: u32, deadline_ticks: 
 }
 
 fn assert_worker_identity(state: &TimerCaseState) -> TestResult {
+    // Acquire pairs with the Release store in record().
     if state.callback_task_current_some.load(Ordering::Acquire) != 0 {
         return Err(TimerContractError::WorkerTaskCurrentNotNone);
     }
@@ -403,10 +428,13 @@ fn case_timer_builder_core(_caps: &sys::Capabilities, _state: &Arc<TimerCaseStat
 fn case_timer_one_shot(caps: &sys::Capabilities, state: &Arc<TimerCaseState>) -> TestResult {
     let period = Duration::from_millis(5);
     let cb = make_record_callback(state);
-    let start_tick = sys::tick_snapshot();
 
     let t = FreeRtosTimer::new("test-os1", period, TimerMode::OneShot, cb)
         .map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+
+    // Capture start_tick AFTER new() so constructor overhead doesn't
+    // falsely widen the measured window.
+    let start_tick = sys::tick_snapshot();
     t.start().map_err(|_| TimerContractError::TimerCallbackNotFired)?;
 
     wait_for_callback_count(state, 1, 100)?;
@@ -438,6 +466,8 @@ fn case_timer_periodic(caps: &sys::Capabilities, state: &Arc<TimerCaseState>) ->
 
     let t = FreeRtosTimer::new("test-per1", period, TimerMode::Periodic, cb)
         .map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+
+    let start_tick = sys::tick_snapshot();
     t.start().map_err(|_| TimerContractError::TimerCallbackNotFired)?;
 
     wait_for_callback_count(state, 3, 200)?;
@@ -450,6 +480,14 @@ fn case_timer_periodic(caps: &sys::Capabilities, state: &Arc<TimerCaseState>) ->
     let t0 = state.callback_tick_0.load(Ordering::Acquire);
     let t1 = state.callback_tick_1.load(Ordering::Acquire);
     let t2 = state.callback_tick_2.load(Ordering::Acquire);
+
+    // First callback must not fire before the period boundary.
+    let d0 = harness::total_ticks_diff(raw_tick_snap(t0), start_tick, caps.tick_bits);
+    if d0 < 4 {
+        return Err(TimerContractError::TimerPeriodicFirstCallbackTooEarly);
+    }
+
+    // Subsequent callbacks must be monotonic (not the same tick).
     let d01 = harness::total_ticks_diff(raw_tick_snap(t1), raw_tick_snap(t0), caps.tick_bits);
     let d12 = harness::total_ticks_diff(raw_tick_snap(t2), raw_tick_snap(t1), caps.tick_bits);
     if d01 == 0 || d12 == 0 {
@@ -465,7 +503,7 @@ fn case_timer_periodic(caps: &sys::Capabilities, state: &Arc<TimerCaseState>) ->
 // case_timer_start_reset
 // ==================================================================
 fn case_timer_start_reset(caps: &sys::Capabilities, state: &Arc<TimerCaseState>) -> TestResult {
-    // Sub-case A: reset on stopped timer starts it.
+    // ---- Sub-case A: reset on stopped timer starts it. ----
     let cb_a = make_record_callback(state);
     let t_a = FreeRtosTimer::new(
         "test-rstA", Duration::from_millis(5), TimerMode::OneShot, cb_a,
@@ -483,14 +521,13 @@ fn case_timer_start_reset(caps: &sys::Capabilities, state: &Arc<TimerCaseState>)
     t_a.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
     drop(t_a);
 
-    // Sub-case B: reset on running timer discards old deadline.
+    // ---- Sub-case B: reset on running timer discards old deadline. ----
     let state_b = Arc::new(TimerCaseState::new());
     let cb_b = make_record_callback(&state_b);
     let t_b = FreeRtosTimer::new(
         "test-rstB", Duration::from_millis(10), TimerMode::OneShot, cb_b,
     ).map_err(|_| TimerContractError::TimerResetOnRunningEarlyCallback)?;
 
-    let _start_b = sys::tick_snapshot();
     t_b.start().map_err(|_| TimerContractError::TimerResetOnRunningEarlyCallback)?;
     sys::delay_ticks(2);
     let reset_tick = sys::tick_snapshot();
@@ -506,6 +543,31 @@ fn case_timer_start_reset(caps: &sys::Capabilities, state: &Arc<TimerCaseState>)
     assert_worker_identity(&state_b)?;
     t_b.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
     drop(t_b);
+
+    // ---- Sub-case C: start on already-running timer acts as reset. ----
+    // Behavior contract: start() on running timer ≡ reset().
+    let state_c = Arc::new(TimerCaseState::new());
+    let cb_c = make_record_callback(&state_c);
+    let t_c = FreeRtosTimer::new(
+        "test-rstC", Duration::from_millis(10), TimerMode::OneShot, cb_c,
+    ).map_err(|_| TimerContractError::TimerStartOnRunningNotReset)?;
+
+    t_c.start().map_err(|_| TimerContractError::TimerStartOnRunningNotReset)?;
+    sys::delay_ticks(2);
+    let second_start_tick = sys::tick_snapshot();
+    t_c.start().map_err(|_| TimerContractError::TimerStartOnRunningNotReset)?;
+
+    wait_for_callback_count(&state_c, 1, 100)?;
+    let cb_c_raw = state_c.callback_tick_0.load(Ordering::Acquire);
+    let elapsed_c = harness::total_ticks_diff(raw_tick_snap(cb_c_raw), second_start_tick, caps.tick_bits);
+    if elapsed_c < 10 {
+        return Err(TimerContractError::TimerStartOnRunningNotReset);
+    }
+
+    assert_worker_identity(&state_c)?;
+    t_c.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+    drop(t_c);
+
     Ok(())
 }
 
@@ -543,6 +605,13 @@ fn case_timer_change_period_stopped(
         "test-cps", Duration::from_millis(50), TimerMode::OneShot, cb,
     ).map_err(|_| TimerContractError::TimerChangePeriodEarlyCallback)?;
 
+    // --- change_period(ZERO) must be rejected ---
+    match t.change_period(Duration::ZERO) {
+        Err(Error::InvalidParameter) => {}
+        _ => return Err(TimerContractError::TimerChangePeriodZeroNotRejected),
+    }
+
+    // --- change_period on stopped timer updates period but does NOT start it ---
     let diag_before = read_internal_diag();
     t.change_period(Duration::from_millis(5))
         .map_err(|_| TimerContractError::TimerChangePeriodEarlyCallback)?;
@@ -550,6 +619,13 @@ fn case_timer_change_period_stopped(
         return Err(TimerContractError::TimerBuilderCreatedWorker);
     }
 
+    // Prove the timer is still stopped: wait well past the new period.
+    sys::delay_ticks(7);
+    if state.callback_count.load(Ordering::Acquire) != 0 {
+        return Err(TimerContractError::TimerChangePeriodOnStoppedFiredEarly);
+    }
+
+    // Now start — the new period must take effect.
     let start_tick = sys::tick_snapshot();
     t.start().map_err(|_| TimerContractError::TimerChangePeriodEarlyCallback)?;
     wait_for_callback_count(state, 1, 50)?;
@@ -572,32 +648,56 @@ fn case_timer_change_period_stopped(
 fn case_timer_change_period_running(
     caps: &sys::Capabilities, state: &Arc<TimerCaseState>,
 ) -> TestResult {
+    // Wide gap: old=40, new=5.  If the implementation keeps using 40,
+    // the second callback will arrive far too late to pass the bounded
+    // wait below.
+    let old_period = Duration::from_millis(40);
+    let new_period = Duration::from_millis(5);
+
     let cb = make_record_callback(state);
     let t = FreeRtosTimer::new(
-        "test-cpr", Duration::from_millis(10), TimerMode::Periodic, cb,
+        "test-cpr", old_period, TimerMode::Periodic, cb,
     ).map_err(|_| TimerContractError::TimerChangePeriodFirstDeadlineWrong)?;
 
     let start_tick = sys::tick_snapshot();
     t.start().map_err(|_| TimerContractError::TimerChangePeriodFirstDeadlineWrong)?;
     sys::delay_ticks(2);
-    t.change_period(Duration::from_millis(4))
+    t.change_period(new_period)
         .map_err(|_| TimerContractError::TimerChangePeriodFirstDeadlineWrong)?;
 
-    wait_for_callback_count(state, 2, 80)?;
-    t.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
-
+    // First callback: must respect the original (old) deadline.
+    wait_for_callback_count(state, 1, 80)?;
     let t0 = state.callback_tick_0.load(Ordering::Acquire);
-    let t1 = state.callback_tick_1.load(Ordering::Acquire);
-
     let elapsed_0 = harness::total_ticks_diff(raw_tick_snap(t0), start_tick, caps.tick_bits);
-    if elapsed_0 < 10 {
+    if elapsed_0 < 40 {
         return Err(TimerContractError::TimerChangePeriodFirstDeadlineWrong);
     }
+
+    // Second callback: must arrive within a bounded window around the
+    // NEW period.  Large margin accounts for scheduler latency, but
+    // still tight enough that stuck-on-old-period=40 would always fail.
+    let second_deadline = 20u32;
+    let wait_start = sys::tick_snapshot();
+    loop {
+        if state.callback_count.load(Ordering::Acquire) >= 2 {
+            break;
+        }
+        let waited = harness::total_ticks_diff(sys::tick_snapshot(), wait_start, caps.tick_bits);
+        if waited >= second_deadline as u128 {
+            return Err(TimerContractError::TimerChangePeriodNewPeriodNotEffective);
+        }
+        if sys::delay_ticks(1) != sys::DelayStatus::Ok {
+            return Err(TimerContractError::TimerChangePeriodNewPeriodNotEffective);
+        }
+    }
+
+    let t1 = state.callback_tick_1.load(Ordering::Acquire);
     let elapsed_between = harness::total_ticks_diff(raw_tick_snap(t1), raw_tick_snap(t0), caps.tick_bits);
-    if elapsed_between < 4 {
+    if elapsed_between < 5 {
         return Err(TimerContractError::TimerChangePeriodEarlyCallback);
     }
 
+    t.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
     assert_worker_identity(state)?;
     drop(t);
     Ok(())
@@ -610,12 +710,21 @@ fn case_timer_periodic_coalescing(
     _caps: &sys::Capabilities, state: &Arc<TimerCaseState>,
 ) -> TestResult {
     let period_ticks: u32 = 5;
-    let block_ticks = period_ticks * 3 + 1;
+    // Block long enough to miss 3 period boundaries (5/10/15).
+    let block_ticks = period_ticks * 3 + 1; // 16
 
+    // Only the FIRST callback blocks.  This lets any catch-up burst
+    // propagate without artificial throttling — if the implementation
+    // fires a callback for every missed period, we'll see count ≫ 2.
+    let entered = Arc::new(AtomicU32::new(0));
     let s = Arc::clone(state);
+    let e = Arc::clone(&entered);
     let cb: TimerCallback = Box::new(move || {
+        let index = e.fetch_add(1, Ordering::AcqRel);
         s.record();
-        sys::delay_ticks(block_ticks as u64);
+        if index == 0 {
+            sys::delay_ticks(block_ticks as u64);
+        }
     });
 
     let t = FreeRtosTimer::new(
@@ -624,17 +733,23 @@ fn case_timer_periodic_coalescing(
     ).map_err(|_| TimerContractError::TimerCoalescingBurstDetected)?;
     t.start().map_err(|_| TimerContractError::TimerCoalescingBurstDetected)?;
 
-    sys::delay_ticks(block_ticks as u64 + period_ticks as u64 * 2 + 10);
+    // Wait for exactly 2 callbacks: the blocked first one, then the
+    // single coalesced callback covering all missed periods.
+    // Stop immediately so the next periodic boundary (if any) can't
+    // add a third callback before the controller inspects count.
+    wait_for_callback_count(state, 2, 80)?;
     t.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
 
+    // Coalescing: exactly 2 callbacks.  Catch-up bug: 4+.
     let count = state.callback_count.load(Ordering::Acquire);
-    if count >= 4 {
+    if count > 2 {
         return Err(TimerContractError::TimerCoalescingBurstDetected);
     }
-    if count < 1 {
+    if count < 2 {
         return Err(TimerContractError::TimerCallbackNotFired);
     }
 
+    t.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
     assert_worker_identity(state)?;
     drop(t);
     Ok(())

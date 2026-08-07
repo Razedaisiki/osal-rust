@@ -262,7 +262,7 @@ def verify(log_path: str, profile: str | None = None) -> int:
     if profile is None:
         profile = detect_profile(text)
     if profile is None or profile not in PROFILES:
-        print("FAIL: cannot determine profile (use --profile aggregate|queue-blocking)")
+        print("FAIL: cannot determine profile (use --profile aggregate|queue-blocking|task|timer)")
         return 1
 
     profile_def = PROFILES[profile]
