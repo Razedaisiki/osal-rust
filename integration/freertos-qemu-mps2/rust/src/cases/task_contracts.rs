@@ -1231,24 +1231,33 @@ fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
         .spawn(move || {
             let _probe = TaskExitProbe::new(Arc::clone(&jc0.stack_hwm));
             jc0.started.store(true, Ordering::Release);
-            let r = tgt0.join(Timeout::Forever);
-            jc0.join_ok.store(if r.is_ok() { 1 } else { 0 }, Ordering::Release);
+            let ok = matches!(
+                tgt0.join(Timeout::Forever),
+                Ok(code) if code == ExitCode::SUCCESS
+            );
+            jc0.join_ok.store(if ok { 1 } else { 0 }, Ordering::Release);
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
     let j1 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("joiner_1")
         .spawn(move || {
             let _probe = TaskExitProbe::new(Arc::clone(&jc1.stack_hwm));
             jc1.started.store(true, Ordering::Release);
-            let r = tgt1.join(Timeout::Forever);
-            jc1.join_ok.store(if r.is_ok() { 1 } else { 0 }, Ordering::Release);
+            let ok = matches!(
+                tgt1.join(Timeout::Forever),
+                Ok(code) if code == ExitCode::SUCCESS
+            );
+            jc1.join_ok.store(if ok { 1 } else { 0 }, Ordering::Release);
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
     let j2 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("joiner_2")
         .spawn(move || {
             let _probe = TaskExitProbe::new(Arc::clone(&jc2.stack_hwm));
             jc2.started.store(true, Ordering::Release);
-            let r = tgt2.join(Timeout::Forever);
-            jc2.join_ok.store(if r.is_ok() { 1 } else { 0 }, Ordering::Release);
+            let ok = matches!(
+                tgt2.join(Timeout::Forever),
+                Ok(code) if code == ExitCode::SUCCESS
+            );
+            jc2.join_ok.store(if ok { 1 } else { 0 }, Ordering::Release);
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
@@ -1258,10 +1267,10 @@ fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
     }
 
     // Prove all 3 joiners are blocked in EventGroup wait:
-    // attempts == 3 (each entered wait), returns == 0 (none woke yet).
+    // exactly 3 wait attempts (one per joiner), 0 returns before release.
     let attempts_delta = diag_join_wait_attempts().wrapping_sub(attempts_before);
     let returns_delta = diag_join_wait_returns().wrapping_sub(returns_before);
-    if attempts_delta < 3 {
+    if attempts_delta != 3 {
         return Err(TaskContractError::JoinWaitDiagnostics);
     }
     if returns_delta != 0 {
@@ -1545,9 +1554,13 @@ fn case_spawn_rollback(tick_bits: u8) -> TestResult {
     // failure from the controller task to return instead of FATAL.
     //
     // DropProbe proves the closure payload is dropped exactly once
-    // when xTaskCreate fails — the captured Arc<AtomicU32> must be
-    // torn down by the builder's rollback path.
+    // when xTaskCreate fails — the probe is created BEFORE heap_before
+    // so the baseline includes the test-only DropProbe state.
     {
+        let drop_counter = Arc::new(AtomicU32::new(0));
+        let probe = DropProbe::new(Arc::clone(&drop_counter));
+
+        // Baseline includes the test-only DropProbe allocations.
         let heap_before = sys::heap_free();
         let count_before = FreeRtosTask::count();
         let diag_before = read_diag();
@@ -1556,9 +1569,6 @@ fn case_spawn_rollback(tick_bits: u8) -> TestResult {
         // pre-allocations (~300 bytes) succeed first, then xTaskCreate
         // fails on the stack+TCB allocation.
         let oom_bytes: usize = (heap_before as usize).saturating_add(4096);
-
-        let drop_counter = Arc::new(AtomicU32::new(0));
-        let probe = DropProbe::new(Arc::clone(&drop_counter));
 
         unsafe { osal_test_expect_malloc_failure(); }
 
@@ -1604,6 +1614,8 @@ fn case_spawn_rollback(tick_bits: u8) -> TestResult {
         {
             return Err(TaskContractError::DiagEgCreateDeltaNonZero);
         }
+        // heap_before includes the test-only DropProbe state, so
+        // only production spawn/rollback allocations are compared.
         if sys::heap_free() != heap_before {
             return Err(TaskContractError::HeapNotRecovered);
         }
