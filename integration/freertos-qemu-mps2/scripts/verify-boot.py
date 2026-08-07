@@ -198,6 +198,39 @@ PROFILES = {
             "heap_recovered=true",
         ],
     },
+    "timer": {
+        # Commit 1 — only 2 probe cases; remaining 18 added in Commits 2-6.
+        "cases": [
+            "harness_native_task",
+            "timer_worker_lazy_identity",
+        ],
+        "fields": [
+            "profile=timer",
+            "timer=true",
+            "timer_builder=true",
+            "timer_worker=true",
+            "timer_identity=true",
+            # Remaining fields added as cases land:
+            # "timer_one_shot=true",
+            # "timer_periodic=true",
+            # "timer_control=true",
+            # "timer_change_period=true",
+            # "timer_coalescing=true",
+            # "timer_order=true",
+            # "timer_reentry=true",
+            # "timer_callback_unlock=true",
+            # "timer_drop=true",
+            # "timer_scheduler=true",
+            # "timer_shutdown=true",
+            # "timer_self_shutdown=true",
+            # "timer_lease=true",
+            # "timer_self_delete=true",
+            # "timer_stack_margin=true",
+            "helper_self_delete=true",
+            "idle_cleanup=true",
+            "heap_recovered=true",
+        ],
+    },
 }
 
 
@@ -209,6 +242,8 @@ def detect_profile(text: str) -> str | None:
                 return "queue-blocking"
             if "profile=task" in line:
                 return "task"
+            if "profile=timer" in line:
+                return "timer"
             # If no profile marker, default to aggregate.
             return "aggregate"
     return None
@@ -520,7 +555,7 @@ if __name__ == "__main__":
             break
 
     if len(args) != 1:
-        print(f"Usage: {sys.argv[0]} <qemu.log> [--profile aggregate|queue-blocking|task]",
+        print(f"Usage: {sys.argv[0]} <qemu.log> [--profile aggregate|queue-blocking|task|timer]",
               file=sys.stderr)
         sys.exit(1)
 

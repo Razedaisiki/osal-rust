@@ -497,6 +497,10 @@ osal_freertos_task_handle_t osal_freertos_internal_task_create(
         return NULL;
     }
 
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+    osal_test_observe_internal_task_create_attempt(name, stack_depth_words, priority);
+#endif
+
     result = xTaskCreate(
         (TaskFunction_t)entry,
         name,
@@ -504,6 +508,10 @@ osal_freertos_task_handle_t osal_freertos_internal_task_create(
         parameter,
         (UBaseType_t)priority,
         &native_handle);
+
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+    osal_test_observe_internal_task_create_result(result == pdPASS, native_handle);
+#endif
 
     if (result != pdPASS) {
         return NULL;

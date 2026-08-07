@@ -241,6 +241,11 @@ void osal_test_observe_event_group_create(void);
 void osal_test_observe_event_group_delete(void);
 void osal_test_observe_join_wait_attempt(void);
 void osal_test_observe_join_wait_return(void);
+void osal_test_observe_internal_task_create_attempt(const char *name,
+                                                     uint32_t stack_words,
+                                                     uint32_t priority);
+void osal_test_observe_internal_task_create_result(int success,
+                                                    void *handle);
 
 #endif // OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
 

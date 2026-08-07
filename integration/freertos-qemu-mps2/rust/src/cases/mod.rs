@@ -20,3 +20,6 @@ pub mod queue_blocking;
 
 #[cfg(feature = "suite-task")]
 pub mod task_contracts;
+
+#[cfg(feature = "suite-timer")]
+pub mod timer_contracts;

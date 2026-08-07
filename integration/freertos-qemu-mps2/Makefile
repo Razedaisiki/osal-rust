@@ -119,6 +119,9 @@ CARGO_FEATURES ?= default
 ifeq ($(CARGO_FEATURES),suite-task)
 PROJECT_CFLAGS += -DOSAL_FREERTOS_INTEGRATION_DIAGNOSTICS=1
 endif
+ifeq ($(CARGO_FEATURES),suite-timer)
+PROJECT_CFLAGS += -DOSAL_FREERTOS_INTEGRATION_DIAGNOSTICS=1
+endif
 
 # Pass the ARM cross-compiler and FreeRTOS include paths so the
 # -sys crate build.rs compiles the C shim with arm-none-eabi-gcc.
@@ -131,8 +134,14 @@ RUST_BASE_CFLAGS = -mthumb -mcpu=cortex-m3 -ffreestanding -ffunction-sections -f
 # Task profile: enable integration diagnostics observers in the sys shim.
 ifeq ($(CARGO_FEATURES),suite-task)
 RUST_BUILD_ENV += CFLAGS_thumbv7m_none_eabi="$(RUST_BASE_CFLAGS) -DOSAL_FREERTOS_INTEGRATION_DIAGNOSTICS=1"
-else
+endif
+ifeq ($(CARGO_FEATURES),suite-timer)
+RUST_BUILD_ENV += CFLAGS_thumbv7m_none_eabi="$(RUST_BASE_CFLAGS) -DOSAL_FREERTOS_INTEGRATION_DIAGNOSTICS=1"
+endif
+ifneq ($(CARGO_FEATURES),suite-task)
+ifneq ($(CARGO_FEATURES),suite-timer)
 RUST_BUILD_ENV += CFLAGS_thumbv7m_none_eabi="$(RUST_BASE_CFLAGS)"
+endif
 endif
 RUST_BUILD_ENV += OSAL_FREERTOS_KERNEL_INCLUDE=$(abspath $(KERNEL)/include)
 RUST_BUILD_ENV += OSAL_FREERTOS_CONFIG_INCLUDE=$(abspath config)
@@ -233,6 +242,15 @@ check-symbols:
 	done
 	@if [ "$${CARGO_FEATURES:-}" = "suite-task" ]; then \
 	    for sym in non_osal_context_helper osal_test_record_non_osal_identity; do \
+	        if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
+	            echo "  OK   $$sym"; \
+	        else \
+	            echo "  MISS $$sym"; exit 1; \
+	        fi; \
+	    done; \
+	fi
+	@if [ "$${CARGO_FEATURES:-}" = "suite-timer" ]; then \
+	    for sym in osal_test_diag_internal_task_create_attempts osal_test_diag_internal_task_create_successes osal_test_diag_last_internal_stack_words osal_test_diag_last_internal_priority osal_test_diag_last_internal_handle; do \
 	        if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
 	            echo "  OK   $$sym"; \
 	        else \

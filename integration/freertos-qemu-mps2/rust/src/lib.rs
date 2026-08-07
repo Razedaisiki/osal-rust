@@ -11,7 +11,10 @@
 #[cfg(any(
     all(feature = "suite-aggregate", feature = "suite-queue-blocking"),
     all(feature = "suite-aggregate", feature = "suite-task"),
+    all(feature = "suite-aggregate", feature = "suite-timer"),
     all(feature = "suite-queue-blocking", feature = "suite-task"),
+    all(feature = "suite-queue-blocking", feature = "suite-timer"),
+    all(feature = "suite-task", feature = "suite-timer"),
 ))]
 compile_error!("exactly one integration suite feature must be selected; multiple features are mutually exclusive");
 
@@ -19,8 +22,9 @@ compile_error!("exactly one integration suite feature must be selected; multiple
     feature = "suite-aggregate",
     feature = "suite-queue-blocking",
     feature = "suite-task",
+    feature = "suite-timer",
 )))]
-compile_error!("at least one integration suite feature must be selected; use --features suite-aggregate, suite-queue-blocking, or suite-task");
+compile_error!("at least one integration suite feature must be selected; use --features suite-aggregate, suite-queue-blocking, suite-task, or suite-timer");
 
 extern crate alloc;
 

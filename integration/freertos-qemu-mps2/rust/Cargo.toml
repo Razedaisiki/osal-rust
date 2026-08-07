@@ -20,6 +20,7 @@ default = ["suite-aggregate"]
 suite-aggregate = []
 suite-queue-blocking = []
 suite-task = []
+suite-timer = []
 
 [profile.dev]
 panic = "abort"
