@@ -95,8 +95,8 @@ pub enum TaskContractError {
     PriorityMappingWrong = 511,
     StackMappingWrong = 512,
     NameTruncationWrong = 513,
-    #[allow(dead_code)] RuntimeNotRunning = 514,
-    #[allow(dead_code)] StackHwmTooSmall = 515,
+    RuntimeNotRunning = 514,
+    StackHwmTooSmall = 515,
     CachedResultMismatch = 516,
 }
 
@@ -109,7 +109,6 @@ struct TaskCaseState {
     entry_count: AtomicU32,
     current_handle: AtomicUsize,
     native_priority: AtomicU32,
-    #[allow(dead_code)]
     stack_hwm: AtomicU32,
 }
 
@@ -133,19 +132,20 @@ impl TaskCaseState {
 /// Tick-bounded wait for a predicate.  Returns `Ok(())` when the
 /// predicate returns `true`, or `Err(())` on timeout.
 ///
-/// `deadline_ticks` is the maximum number of ticks to wait before
-/// giving up.  Each iteration consumes at least 1 tick via `delay_ticks`.
+/// Checks the predicate before the first tick and after every tick,
+/// including the final deadline tick.
 fn wait_until(
     mut predicate: impl FnMut() -> bool,
     deadline_ticks: u32,
 ) -> Result<(), ()> {
-    let mut remaining = deadline_ticks;
-    while remaining > 0 {
+    if predicate() {
+        return Ok(());
+    }
+    for _ in 0..deadline_ticks {
+        let _ = sys::delay_ticks(1);
         if predicate() {
             return Ok(());
         }
-        let _ = sys::delay_ticks(1);
-        remaining = remaining.saturating_sub(1);
     }
     Err(())
 }
@@ -163,36 +163,44 @@ fn wait_gate(state: &TaskCaseState) {
 // ------------------------------------------------------------------
 // GateReleaseGuard — RAII gate release for error-path cleanup.
 //
-// When a case spawns gated tasks and may return Err before releasing
-// the gate, this guard ensures the gate is released on drop so the
-// spawned tasks don't spin forever.
+// Owns Arc clones of the gated TaskCaseStates so it can release gates
+// on Drop without borrowing the caller's Arcs.  Must be created BEFORE
+// the first gated spawn so partial-spawn failures are also covered.
+//
+// Normal path: call `release(self)` to consume the guard and drop the
+// owned Arc clones before heap checks.
 // ------------------------------------------------------------------
-struct GateReleaseGuard<'a> {
-    states: &'a [&'a TaskCaseState],
-    released: bool,
+struct GateReleaseGuard<const N: usize> {
+    states: [Arc<TaskCaseState>; N],
+    armed: bool,
 }
 
-impl<'a> GateReleaseGuard<'a> {
-    fn new(states: &'a [&'a TaskCaseState]) -> Self {
-        Self { states, released: false }
+impl<const N: usize> GateReleaseGuard<N> {
+    fn new(states: [Arc<TaskCaseState>; N]) -> Self {
+        Self {
+            states,
+            armed: true,
+        }
     }
 
-    /// Release all gates and mark the guard as consumed so the
-    /// Drop impl becomes a no-op.
-    fn release(mut self) {
-        self.released = true;
-        for s in self.states {
+    fn release_all(&self) {
+        for s in &self.states {
             s.release_gate.store(true, Ordering::Release);
         }
     }
+
+    /// Release all gates and consume the guard so its Arc clones
+    /// are dropped before subsequent heap checks.
+    fn release(mut self) {
+        self.release_all();
+        self.armed = false;
+    }
 }
 
-impl Drop for GateReleaseGuard<'_> {
+impl<const N: usize> Drop for GateReleaseGuard<N> {
     fn drop(&mut self) {
-        if !self.released {
-            for s in self.states {
-                s.release_gate.store(true, Ordering::Release);
-            }
+        if self.armed {
+            self.release_all();
         }
     }
 }
@@ -223,7 +231,6 @@ fn wait_count(target: usize) -> Result<(), ()> {
     )
 }
 
-#[allow(dead_code)]
 const HWM_MIN_WORDS: u32 = 64;
 const HEAP_RECOVERY_TICKS: u32 = 500;
 /// Test task stack size — small enough to minimize heap pressure but
@@ -542,6 +549,14 @@ fn case_handle_unique(tick_bits: u8) -> TestResult {
 
     let sub_baseline = sys::heap_free();
 
+    // GateReleaseGuard created BEFORE spawns so partial-spawn failures
+    // also release gates for already-spawned tasks.
+    let gate_guard = GateReleaseGuard::new([
+        Arc::clone(&s1),
+        Arc::clone(&s2),
+        Arc::clone(&s3),
+    ]);
+
     let t1 = FreeRtosTaskBuilder::new().name("unique_a").stack_size(2048).spawn(move || {
         c1.started.store(true, Ordering::Release);
         c1.current_handle.store(
@@ -563,10 +578,6 @@ fn case_handle_unique(tick_bits: u8) -> TestResult {
         wait_gate(&c3);
     }).map_err(|_| TaskContractError::SpawnFailed)?;
 
-    // GateReleaseGuard: if we return Err before releasing gates,
-    // the guard releases them so tasks don't spin forever.
-    let _gate_guard = GateReleaseGuard::new(&[&s1, &s2, &s3]);
-
     // Wait for all to start (bounded).
     if wait_all_started(&[&s1, &s2, &s3]).is_err() {
         return Err(TaskContractError::HandleInvalid);
@@ -582,8 +593,9 @@ fn case_handle_unique(tick_bits: u8) -> TestResult {
         return Err(TaskContractError::CurrentIdentityMismatch);
     }
 
-    // Explicit release — consumes the guard so Drop is a no-op.
-    _gate_guard.release();
+    // Explicit release — consumes the guard so Drop is a no-op
+    // and owned Arc clones are dropped before heap checks.
+    gate_guard.release();
 
     t1.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
     t2.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
@@ -793,6 +805,14 @@ fn case_live_count(tick_bits: u8) -> TestResult {
 
     let sub_baseline = sys::heap_free();
 
+    // GateReleaseGuard created BEFORE spawns so partial-spawn failures
+    // also release gates for already-spawned tasks.
+    let gate_guard = GateReleaseGuard::new([
+        Arc::clone(&s1),
+        Arc::clone(&s2),
+        Arc::clone(&s3),
+    ]);
+
     let t1 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("count_a").spawn(move || {
         c1.started.store(true, Ordering::Release);
         wait_gate(&c1);
@@ -808,10 +828,6 @@ fn case_live_count(tick_bits: u8) -> TestResult {
         wait_gate(&c3);
     }).map_err(|_| TaskContractError::SpawnFailed)?;
 
-    // GateReleaseGuard: if we return Err before releasing gates,
-    // the guard releases them so tasks don't spin forever.
-    let _gate_guard = GateReleaseGuard::new(&[&s1, &s2, &s3]);
-
     // Wait for trampolines to run so LIVE_COUNT is incremented.
     if wait_all_started(&[&s1, &s2, &s3]).is_err() {
         return Err(TaskContractError::LiveCountMismatch);
@@ -821,6 +837,8 @@ fn case_live_count(tick_bits: u8) -> TestResult {
         return Err(TaskContractError::LiveCountMismatch);
     }
 
+    // Staged release: free one task, verify count drops to baseline+2,
+    // then free the remaining two.
     s1.release_gate.store(true, Ordering::Release);
     t1.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
     if FreeRtosTask::count() != count_baseline + 2 {
@@ -835,6 +853,10 @@ fn case_live_count(tick_bits: u8) -> TestResult {
     if FreeRtosTask::count() != count_baseline {
         return Err(TaskContractError::LiveCountMismatch);
     }
+
+    // All gates already released; consume guard so its Arc clones
+    // are dropped before heap checks.
+    gate_guard.release();
 
     drop(t1); drop(t2); drop(t3);
     // Check sub_baseline while Arcs are still alive.
@@ -859,14 +881,14 @@ fn case_join_nowait_zero(tick_bits: u8) -> TestResult {
     let s = Arc::clone(&state);
     let sub_baseline = sys::heap_free();
 
+    let gate_guard = GateReleaseGuard::new([Arc::clone(&state)]);
+
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("nowait_z")
         .spawn(move || {
             s.started.store(true, Ordering::Release);
             wait_gate(&s);
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
-
-    let _gate_guard = GateReleaseGuard::new(&[&state]);
 
     // Wait for task to actually start (bounded).
     if wait_started(&state).is_err() {
@@ -883,7 +905,7 @@ fn case_join_nowait_zero(tick_bits: u8) -> TestResult {
     }
 
     // Release and join.
-    _gate_guard.release();
+    gate_guard.release();
     let r = t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
     if r != ExitCode::SUCCESS { return Err(TaskContractError::CachedResultMismatch); }
 
@@ -905,6 +927,8 @@ fn case_join_finite_timeout(tick_bits: u8) -> TestResult {
     let s = Arc::clone(&state);
     let sub_baseline = sys::heap_free();
 
+    let gate_guard = GateReleaseGuard::new([Arc::clone(&state)]);
+
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("fin_timeout")
         .spawn(move || {
             s.started.store(true, Ordering::Release);
@@ -912,8 +936,6 @@ fn case_join_finite_timeout(tick_bits: u8) -> TestResult {
             s.entry_count.fetch_add(1, Ordering::Release);
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
-
-    let _gate_guard = GateReleaseGuard::new(&[&state]);
 
     if wait_started(&state).is_err() {
         return Err(TaskContractError::CachedResultMismatch);
@@ -938,7 +960,7 @@ fn case_join_finite_timeout(tick_bits: u8) -> TestResult {
     }
 
     // Release and join — must succeed.
-    _gate_guard.release();
+    gate_guard.release();
     let r = t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
     if r != ExitCode::SUCCESS { return Err(TaskContractError::CachedResultMismatch); }
     if state.entry_count.load(Ordering::Acquire) != 1 {
@@ -1055,6 +1077,10 @@ fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
     let target_state = Arc::new(TaskCaseState::new());
     let tc = Arc::clone(&target_state);
 
+    // GateReleaseGuard for target — created BEFORE target spawn and
+    // before joiner spawns so partial failures release the gate.
+    let gate_guard = GateReleaseGuard::new([Arc::clone(&target_state)]);
+
     let target = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("cj_target")
         .spawn(move || {
             tc.started.store(true, Ordering::Release);
@@ -1101,17 +1127,13 @@ fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
-    // GateReleaseGuard: if we return Err before releasing the target
-    // gate, the guard releases it so the target task doesn't spin forever.
-    let _gate_guard = GateReleaseGuard::new(&[&target_state]);
-
     // Wait for all 3 joiners to have started (blocked on EventGroup).
     if wait_all_started(&[&js0, &js1, &js2]).is_err() {
         return Err(TaskContractError::CachedResultMismatch);
     }
 
     // Release target — all 3 joiners wake.
-    _gate_guard.release();
+    gate_guard.release();
 
     // All joiners must return SUCCESS.
     j0.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
@@ -1187,11 +1209,11 @@ fn case_scheduler_suspended(tick_bits: u8) -> TestResult {
     let s = Arc::clone(&state);
     let sub_baseline = sys::heap_free();
 
+    let gate_guard = GateReleaseGuard::new([Arc::clone(&state)]);
+
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("sched_susp")
         .spawn(move || { s.started.store(true, Ordering::Release); wait_gate(&s); })
         .map_err(|_| TaskContractError::SpawnFailed)?;
-
-    let _gate_guard = GateReleaseGuard::new(&[&state]);
 
     if wait_started(&state).is_err() {
         return Err(TaskContractError::CachedResultMismatch);
@@ -1220,7 +1242,7 @@ fn case_scheduler_suspended(tick_bits: u8) -> TestResult {
 
     drop(_guard); // resume scheduler
 
-    _gate_guard.release();
+    gate_guard.release();
     t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
 
     drop(t);
@@ -1234,17 +1256,18 @@ fn case_scheduler_suspended(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 16: Drop handle without join — task still completes independently.
+/// Case 16: Drop handle without join — task completes independently.
 ///
 /// After the lone handle is dropped, the task must finish via self-delete
 /// and the Idle task must reclaim native resources.  The suite's final
 /// shutdown serves as the proof that no RuntimeLease lingers.
-/// Case 16: Drop handle without join — task completes independently.
 /// Shutdown must be Busy while task runs, succeed after cleanup.
 fn case_drop_without_join(tick_bits: u8) -> TestResult {
     let state = Arc::new(TaskCaseState::new());
     let s = Arc::clone(&state);
     let global_baseline = sys::heap_free();
+
+    let gate_guard = GateReleaseGuard::new([Arc::clone(&state)]);
 
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("drop_nojoin")
         .spawn(move || {
@@ -1254,8 +1277,6 @@ fn case_drop_without_join(tick_bits: u8) -> TestResult {
             s.stack_hwm.store(task_stack_hwm(), Ordering::Release);
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
-
-    let _gate_guard = GateReleaseGuard::new(&[&state]);
 
     if wait_started(&state).is_err() {
         return Err(TaskContractError::CachedResultMismatch);
@@ -1273,7 +1294,7 @@ fn case_drop_without_join(tick_bits: u8) -> TestResult {
     }
 
     // Release gate — task completes, trampoline releases lease, self-deletes.
-    _gate_guard.release();
+    gate_guard.release();
 
     // Bounded wait for live count to drop to 0.
     if wait_count(0).is_err() {
@@ -1528,6 +1549,14 @@ fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
         let c2 = Arc::clone(&s2);
         let sub = sys::heap_free();
 
+        // GateReleaseGuard created BEFORE spawns so partial-spawn
+        // failures also release gates for already-spawned tasks.
+        let gate_guard = GateReleaseGuard::new([
+            Arc::clone(&s0),
+            Arc::clone(&s1),
+            Arc::clone(&s2),
+        ]);
+
         let t0 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("str_w0")
             .spawn(move || {
                 c0.started.store(true, Ordering::Release);
@@ -1553,8 +1582,6 @@ fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
             })
             .map_err(|_| TaskContractError::SpawnFailed)?;
 
-        let _gate_guard = GateReleaseGuard::new(&[&s0, &s1, &s2]);
-
         if wait_all_started(&[&s0, &s1, &s2]).is_err() {
             return Err(TaskContractError::HandleInvalid);
         }
@@ -1571,7 +1598,7 @@ fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
             return Err(TaskContractError::LiveCountMismatch);
         }
 
-        _gate_guard.release();
+        gate_guard.release();
 
         t0.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
         t1.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
