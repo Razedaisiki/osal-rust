@@ -729,7 +729,11 @@ fn case_stack_mapping(tick_bits: u8) -> TestResult {
             return Err(TaskContractError::StackMappingWrong);
         }
         t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+        if hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+            return Err(TaskContractError::StackHwmTooSmall);
+        }
         drop(t);
+        drop(hwm);
         if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
             return Err(TaskContractError::HeapNotRecovered);
         }
@@ -1119,7 +1123,12 @@ fn case_join_forever_cached(tick_bits: u8) -> TestResult {
     t.join(Timeout::After(core::time::Duration::ZERO)).map_err(|_| TaskContractError::CachedResultMismatch)?;
     t.join(Timeout::Forever).map_err(|_| TaskContractError::CachedResultMismatch)?;
 
+    if hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+        return Err(TaskContractError::StackHwmTooSmall);
+    }
+
     drop(t);
+    drop(hwm);
     if harness::wait_until_heap_recovered(global_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
         return Err(TaskContractError::HeapNotRecovered);
     }
@@ -1342,6 +1351,7 @@ fn case_late_join_cached(tick_bits: u8) -> TestResult {
     drop(_guard); // resume scheduler
 
     drop(t);
+    drop(hwm);
     if harness::wait_until_heap_recovered(global_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
         return Err(TaskContractError::HeapNotRecovered);
     }
@@ -1500,6 +1510,7 @@ fn case_finished_handle_lease(tick_bits: u8) -> TestResult {
 
     // Drop handle → RuntimeLease released → EventGroup freed.
     drop(t);
+    drop(hwm);
 
     if harness::wait_until_heap_recovered(global_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
         return Err(TaskContractError::HeapNotRecovered);
