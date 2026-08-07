@@ -374,12 +374,20 @@ uint32_t osal_freertos_event_group_wait_bits(
         return OSAL_FREERTOS_EVENT_GROUP_INVALID;
     }
 
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+    osal_test_observe_join_wait_attempt();
+#endif
+
     result = xEventGroupWaitBits(
         (EventGroupHandle_t)handle,
         (EventBits_t)bits,
         (BaseType_t)clear_on_exit,
         (BaseType_t)wait_for_all,
         (TickType_t)ticks);
+
+#ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
+    osal_test_observe_join_wait_return();
+#endif
 
     // xEventGroupWaitBits returns the EventBits value before the wait
     // (or before clear if clear_on_exit).  We only care whether the

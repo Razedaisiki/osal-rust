@@ -27,6 +27,8 @@ static uint32_t diag_event_group_deletes;
 static uint32_t diag_last_stack_words;
 static uint32_t diag_last_native_priority;
 static uint32_t diag_last_name_len;
+static uint32_t diag_join_wait_attempts;
+static uint32_t diag_join_wait_returns;
 
 void osal_test_observe_task_create_attempt(const char *name,
                                            uint32_t stack_words,
@@ -58,6 +60,16 @@ void osal_test_observe_event_group_create(void)
 void osal_test_observe_event_group_delete(void)
 {
     diag_event_group_deletes++;
+}
+
+void osal_test_observe_join_wait_attempt(void)
+{
+    diag_join_wait_attempts++;
+}
+
+void osal_test_observe_join_wait_return(void)
+{
+    diag_join_wait_returns++;
 }
 
 uint32_t osal_test_diag_task_create_attempts(void)
@@ -95,6 +107,16 @@ uint32_t osal_test_diag_last_name_len(void)
     return diag_last_name_len;
 }
 
+uint32_t osal_test_diag_join_wait_attempts(void)
+{
+    return diag_join_wait_attempts;
+}
+
+uint32_t osal_test_diag_join_wait_returns(void)
+{
+    return diag_join_wait_returns;
+}
+
 void osal_test_diag_reset(void)
 {
     diag_task_create_attempts = 0;
@@ -104,6 +126,8 @@ void osal_test_diag_reset(void)
     diag_last_stack_words = 0;
     diag_last_native_priority = 0;
     diag_last_name_len = 0;
+    diag_join_wait_attempts = 0;
+    diag_join_wait_returns = 0;
 }
 
 #endif /* OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS */

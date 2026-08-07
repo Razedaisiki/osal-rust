@@ -35,6 +35,8 @@ unsafe extern "C" {
     fn osal_test_scheduler_suspend();
     fn osal_test_scheduler_resume();
     fn non_osal_context_helper(context: *mut c_void);
+    fn osal_test_diag_join_wait_attempts() -> u32;
+    fn osal_test_diag_join_wait_returns() -> u32;
 }
 
 fn diag_task_create_attempts() -> u32 { unsafe { osal_test_diag_task_create_attempts() } }
@@ -46,6 +48,8 @@ fn diag_last_native_priority() -> u32 { unsafe { osal_test_diag_last_native_prio
 fn diag_last_name_len() -> u32 { unsafe { osal_test_diag_last_name_len() } }
 fn diag_reset() { unsafe { osal_test_diag_reset() } }
 fn task_stack_hwm() -> u32 { unsafe { osal_test_task_stack_hwm() } }
+fn diag_join_wait_attempts() -> u32 { unsafe { osal_test_diag_join_wait_attempts() } }
+fn diag_join_wait_returns() -> u32 { unsafe { osal_test_diag_join_wait_returns() } }
 
 struct DiagSnapshot {
     task_create_attempts: u32,
@@ -98,6 +102,8 @@ pub enum TaskContractError {
     RuntimeNotRunning = 514,
     StackHwmTooSmall = 515,
     CachedResultMismatch = 516,
+    DropCountWrong = 517,
+    JoinWaitDiagnostics = 518,
 }
 
 // ------------------------------------------------------------------
@@ -109,7 +115,11 @@ struct TaskCaseState {
     entry_count: AtomicU32,
     current_handle: AtomicUsize,
     native_priority: AtomicU32,
-    stack_hwm: AtomicU32,
+    stack_hwm: Arc<AtomicU32>,
+    /// Dedicated join-result flag (replaces native_priority reuse).
+    join_ok: AtomicU32,
+    /// Dedicated self-join-Busy flag (replaces native_priority reuse).
+    self_join_ok: AtomicU32,
 }
 
 impl TaskCaseState {
@@ -120,9 +130,77 @@ impl TaskCaseState {
             entry_count: AtomicU32::new(0),
             current_handle: AtomicUsize::new(0),
             native_priority: AtomicU32::new(0),
-            stack_hwm: AtomicU32::new(0),
+            stack_hwm: Arc::new(AtomicU32::new(0)),
+            join_ok: AtomicU32::new(0),
+            self_join_ok: AtomicU32::new(0),
         }
     }
+}
+
+// ------------------------------------------------------------------
+// TaskExitProbe — records stack HWM on drop (when closure returns).
+//
+// Every successfully spawned OSAL Task closure should create one of
+// these at entry so the HWM is captured even if the closure returns
+// early (e.g. via normal exit or a test assertion failure).
+// ------------------------------------------------------------------
+struct TaskExitProbe {
+    hwm: Arc<AtomicU32>,
+}
+
+impl TaskExitProbe {
+    fn new(hwm: Arc<AtomicU32>) -> Self {
+        Self { hwm }
+    }
+}
+
+impl Drop for TaskExitProbe {
+    fn drop(&mut self) {
+        let hwm = task_stack_hwm();
+        self.hwm.store(hwm, Ordering::Release);
+    }
+}
+
+// ------------------------------------------------------------------
+// DropProbe — counts exact drops for closure-capture teardown proof.
+//
+// Used in the OOM rollback case to prove that the captured closure
+// payload is dropped exactly once when xTaskCreate fails.
+// ------------------------------------------------------------------
+struct DropProbe {
+    counter: Arc<AtomicU32>,
+}
+
+impl DropProbe {
+    fn new(counter: Arc<AtomicU32>) -> Self {
+        Self { counter }
+    }
+}
+
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        self.counter.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// Verify that every TaskCaseState in `states` has HWM >= HWM_MIN_WORDS.
+fn check_all_hwm(states: &[&TaskCaseState]) -> Result<(), TaskContractError> {
+    for s in states {
+        let hwm = s.stack_hwm.load(Ordering::Acquire);
+        if hwm < HWM_MIN_WORDS {
+            return Err(TaskContractError::StackHwmTooSmall);
+        }
+    }
+    Ok(())
+}
+
+/// Verify a single state has HWM >= HWM_MIN_WORDS.
+fn check_hwm(state: &TaskCaseState) -> Result<(), TaskContractError> {
+    let hwm = state.stack_hwm.load(Ordering::Acquire);
+    if hwm < HWM_MIN_WORDS {
+        return Err(TaskContractError::StackHwmTooSmall);
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------------
@@ -318,22 +396,29 @@ pub unsafe extern "C" fn osal_test_record_non_osal_identity() {
 
 type TestResult = core::result::Result<(), TaskContractError>;
 
-/// Spawn a task, join it, drop the handle.  Heap recovery is the
-/// caller's responsibility so the baseline can be captured between
-/// state allocation and spawn.
+/// Spawn a task, join it, drop the handle, and return the stack HWM.
+/// Heap recovery is the caller's responsibility so the baseline can be
+/// captured between state allocation and spawn.
 fn spawn_join_drop(
     name: &str,
-    entry: impl FnOnce() + Send + 'static,
-) -> TestResult {
+    entry: impl FnOnce(Arc<AtomicU32>) + Send + 'static,
+) -> Result<u32, TaskContractError> {
+    let hwm = Arc::new(AtomicU32::new(0));
+    let hwm_for_probe = Arc::clone(&hwm);
+    let hwm_for_entry = Arc::clone(&hwm);
     let t = FreeRtosTaskBuilder::new()
         .stack_size(TEST_STACK_BYTES)
         .name(name)
-        .spawn(entry)
+        .spawn(move || {
+            let _probe = TaskExitProbe::new(hwm_for_probe);
+            entry(hwm_for_entry);
+        })
         .map_err(|_| TaskContractError::SpawnFailed)?;
     t.join(Timeout::Forever)
         .map_err(|_| TaskContractError::JoinFailed)?;
     drop(t);
-    Ok(())
+    let result = hwm.load(Ordering::Acquire);
+    Ok(result)
 }
 
 /// Case 1: Builder parameter validation.
@@ -349,13 +434,13 @@ fn case_builder_core(tick_bits: u8) -> TestResult {
         let t = FreeRtosTaskBuilder::new()
             .name("builder_core")
             .spawn(move || {
+                let _probe = TaskExitProbe::new(Arc::clone(&s.stack_hwm));
                 s.started.store(true, Ordering::Release);
                 s.entry_count.fetch_add(1, Ordering::Release);
                 s.current_handle.store(
                     FreeRtosTask::current().map(|h| h.get()).unwrap_or(0),
                     Ordering::Release,
                 );
-                s.stack_hwm.store(task_stack_hwm(), Ordering::Release);
             })
             .map_err(|_| TaskContractError::SpawnFailed)?;
 
@@ -369,9 +454,7 @@ fn case_builder_core(tick_bits: u8) -> TestResult {
         if handle.is_none() || t.handle() != handle.unwrap() {
             return Err(TaskContractError::HandleInvalid);
         }
-        if state.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
-            return Err(TaskContractError::StackHwmTooSmall);
-        }
+        check_hwm(&state)?;
 
         drop(t);
         if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
@@ -383,7 +466,10 @@ fn case_builder_core(tick_bits: u8) -> TestResult {
     // --- explicit empty name ---
     {
         let sub_baseline = sys::heap_free();
-        spawn_join_drop("", || {})?;
+        let hwm = spawn_join_drop("", |_| {})?;
+        if hwm < HWM_MIN_WORDS {
+            return Err(TaskContractError::StackHwmTooSmall);
+        }
         if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
             return Err(TaskContractError::HeapNotRecovered);
         }
@@ -393,13 +479,10 @@ fn case_builder_core(tick_bits: u8) -> TestResult {
     {
         let name31 = "abcdefghijklmnopqrstuvwxyz01234"; // 31 chars
         let sub_baseline = sys::heap_free();
-        let t = FreeRtosTaskBuilder::new()
-            .name(name31)
-            .spawn(|| {})
-            .map_err(|_| TaskContractError::SpawnFailed)?;
-        t.join(Timeout::Forever)
-            .map_err(|_| TaskContractError::JoinFailed)?;
-        drop(t);
+        let hwm = spawn_join_drop(name31, |_| {})?;
+        if hwm < HWM_MIN_WORDS {
+            return Err(TaskContractError::StackHwmTooSmall);
+        }
         if diag_last_name_len() != 15 {
             return Err(TaskContractError::NameTruncationWrong);
         }
@@ -492,7 +575,10 @@ fn case_entry_once(tick_bits: u8) -> TestResult {
 
     let task = FreeRtosTaskBuilder::new()
         .name("entry_once")
-        .spawn(move || { s.entry_count.fetch_add(1, Ordering::Release); })
+        .spawn(move || {
+            let _probe = TaskExitProbe::new(Arc::clone(&s.stack_hwm));
+            s.entry_count.fetch_add(1, Ordering::Release);
+        })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
     let result = task.join(Timeout::Forever)
@@ -502,6 +588,9 @@ fn case_entry_once(tick_bits: u8) -> TestResult {
     }
     if state.entry_count.load(Ordering::Acquire) != 1 {
         return Err(TaskContractError::EntryCountMismatch);
+    }
+    if state.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+        return Err(TaskContractError::StackHwmTooSmall);
     }
 
     // Repeat joins return cached result.
@@ -558,6 +647,7 @@ fn case_handle_unique(tick_bits: u8) -> TestResult {
     ]);
 
     let t1 = FreeRtosTaskBuilder::new().name("unique_a").stack_size(2048).spawn(move || {
+        let _probe = TaskExitProbe::new(Arc::clone(&c1.stack_hwm));
         c1.started.store(true, Ordering::Release);
         c1.current_handle.store(
             FreeRtosTask::current().map(|h| h.get()).unwrap_or(0), Ordering::Release);
@@ -565,6 +655,7 @@ fn case_handle_unique(tick_bits: u8) -> TestResult {
     }).map_err(|_| TaskContractError::SpawnFailed)?;
 
     let t2 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("unique_b").spawn(move || {
+        let _probe = TaskExitProbe::new(Arc::clone(&c2.stack_hwm));
         c2.started.store(true, Ordering::Release);
         c2.current_handle.store(
             FreeRtosTask::current().map(|h| h.get()).unwrap_or(0), Ordering::Release);
@@ -572,6 +663,7 @@ fn case_handle_unique(tick_bits: u8) -> TestResult {
     }).map_err(|_| TaskContractError::SpawnFailed)?;
 
     let t3 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("unique_c").spawn(move || {
+        let _probe = TaskExitProbe::new(Arc::clone(&c3.stack_hwm));
         c3.started.store(true, Ordering::Release);
         c3.current_handle.store(
             FreeRtosTask::current().map(|h| h.get()).unwrap_or(0), Ordering::Release);
@@ -601,6 +693,8 @@ fn case_handle_unique(tick_bits: u8) -> TestResult {
     t2.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
     t3.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
 
+    check_all_hwm(&[&s1, &s2, &s3])?;
+
     drop(t1); drop(t2); drop(t3);
     // Check sub_baseline while Arcs are still alive.
     if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
@@ -624,8 +718,12 @@ fn case_stack_mapping(tick_bits: u8) -> TestResult {
     // 4097 bytes → ceil(4097/4) = 1025 words.
     {
         let sub_baseline = sys::heap_free();
+        let hwm = Arc::new(AtomicU32::new(0));
+        let hwm_clone = Arc::clone(&hwm);
         let t = FreeRtosTaskBuilder::new()
-            .name("stack_map").stack_size(4097).spawn(|| {})
+            .name("stack_map").stack_size(4097).spawn(move || {
+                let _probe = TaskExitProbe::new(hwm_clone);
+            })
             .map_err(|_| TaskContractError::SpawnFailed)?;
         if diag_last_stack_words() != 1025 {
             return Err(TaskContractError::StackMappingWrong);
@@ -676,8 +774,8 @@ fn case_priority_mapping(tick_bits: u8) -> TestResult {
     let t = FreeRtosTaskBuilder::new()
         .name("prio_map").priority(u32::MAX)
         .spawn(move || {
+            let _probe = TaskExitProbe::new(Arc::clone(&s.stack_hwm));
             s.native_priority.store(diag_last_native_priority(), Ordering::Release);
-            s.stack_hwm.store(task_stack_hwm(), Ordering::Release);
             s.entry_count.fetch_add(1, Ordering::Release);
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
@@ -693,6 +791,7 @@ fn case_priority_mapping(tick_bits: u8) -> TestResult {
     if state.entry_count.load(Ordering::Acquire) != 1 {
         return Err(TaskContractError::EntryCountMismatch);
     }
+    check_hwm(&state)?;
 
     drop(t);
     if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
@@ -723,6 +822,7 @@ fn case_current_identity(tick_bits: u8) -> TestResult {
     let t = FreeRtosTaskBuilder::new()
         .name("current_id")
         .spawn(move || {
+            let _probe = TaskExitProbe::new(Arc::clone(&s.stack_hwm));
             s.current_handle.store(
                 FreeRtosTask::current().map(|h| h.get()).unwrap_or(0), Ordering::Release);
             s.entry_count.fetch_add(1, Ordering::Release);
@@ -738,6 +838,9 @@ fn case_current_identity(tick_bits: u8) -> TestResult {
     }
     if FreeRtosTask::current().is_some() {
         return Err(TaskContractError::CurrentIdentityMismatch);
+    }
+    if state.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+        return Err(TaskContractError::StackHwmTooSmall);
     }
 
     drop(t);
@@ -814,16 +917,19 @@ fn case_live_count(tick_bits: u8) -> TestResult {
     ]);
 
     let t1 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("count_a").spawn(move || {
+        let _probe = TaskExitProbe::new(Arc::clone(&c1.stack_hwm));
         c1.started.store(true, Ordering::Release);
         wait_gate(&c1);
     }).map_err(|_| TaskContractError::SpawnFailed)?;
 
     let t2 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("count_b").spawn(move || {
+        let _probe = TaskExitProbe::new(Arc::clone(&c2.stack_hwm));
         c2.started.store(true, Ordering::Release);
         wait_gate(&c2);
     }).map_err(|_| TaskContractError::SpawnFailed)?;
 
     let t3 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("count_c").spawn(move || {
+        let _probe = TaskExitProbe::new(Arc::clone(&c3.stack_hwm));
         c3.started.store(true, Ordering::Release);
         wait_gate(&c3);
     }).map_err(|_| TaskContractError::SpawnFailed)?;
@@ -853,6 +959,8 @@ fn case_live_count(tick_bits: u8) -> TestResult {
     if FreeRtosTask::count() != count_baseline {
         return Err(TaskContractError::LiveCountMismatch);
     }
+
+    check_all_hwm(&[&s1, &s2, &s3])?;
 
     // All gates already released; consume guard so its Arc clones
     // are dropped before heap checks.
@@ -885,6 +993,7 @@ fn case_join_nowait_zero(tick_bits: u8) -> TestResult {
 
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("nowait_z")
         .spawn(move || {
+            let _probe = TaskExitProbe::new(Arc::clone(&s.stack_hwm));
             s.started.store(true, Ordering::Release);
             wait_gate(&s);
         })
@@ -909,6 +1018,8 @@ fn case_join_nowait_zero(tick_bits: u8) -> TestResult {
     let r = t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
     if r != ExitCode::SUCCESS { return Err(TaskContractError::CachedResultMismatch); }
 
+    check_hwm(&state)?;
+
     drop(t);
     if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
         return Err(TaskContractError::HeapNotRecovered);
@@ -931,6 +1042,7 @@ fn case_join_finite_timeout(tick_bits: u8) -> TestResult {
 
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("fin_timeout")
         .spawn(move || {
+            let _probe = TaskExitProbe::new(Arc::clone(&s.stack_hwm));
             s.started.store(true, Ordering::Release);
             wait_gate(&s);
             s.entry_count.fetch_add(1, Ordering::Release);
@@ -966,6 +1078,7 @@ fn case_join_finite_timeout(tick_bits: u8) -> TestResult {
     if state.entry_count.load(Ordering::Acquire) != 1 {
         return Err(TaskContractError::EntryCountMismatch);
     }
+    check_hwm(&state)?;
 
     drop(t);
     if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
@@ -982,9 +1095,14 @@ fn case_join_finite_timeout(tick_bits: u8) -> TestResult {
 fn case_join_forever_cached(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
-    // Task delays 2 ticks, records HWM, returns.
+    // Task delays 2 ticks, TaskExitProbe records HWM on drop.
+    let hwm = Arc::new(AtomicU32::new(0));
+    let hwm_clone = Arc::clone(&hwm);
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("forever_cached")
-        .spawn(|| { let _ = sys::delay_ticks(2); })
+        .spawn(move || {
+            let _probe = TaskExitProbe::new(hwm_clone);
+            let _ = sys::delay_ticks(2);
+        })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
     let before = sys::tick_snapshot();
@@ -1022,6 +1140,7 @@ fn case_self_join(tick_bits: u8) -> TestResult {
 
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("self_join")
         .spawn(move || {
+            let _probe = TaskExitProbe::new(Arc::clone(&s.stack_hwm));
             s.started.store(true, Ordering::Release);
             // Take own clone from the slot (published by controller).
             let myself = unsafe { SLOT.take() };
@@ -1031,7 +1150,7 @@ fn case_self_join(tick_bits: u8) -> TestResult {
             let r2 = myself.join(Timeout::After(core::time::Duration::from_millis(5)));
             let r3 = myself.join(Timeout::Forever);
 
-            s.native_priority.store(
+            s.self_join_ok.store(
                 if matches!(r1, Err(Error::Busy)) && matches!(r2, Err(Error::Busy)) && matches!(r3, Err(Error::Busy))
                 { 1 } else { 0 },
                 Ordering::Release,
@@ -1051,11 +1170,10 @@ fn case_self_join(tick_bits: u8) -> TestResult {
 
     t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
 
-    if state.native_priority.load(Ordering::Acquire) != 1 {
-        // native_priority is being reused here as a flag — 1 = all Busy checks passed.
-        // Actually let me use a different approach...
+    if state.self_join_ok.load(Ordering::Acquire) != 1 {
         return Err(TaskContractError::CachedResultMismatch);
     }
+    check_hwm(&state)?;
 
     drop(t);
     if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
@@ -1071,6 +1189,9 @@ fn case_self_join(tick_bits: u8) -> TestResult {
 /// Case 13: Three joiners block concurrently on one gated target.
 /// All three return the same ExitCode — proves EventGroup sticky bit
 /// is not consumed by the first waking joiner.
+///
+/// Join-wait diagnostics prove all 3 joiners were simultaneously
+/// blocked in EventGroup wait before the target released.
 fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
@@ -1083,8 +1204,8 @@ fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
 
     let target = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("cj_target")
         .spawn(move || {
+            let _probe = TaskExitProbe::new(Arc::clone(&tc.stack_hwm));
             tc.started.store(true, Ordering::Release);
-            tc.stack_hwm.store(task_stack_hwm(), Ordering::Release);
             wait_gate(&tc);
             tc.entry_count.fetch_add(1, Ordering::Release);
         })
@@ -1101,35 +1222,50 @@ fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
     let tgt1 = target.clone();
     let tgt2 = target.clone();
 
+    // Reset join-wait diagnostics before spawning joiners.
+    let attempts_before = diag_join_wait_attempts();
+    let returns_before = diag_join_wait_returns();
+
     // Spawn 3 joiners — each blocks on target.join(Forever).
     let j0 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("joiner_0")
         .spawn(move || {
+            let _probe = TaskExitProbe::new(Arc::clone(&jc0.stack_hwm));
             jc0.started.store(true, Ordering::Release);
             let r = tgt0.join(Timeout::Forever);
-            jc0.native_priority.store(if r.is_ok() { 1 } else { 0 }, Ordering::Release);
-            jc0.stack_hwm.store(task_stack_hwm(), Ordering::Release);
+            jc0.join_ok.store(if r.is_ok() { 1 } else { 0 }, Ordering::Release);
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
     let j1 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("joiner_1")
         .spawn(move || {
+            let _probe = TaskExitProbe::new(Arc::clone(&jc1.stack_hwm));
             jc1.started.store(true, Ordering::Release);
             let r = tgt1.join(Timeout::Forever);
-            jc1.native_priority.store(if r.is_ok() { 1 } else { 0 }, Ordering::Release);
-            jc1.stack_hwm.store(task_stack_hwm(), Ordering::Release);
+            jc1.join_ok.store(if r.is_ok() { 1 } else { 0 }, Ordering::Release);
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
     let j2 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("joiner_2")
         .spawn(move || {
+            let _probe = TaskExitProbe::new(Arc::clone(&jc2.stack_hwm));
             jc2.started.store(true, Ordering::Release);
             let r = tgt2.join(Timeout::Forever);
-            jc2.native_priority.store(if r.is_ok() { 1 } else { 0 }, Ordering::Release);
-            jc2.stack_hwm.store(task_stack_hwm(), Ordering::Release);
+            jc2.join_ok.store(if r.is_ok() { 1 } else { 0 }, Ordering::Release);
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
     // Wait for all 3 joiners to have started (blocked on EventGroup).
     if wait_all_started(&[&js0, &js1, &js2]).is_err() {
         return Err(TaskContractError::CachedResultMismatch);
+    }
+
+    // Prove all 3 joiners are blocked in EventGroup wait:
+    // attempts == 3 (each entered wait), returns == 0 (none woke yet).
+    let attempts_delta = diag_join_wait_attempts().wrapping_sub(attempts_before);
+    let returns_delta = diag_join_wait_returns().wrapping_sub(returns_before);
+    if attempts_delta < 3 {
+        return Err(TaskContractError::JoinWaitDiagnostics);
+    }
+    if returns_delta != 0 {
+        return Err(TaskContractError::JoinWaitDiagnostics);
     }
 
     // Release target — all 3 joiners wake.
@@ -1141,12 +1277,10 @@ fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
     j2.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
 
     // All joiners got SUCCESS and HWM >= 64.
-    if js0.native_priority.load(Ordering::Acquire) != 1
-        || js0.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS
-        || js1.native_priority.load(Ordering::Acquire) != 1
-        || js1.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS
-        || js2.native_priority.load(Ordering::Acquire) != 1
-        || js2.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS
+    check_all_hwm(&[&js0, &js1, &js2])?;
+    if js0.join_ok.load(Ordering::Acquire) != 1
+        || js1.join_ok.load(Ordering::Acquire) != 1
+        || js2.join_ok.load(Ordering::Acquire) != 1
     { return Err(TaskContractError::CachedResultMismatch); }
 
     // Target entry_count must be exactly 1 after join.
@@ -1154,9 +1288,7 @@ fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
     if target_state.entry_count.load(Ordering::Acquire) != 1 {
         return Err(TaskContractError::EntryCountMismatch);
     }
-    if target_state.stack_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
-        return Err(TaskContractError::StackHwmTooSmall);
-    }
+    check_hwm(&target_state)?;
 
     drop(j0); drop(j1); drop(j2);
     drop(target);
@@ -1177,10 +1309,17 @@ fn case_late_join_cached(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
     // First complete a task normally.
+    let hwm = Arc::new(AtomicU32::new(0));
+    let hwm_clone = Arc::clone(&hwm);
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("late_join")
-        .spawn(|| {})
+        .spawn(move || {
+            let _probe = TaskExitProbe::new(hwm_clone);
+        })
         .map_err(|_| TaskContractError::SpawnFailed)?;
     t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+    if hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+        return Err(TaskContractError::StackHwmTooSmall);
+    }
 
     // Suspend scheduler, join again — must return cached immediately.
     unsafe { osal_test_scheduler_suspend(); }
@@ -1212,7 +1351,11 @@ fn case_scheduler_suspended(tick_bits: u8) -> TestResult {
     let gate_guard = GateReleaseGuard::new([Arc::clone(&state)]);
 
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("sched_susp")
-        .spawn(move || { s.started.store(true, Ordering::Release); wait_gate(&s); })
+        .spawn(move || {
+            let _probe = TaskExitProbe::new(Arc::clone(&s.stack_hwm));
+            s.started.store(true, Ordering::Release);
+            wait_gate(&s);
+        })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
     if wait_started(&state).is_err() {
@@ -1245,6 +1388,8 @@ fn case_scheduler_suspended(tick_bits: u8) -> TestResult {
     gate_guard.release();
     t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
 
+    check_hwm(&state)?;
+
     drop(t);
     if harness::wait_until_heap_recovered(sub_baseline, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
         return Err(TaskContractError::HeapNotRecovered);
@@ -1271,10 +1416,10 @@ fn case_drop_without_join(tick_bits: u8) -> TestResult {
 
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("drop_nojoin")
         .spawn(move || {
+            let _probe = TaskExitProbe::new(Arc::clone(&s.stack_hwm));
             s.started.store(true, Ordering::Release);
             wait_gate(&s);
             s.entry_count.fetch_add(1, Ordering::Release);
-            s.stack_hwm.store(task_stack_hwm(), Ordering::Release);
         })
         .map_err(|_| TaskContractError::SpawnFailed)?;
 
@@ -1318,10 +1463,17 @@ fn case_drop_without_join(tick_bits: u8) -> TestResult {
 fn case_finished_handle_lease(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
+    let hwm = Arc::new(AtomicU32::new(0));
+    let hwm_clone = Arc::clone(&hwm);
     let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("lease")
-        .spawn(|| {})
+        .spawn(move || {
+            let _probe = TaskExitProbe::new(hwm_clone);
+        })
         .map_err(|_| TaskContractError::SpawnFailed)?;
     t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
+    if hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+        return Err(TaskContractError::StackHwmTooSmall);
+    }
 
     // count=0 but handle still holds RuntimeLease.
     if FreeRtosTask::count() != 0 {
@@ -1352,12 +1504,12 @@ fn case_finished_handle_lease(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 18: Spawn rollback — overflow path with all-diag-zero proof.
+/// Case 18: Spawn rollback — overflow + OOM paths with zero-leak proof.
 ///
-/// Real xTaskCreate OOM is deferred — the vApplicationMallocFailedHook
-/// converts any pvPortMalloc failure into a FATAL exit before Rust can
-/// observe Error::OutOfMemory.  An expected-OOM arm in the hook is
-/// needed before real-kernel OOM validation is possible.
+/// Overflow is caught before any allocation.  Real-kernel OOM uses the
+/// expected-OOM arm in vApplicationMallocFailedHook to allow exactly one
+/// pvPortMalloc failure, proving xTaskCreate failure returns OutOfMemory
+/// with full rollback (EventGroup created+deleted, closure dropped once).
 fn case_spawn_rollback(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
@@ -1391,6 +1543,10 @@ fn case_spawn_rollback(tick_bits: u8) -> TestResult {
     // Real OOM: request more stack than available heap.
     // The expected-OOM arm in hooks.c allows exactly one pvPortMalloc
     // failure from the controller task to return instead of FATAL.
+    //
+    // DropProbe proves the closure payload is dropped exactly once
+    // when xTaskCreate fails — the captured Arc<AtomicU32> must be
+    // torn down by the builder's rollback path.
     {
         let heap_before = sys::heap_free();
         let count_before = FreeRtosTask::count();
@@ -1401,12 +1557,20 @@ fn case_spawn_rollback(tick_bits: u8) -> TestResult {
         // fails on the stack+TCB allocation.
         let oom_bytes: usize = (heap_before as usize).saturating_add(4096);
 
+        let drop_counter = Arc::new(AtomicU32::new(0));
+        let probe = DropProbe::new(Arc::clone(&drop_counter));
+
         unsafe { osal_test_expect_malloc_failure(); }
 
         let result = FreeRtosTaskBuilder::new()
             .name("oom_probe")
             .stack_size(oom_bytes)
-            .spawn(|| {});
+            .spawn(move || {
+                // Capture the probe so it lives in the closure payload.
+                // When xTaskCreate fails, the closure is dropped, which
+                // drops the probe, which increments the counter.
+                let _probe = probe;
+            });
 
         // Must have consumed the expected failure.
         let consumed = unsafe { osal_test_expected_malloc_failure_consumed() };
@@ -1419,6 +1583,11 @@ fn case_spawn_rollback(tick_bits: u8) -> TestResult {
         match result {
             Err(Error::OutOfMemory) => {}
             _ => { return Err(TaskContractError::SpawnFailed); }
+        }
+
+        // Closure payload must be dropped exactly once during rollback.
+        if drop_counter.load(Ordering::Acquire) != 1 {
+            return Err(TaskContractError::DropCountWrong);
         }
 
         let diag_after = read_diag();
@@ -1446,11 +1615,10 @@ fn case_spawn_rollback(tick_bits: u8) -> TestResult {
     // Prove path is not corrupted: normal task still works afterward.
     {
         let sub = sys::heap_free();
-        let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("recovery")
-            .spawn(|| {})
-            .map_err(|_| TaskContractError::SpawnFailed)?;
-        t.join(Timeout::Forever).map_err(|_| TaskContractError::JoinFailed)?;
-        drop(t);
+        let hwm = spawn_join_drop("recovery", |_| {})?;
+        if hwm < HWM_MIN_WORDS {
+            return Err(TaskContractError::StackHwmTooSmall);
+        }
         if harness::wait_until_heap_recovered(sub, HEAP_RECOVERY_TICKS, tick_bits).is_err() {
             return Err(TaskContractError::HeapNotRecovered);
         }
@@ -1512,8 +1680,8 @@ fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
 
         let t = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("str_seq")
             .spawn(move || {
+                let _probe = TaskExitProbe::new(Arc::clone(&s.stack_hwm));
                 s.entry_count.fetch_add(1, Ordering::Release);
-                s.stack_hwm.store(task_stack_hwm(), Ordering::Release);
             })
             .map_err(|_| TaskContractError::SpawnFailed)?;
 
@@ -1559,26 +1727,26 @@ fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
 
         let t0 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("str_w0")
             .spawn(move || {
+                let _probe = TaskExitProbe::new(Arc::clone(&c0.stack_hwm));
                 c0.started.store(true, Ordering::Release);
                 wait_gate(&c0);
                 c0.entry_count.fetch_add(1, Ordering::Release);
-                c0.stack_hwm.store(task_stack_hwm(), Ordering::Release);
             })
             .map_err(|_| TaskContractError::SpawnFailed)?;
         let t1 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("str_w1")
             .spawn(move || {
+                let _probe = TaskExitProbe::new(Arc::clone(&c1.stack_hwm));
                 c1.started.store(true, Ordering::Release);
                 wait_gate(&c1);
                 c1.entry_count.fetch_add(1, Ordering::Release);
-                c1.stack_hwm.store(task_stack_hwm(), Ordering::Release);
             })
             .map_err(|_| TaskContractError::SpawnFailed)?;
         let t2 = FreeRtosTaskBuilder::new().stack_size(TEST_STACK_BYTES).name("str_w2")
             .spawn(move || {
+                let _probe = TaskExitProbe::new(Arc::clone(&c2.stack_hwm));
                 c2.started.store(true, Ordering::Release);
                 wait_gate(&c2);
                 c2.entry_count.fetch_add(1, Ordering::Release);
-                c2.stack_hwm.store(task_stack_hwm(), Ordering::Release);
             })
             .map_err(|_| TaskContractError::SpawnFailed)?;
 
