@@ -1,4 +1,4 @@
-//! Queue blocking real-kernel contracts (P7G Step 4C-2).
+//! FreeRTOS Queue blocking real-kernel contract integration tests.
 //!
 //! Isolated suite — validates blocking wake, Forever, multi-waiter
 //! wake-one, close-broadcast, and controller-side throughput on a
@@ -11,6 +11,7 @@ use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use osal_api::error::Error;
 use osal_api::time::Timeout;
 use osal_api::traits::queue::Queue;
+use osal_backend_freertos::queue_hooks::{self, TimeoutHookGuard};
 use osal_backend_freertos_sys as sys;
 
 use crate::harness::{self, CaseState};
@@ -59,6 +60,13 @@ pub enum QueueBlockingError {
     ControllerDelayFailed = 412,
     StackMarginTooSmall = 413,
     HeapNotRecovered = 414,
+
+    // ---- timeout-race contracts (4F-2) ----
+    HookBoundaryTimeout = 420,
+    RaceWrongOutcome = 421,
+    RacePayloadMismatch = 422,
+    RaceQueueNotEmpty = 423,
+    RaceDrainFailed = 424,
 }
 
 // ------------------------------------------------------------------
@@ -783,6 +791,158 @@ fn queue_throughput_cycle(_tick_bits: u8) -> Result<(), QueueBlockingError> {
 }
 
 // ------------------------------------------------------------------
+// Case: queue_recv_timeout_wake_race
+// ------------------------------------------------------------------
+fn queue_recv_timeout_wake_race(tick_bits: u8) -> Result<(), QueueBlockingError> {
+    let q = osal::backend::Queue::new(1, 4).map_err(|_| QueueBlockingError::Create)?;
+    let raw = Box::into_raw(Box::new(QueueRecvContext::new(
+        &q, RecvOperation::AfterTicks { timeout_ms: 40 },
+    )));
+    let ctx_ref = unsafe { &*raw };
+    let task_baseline = sys::heap_free();
+
+    let mut guard = TimeoutHookGuard::arm();
+    let rc = unsafe { harness::native_task_spawn(queue_recv_blocking_helper, raw.cast::<c_void>(), 1024, 2) };
+    if rc != harness::SPAWN_OK { unsafe { drop(Box::from_raw(raw)); } return Err(QueueBlockingError::HelperSpawnFailed); }
+
+    if !queue_hooks::wait_at_boundary(80, tick_bits) {
+        return Err(QueueBlockingError::HookBoundaryTimeout);
+    }
+    // Inject send while helper is paused at boundary.
+    q.send(&M0, Timeout::After(core::time::Duration::from_millis(20)))
+        .map_err(|_| QueueBlockingError::TimeoutNotReturned)?;
+    guard.release();
+
+    harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
+    harness::validate_helper(&ctx_ref.state).map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
+    let outcome = ctx_ref.outcome.load(Ordering::Acquire);
+
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| QueueBlockingError::HeapNotRecovered)?;
+    unsafe { drop(Box::from_raw(raw)); }
+
+    if outcome != OUTCOME_SUCCESS { return Err(QueueBlockingError::RaceWrongOutcome); }
+    // Helper consumed M0 during reconciliation — verify via received_word.
+    let word = ctx_ref.received_word.load(Ordering::Acquire);
+    if word != u32::from_le_bytes(M0) { return Err(QueueBlockingError::RacePayloadMismatch); }
+    if q.len().map_err(|_| QueueBlockingError::Create)? != 0 { return Err(QueueBlockingError::RaceQueueNotEmpty); }
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Case: queue_send_timeout_wake_race
+// ------------------------------------------------------------------
+fn queue_send_timeout_wake_race(tick_bits: u8) -> Result<(), QueueBlockingError> {
+    let q = osal::backend::Queue::new(1, 4).map_err(|_| QueueBlockingError::Create)?;
+    q.send(&M0, Timeout::NoWait).map_err(|_| QueueBlockingError::TimeoutNotReturned)?;
+    let raw = Box::into_raw(Box::new(QueueSendContext::new(
+        &q, SendOperation::AfterTicks { timeout_ms: 40 }, M1,
+    )));
+    let ctx_ref = unsafe { &*raw };
+    let task_baseline = sys::heap_free();
+
+    let mut guard = TimeoutHookGuard::arm();
+    let rc = unsafe { harness::native_task_spawn(queue_send_blocking_helper, raw.cast::<c_void>(), 1024, 2) };
+    if rc != harness::SPAWN_OK { unsafe { drop(Box::from_raw(raw)); } return Err(QueueBlockingError::HelperSpawnFailed); }
+
+    if !queue_hooks::wait_at_boundary(80, tick_bits) {
+        return Err(QueueBlockingError::HookBoundaryTimeout);
+    }
+    let mut buf = [0u8; 4];
+    q.recv(&mut buf, Timeout::After(core::time::Duration::from_millis(20)))
+        .map_err(|_| QueueBlockingError::TimeoutNotReturned)?;
+    if !payload_eq(&buf, &M0) { return Err(QueueBlockingError::PayloadMismatch); }
+    guard.release();
+
+    harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
+    harness::validate_helper(&ctx_ref.state).map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
+    let outcome = ctx_ref.outcome.load(Ordering::Acquire);
+
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| QueueBlockingError::HeapNotRecovered)?;
+    unsafe { drop(Box::from_raw(raw)); }
+
+    if outcome != OUTCOME_SUCCESS { return Err(QueueBlockingError::RaceWrongOutcome); }
+    q.recv(&mut buf, Timeout::NoWait).map_err(|_| QueueBlockingError::RaceDrainFailed)?;
+    if !payload_eq(&buf, &M1) { return Err(QueueBlockingError::RacePayloadMismatch); }
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Case: queue_recv_close_timeout_priority
+// ------------------------------------------------------------------
+fn queue_recv_close_timeout_priority(tick_bits: u8) -> Result<(), QueueBlockingError> {
+    let q = osal::backend::Queue::new(1, 4).map_err(|_| QueueBlockingError::Create)?;
+    let raw = Box::into_raw(Box::new(QueueRecvContext::new(
+        &q, RecvOperation::AfterTicks { timeout_ms: 40 },
+    )));
+    let ctx_ref = unsafe { &*raw };
+    let task_baseline = sys::heap_free();
+
+    let mut guard = TimeoutHookGuard::arm();
+    let rc = unsafe { harness::native_task_spawn(queue_recv_blocking_helper, raw.cast::<c_void>(), 1024, 2) };
+    if rc != harness::SPAWN_OK { unsafe { drop(Box::from_raw(raw)); } return Err(QueueBlockingError::HelperSpawnFailed); }
+
+    if !queue_hooks::wait_at_boundary(80, tick_bits) {
+        return Err(QueueBlockingError::HookBoundaryTimeout);
+    }
+    q.close().map_err(|_| QueueBlockingError::CloseNotReturned)?;
+    guard.release();
+
+    harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
+    harness::validate_helper(&ctx_ref.state).map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
+    let outcome = ctx_ref.outcome.load(Ordering::Acquire);
+
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| QueueBlockingError::HeapNotRecovered)?;
+    unsafe { drop(Box::from_raw(raw)); }
+
+    if outcome != OUTCOME_QUEUE_CLOSED { return Err(QueueBlockingError::RaceWrongOutcome); }
+    Ok(())
+}
+
+// ------------------------------------------------------------------
+// Case: queue_send_close_timeout_priority
+// ------------------------------------------------------------------
+fn queue_send_close_timeout_priority(tick_bits: u8) -> Result<(), QueueBlockingError> {
+    let q = osal::backend::Queue::new(1, 4).map_err(|_| QueueBlockingError::Create)?;
+    q.send(&M0, Timeout::NoWait).map_err(|_| QueueBlockingError::TimeoutNotReturned)?;
+    let raw = Box::into_raw(Box::new(QueueSendContext::new(
+        &q, SendOperation::AfterTicks { timeout_ms: 40 }, M1,
+    )));
+    let ctx_ref = unsafe { &*raw };
+    let task_baseline = sys::heap_free();
+
+    let mut guard = TimeoutHookGuard::arm();
+    let rc = unsafe { harness::native_task_spawn(queue_send_blocking_helper, raw.cast::<c_void>(), 1024, 2) };
+    if rc != harness::SPAWN_OK { unsafe { drop(Box::from_raw(raw)); } return Err(QueueBlockingError::HelperSpawnFailed); }
+
+    if !queue_hooks::wait_at_boundary(80, tick_bits) {
+        return Err(QueueBlockingError::HookBoundaryTimeout);
+    }
+    q.close().map_err(|_| QueueBlockingError::CloseNotReturned)?;
+    guard.release();
+
+    harness::wait_until_phase(&ctx_ref.state, PHASE_EXITING, 100, tick_bits)
+        .map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
+    harness::validate_helper(&ctx_ref.state).map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
+    let outcome = ctx_ref.outcome.load(Ordering::Acquire);
+
+    harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
+        .map_err(|_| QueueBlockingError::HeapNotRecovered)?;
+    unsafe { drop(Box::from_raw(raw)); }
+
+    if outcome != OUTCOME_QUEUE_CLOSED { return Err(QueueBlockingError::RaceWrongOutcome); }
+    let mut buf = [0u8; 4];
+    q.recv(&mut buf, Timeout::NoWait).map_err(|_| QueueBlockingError::RaceDrainFailed)?;
+    if !payload_eq(&buf, &M0) { return Err(QueueBlockingError::RacePayloadMismatch); }
+    Ok(())
+}
+
+// ------------------------------------------------------------------
 // Public entry
 // ------------------------------------------------------------------
 
@@ -816,6 +976,19 @@ pub fn run_queue_blocking_cases(tick_bits: u8) -> Result<(), QueueBlockingError>
 
     queue_throughput_cycle(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=queue_throughput_cycle");
+
+    // --- timeout-race contracts ---
+    queue_recv_timeout_wake_race(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=queue_recv_timeout_wake_race");
+
+    queue_send_timeout_wake_race(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=queue_send_timeout_wake_race");
+
+    queue_recv_close_timeout_priority(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=queue_recv_close_timeout_priority");
+
+    queue_send_close_timeout_priority(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=queue_send_close_timeout_priority");
 
     Ok(())
 }
