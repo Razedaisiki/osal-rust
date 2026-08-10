@@ -392,6 +392,45 @@ dispatch, deterministic Virtual-mode fixture bridge.
 - ISR Timer extensions → P7G+.
 - Real FreeRTOS kernel tick-interrupt validation → P7G.
 
+### Step 4E — Timer Real-Kernel Contracts — Completed (2026-08-10)
+
+Technical sealing baseline: `549794a` / CI #144 (10 jobs green).
+
+20 real-kernel cases on FreeRTOS V11.3.0 QEMU mps2-an385 (Cortex-M3):
+
+- Lazy worker identity (native handle, priority, stack, Task::current, count).
+- Builder, one-shot, periodic, start/reset, stop, change-period (stopped + running).
+- Periodic coalescing (O(1) missed-period arithmetic).
+- Callback reentry (self-stop, self-reset, self-start-one-shot, self-change-period,
+  cross-timer start).
+- Clone last-drop (non-last-holder keeps handle alive), in-flight last-drop
+  (does not wait for callback), callback Captures dropped outside registry lock.
+- Scheduler preconditions (start/reset → Busy when suspended,
+  stop/change_period → Ok; failure-atomic verified by independent
+  Busy-no-arm and allowed-ops sub-phases).
+- Shutdown lease (Busy with live public handle, runtime stays Running, clone
+  adds no extra lease, last drop releases).
+- Self-shutdown Busy (callback self-detects worker context, refuses to wait
+  for own completion EventGroup; failure-atomic).
+- Same-deadline ordering ((deadline, id) tie-break verified via same-tick
+  arming and position-based sequence recording → exact 123).
+- Lifecycle stress (32 sequential + 8×3 concurrent rounds, per-round and
+  per-wave exact heap recovery, worker create-attempt count stable across
+  56 lifecycles, public Task::count unchanged).
+- Worker HWM ≥ 64 words throughout. Self-delete via task_delete_current,
+  Idle TCB/stack reclamation, final exact profile heap recovery.
+
+Production fixes in this step:
+- `ensure_worker()`: scheduler-state preflight moved before `worker.is_some()`
+  fast path (ADR 0029 conformance).
+- `with_lock()`: zero-timeout `mutex_take` when scheduler suspended to avoid
+  FreeRTOS assertion at queue.c:1682.
+- `assert_heap_recovery()`: yield CPU via `delay_ticks(1)` so same-priority
+  worker can retain deleted registry entries between allocation cycles.
+
+Verifier fields: `timer_order=true timer_stress=true timer_self_delete=true`
+added; final sealing requires successful shutdown + exact heap recovery.
+
 ## P7E — FreeRTOS Task Foundation (2026-07-28) — Completed
 
 ### Added

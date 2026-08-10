@@ -22,6 +22,7 @@ sudo apt-get install gcc-arm-none-eabi qemu-system-arm make python3
 make                                    # aggregate suite (Mutex + Semaphore + Queue Core)
 make CARGO_FEATURES=suite-queue-blocking  # Queue Blocking isolated suite
 make CARGO_FEATURES=suite-task            # Task real-kernel contract suite
+make CARGO_FEATURES=suite-timer           # Timer real-kernel contract suite
 ```
 
 Output in `build/`:
@@ -44,6 +45,7 @@ PROFILE=task scripts/run-qemu.sh             # boot in QEMU, verify output
 | `suite-aggregate` | (default) | 36 | Mutex (8) + Semaphore (18) + Queue Core (9) + harness (1) |
 | `suite-queue-blocking` | `suite-queue-blocking` | 11 | Queue Blocking isolated (independent QEMU run) |
 | `suite-task` | `suite-task` | 20 | Task real-kernel contracts (1 harness + 19 Task cases) |
+| `suite-timer` | `suite-timer` | 20 | Timer real-kernel contracts (1 harness + 19 Timer cases) |
 
 ### suite-task
 
@@ -51,6 +53,15 @@ PROFILE=task scripts/run-qemu.sh             # boot in QEMU, verify output
 exact heap recovery required before OBJECT_PASS. Sealing evidence:
 TaskExitProbe (unified HWM), DropProbe (exact-once teardown), join-wait
 diagnostics (concurrent blocking proof).
+
+### suite-timer
+
+20 required cases with strict profile-aware verifier. Final shutdown +
+worker self-delete + exact heap recovery required before OBJECT_PASS.
+Sealing evidence: lazy worker identity, one-shot/periodic/coalescing,
+callback reentry and outside-lock destruction, clone/in-flight last-drop,
+scheduler preconditions, shutdown lease and self-shutdown, same-deadline
+(deadline,id) ordering, 56-lifecycle stress with per-round recovery.
 
 ## Boot Protocol
 

@@ -57,7 +57,14 @@ PosixTimerSvc  MockTimeRuntime   FreeRtosTimerSvc
 - Callback thread pool
 - Strict cross-timer ordering
 
+## Validation Status
+
+- **Mock, POSIX**: host-contract-verified.
+- **FreeRTOS**: real-kernel-validated on FreeRTOS Kernel V11.3.0, ARM_CM3 /
+  Cortex-M3, QEMU mps2-an385 (P7G Step 4E, 20 cases).
+- Physical MCU validation: not yet performed.
+
 ## Next Steps
 
 1. ISR Timer extensions (FreeRTOS)
-2. Real-kernel timer validation (QEMU / physical MCU) → P7G
+2. Physical MCU validation

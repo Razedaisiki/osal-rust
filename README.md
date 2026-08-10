@@ -11,9 +11,9 @@ across different platforms by switching the backend.
 
 ## Project Status
 
-**Latest completed milestone: P7G Step 4D — Task Real-Kernel Contracts — Completed.**
-**Current milestone: P7G Step 4D — Task Real-Kernel Contracts — Completed.**
-**Next: P7G Step 4E — Timer real-kernel contracts.**
+**Latest completed milestone: P7G Step 4E — Timer Real-Kernel Contracts — Completed.**
+**Current milestone: P7G Step 4E — Timer Real-Kernel Contracts — Completed.**
+**Next: P7G Step 4F — Cross-object stress, resource pressure, Queue race debt, and P7G final seal.**
 
 The POSIX backend fully implements the current non-deferred `osal-api`
 trait surface. The Mock backend implements the same surface with the
@@ -87,7 +87,7 @@ Public APIs may change before version 1.0.
 | BinarySemaphore   | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
 | Semaphore ISR     | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
 | Clock             | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
-| Timer             | Validated | Validated   | Validated   | Implemented| Validated   | Validated |
+| Timer             | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
 | Timer ISR         | Deferred  | N/A         | N/A         | Deferred   | Deferred    | Deferred  |
 | System            | Validated | Validated   | Validated   | Validated  | Validated   | Validated |
 | Task Foundation   | Validated | Foundation  | Validated   | Validated  | Validated   | Validated |
