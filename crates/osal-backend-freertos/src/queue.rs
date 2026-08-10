@@ -480,6 +480,16 @@ impl Queue for FreeRtosQueue {
             // (no configuration errors like NotInitialized or Overflow).
             let outcome = budget.wait_once(|ticks| sys::semaphore_take(sender_wake, ticks))?;
 
+            // --- integration test hook: timeout boundary ---
+            // If the wait timed out, fire the test hook BEFORE
+            // re-acquiring state_mutex so the controller can inject
+            // a concurrent send/recv/close between timeout detection
+            // and race reconciliation (ADR 0027 §5).
+            #[cfg(feature = "integration-test-hooks")]
+            if matches!(outcome, WaitOutcome::Unavailable) {
+                crate::queue_hooks::on_timeout_boundary();
+            }
+
             // Re-acquire state mutex.
             // Use lock_state() which handles immediate + blocking
             // acquisition in one step — no double-acquire loop.
@@ -599,6 +609,12 @@ impl Queue for FreeRtosQueue {
             // Block on receiver_wake semaphore.
             // After prepare_blocking() succeeded, wait_once is infallible.
             let outcome = budget.wait_once(|ticks| sys::semaphore_take(receiver_wake, ticks))?;
+
+            // --- integration test hook: timeout boundary ---
+            #[cfg(feature = "integration-test-hooks")]
+            if matches!(outcome, WaitOutcome::Unavailable) {
+                crate::queue_hooks::on_timeout_boundary();
+            }
 
             // Re-acquire state mutex.
             // Use lock_state() which handles immediate + blocking

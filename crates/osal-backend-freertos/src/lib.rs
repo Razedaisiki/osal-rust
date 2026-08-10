@@ -52,6 +52,9 @@ pub mod semaphore;
 pub mod system;
 pub mod task;
 pub mod timer;
+
+#[cfg(feature = "integration-test-hooks")]
+pub mod queue_hooks;
 pub(crate) mod timer_control;
 pub(crate) mod timer_service;
 pub(crate) mod wait;
