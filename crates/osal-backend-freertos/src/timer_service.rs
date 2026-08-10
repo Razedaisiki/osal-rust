@@ -63,7 +63,7 @@ pub(crate) struct TimerServiceState {
 const WORKER_COMPLETED_BIT: u32 = 1;
 
 // ---------------------------------------------------------------------------
-// Fixture progress tracking //
+// Fixture progress tracking
 // ---------------------------------------------------------------------------
 
 /// Request/ack protocol for deterministic flush.
@@ -161,7 +161,7 @@ pub fn flush_timer_service(target: u64) {
 }
 
 // ---------------------------------------------------------------------------
-// Fixture-only test hooks //
+// Fixture-only test hooks
 // ---------------------------------------------------------------------------
 
 /// Fault: make the next registry reserve fail with OutOfMemory.

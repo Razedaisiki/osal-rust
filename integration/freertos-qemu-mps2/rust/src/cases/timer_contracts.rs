@@ -789,7 +789,7 @@ fn case_timer_periodic_coalescing(
 }
 
 // ==================================================================
-// Commit-3 state structs
+// Callback reentry and cross-timer state
 // ==================================================================
 
 /// State for self-control callbacks.
@@ -1406,7 +1406,7 @@ fn case_timer_callback_drop_outside_lock(_caps: &sys::Capabilities) -> TestResul
 }
 
 // ==================================================================
-// Commit-4 state structs
+// Scheduler and shutdown state
 // ==================================================================
 
 /// State for self-shutdown detection from within a callback.

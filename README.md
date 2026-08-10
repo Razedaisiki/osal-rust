@@ -57,7 +57,7 @@ Public APIs may change before version 1.0.
 - Mutex (non-recursive, ADR 0007)
 - CountingSemaphore and BinarySemaphore
 - Clock
-- Timer
+- Timer (host-contract-verified; FreeRTOS real-kernel-validated on QEMU mps2-an385)
 - System operations
 - Task foundation (spawn, join with timeout, repeated join, cached exit code)
 - Shared backend contract tests (Core, Blocking where applicable)

@@ -2,8 +2,9 @@
 
 ## Status
 
-Complete — Clock and Timer are implemented across the full stack
-(host-contract-verified on all three backends: Mock, POSIX, FreeRTOS).
+Complete — Clock and Timer are implemented across the full stack.
+Mock and POSIX are host-contract-verified; FreeRTOS Timer is
+additionally real-kernel-validated on QEMU mps2-an385.
 
 ## Architecture
 

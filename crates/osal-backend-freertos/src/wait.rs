@@ -194,7 +194,7 @@ impl WaitBudget {
                 prepared,
             } => {
                 // If prepare_blocking() was called, skip checks — they
-                // already passed //.
+                // already passed.
                 if !*prepared {
                     ensure_blocking_allowed()?;
                 }
@@ -223,7 +223,7 @@ impl WaitBudget {
 }
 
 // ---------------------------------------------------------------------------
-// Convenience wrapper — one-shot WaitBudget //
+// Convenience wrapper — one-shot WaitBudget
 // ---------------------------------------------------------------------------
 
 /// Run a blocking wait using the supplied native `take` closure.

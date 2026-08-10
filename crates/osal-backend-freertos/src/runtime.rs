@@ -76,7 +76,7 @@ pub fn state() -> RuntimeState {
 }
 
 /// Acquire a [`RuntimeLease`] for a managed object.
-#[allow(dead_code)] // used by future primitive constructors //
+#[allow(dead_code)]
 pub(crate) fn acquire_object() -> Result<RuntimeLease<'static>> {
     RUNTIME.acquire()
 }
