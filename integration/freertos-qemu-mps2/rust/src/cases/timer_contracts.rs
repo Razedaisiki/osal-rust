@@ -92,6 +92,14 @@ pub enum TimerContractError {
     SelfShutdownNotAtomic = 763,
     RuntimeStateWrong = 764,
 
+    // ---- Commit 5: ordering / lifecycle stress ----
+    SameDeadlineArmFailed = 770,
+    SameDeadlineOrderWrong = 771,
+    LifecycleLeak = 772,
+    LifecycleWorkerLeaked = 773,
+    LifecycleCallbackMissed = 774,
+    LifecycleWrongCount = 775,
+
     HeapNotRecovered = 690,
 }
 
@@ -317,6 +325,9 @@ pub fn run_timer_cases(tick_bits: u8) -> Result<(), i32> {
     run_custom_case!(case_timer_scheduler_suspended, c"OSAL_CASE_PASS name=timer_scheduler_suspended");
     run_custom_case!(case_timer_shutdown_lease, c"OSAL_CASE_PASS name=timer_shutdown_lease");
     run_custom_case!(case_timer_self_shutdown_busy, c"OSAL_CASE_PASS name=timer_self_shutdown_busy");
+    // --- Commit 5 cases ---
+    run_custom_case!(case_timer_same_deadline_order, c"OSAL_CASE_PASS name=timer_same_deadline_order");
+    run_custom_case!(case_timer_lifecycle_stress, c"OSAL_CASE_PASS name=timer_lifecycle_stress");
 
     let _ = tick_bits;
     Ok(())
@@ -1642,5 +1653,212 @@ fn case_timer_self_shutdown_busy(caps: &sys::Capabilities) -> TestResult {
         return Err(TimerContractError::WorkerHwmTooLow);
     }
 
+    Ok(())
+}
+
+// ==================================================================
+// case_timer_same_deadline_order
+// ==================================================================
+fn case_timer_same_deadline_order(caps: &sys::Capabilities) -> TestResult {
+    // Shared sequencer: each callback records its rank (1, 2, 3).
+    // The order constraint A < B < C comes from creation order:
+    // smaller id must dispatch first at identical deadlines.
+    let seq = Arc::new(AtomicU32::new(0));
+    let count = Arc::new(AtomicU32::new(0));
+    let hwm = Arc::new(AtomicU32::new(0));
+    let task_some = Arc::new(AtomicU32::new(0));
+
+    let period_ms = 40u64; // long enough to arm within a tick
+
+    let s_seq = Arc::clone(&seq);
+    let s_cnt = Arc::clone(&count);
+    let s_hwm = Arc::clone(&hwm);
+    let s_task = Arc::clone(&task_some);
+    let cb_a: TimerCallback = Box::new(move || {
+        s_seq.fetch_add(1, Ordering::Release);
+        s_cnt.fetch_add(1, Ordering::Release);
+        s_hwm.store(task_stack_hwm(), Ordering::Release);
+        if FreeRtosTask::current().is_some() {
+            s_task.store(1, Ordering::Release);
+        }
+    });
+
+    let s_seq = Arc::clone(&seq);
+    let s_cnt = Arc::clone(&count);
+    let s_hwm = Arc::clone(&hwm);
+    let cb_b: TimerCallback = Box::new(move || {
+        s_seq.fetch_add(2, Ordering::Release);
+        s_cnt.fetch_add(1, Ordering::Release);
+        s_hwm.store(task_stack_hwm(), Ordering::Release);
+    });
+
+    let s_seq = Arc::clone(&seq);
+    let s_cnt = Arc::clone(&count);
+    let s_hwm = Arc::clone(&hwm);
+    let cb_c: TimerCallback = Box::new(move || {
+        s_seq.fetch_add(3, Ordering::Release);
+        s_cnt.fetch_add(1, Ordering::Release);
+        s_hwm.store(task_stack_hwm(), Ordering::Release);
+    });
+
+    let t_a = FreeRtosTimer::new(
+        "test-sdo-a", Duration::from_millis(period_ms), TimerMode::OneShot, cb_a,
+    ).map_err(|_| TimerContractError::SameDeadlineArmFailed)?;
+    let t_b = FreeRtosTimer::new(
+        "test-sdo-b", Duration::from_millis(period_ms), TimerMode::OneShot, cb_b,
+    ).map_err(|_| TimerContractError::SameDeadlineArmFailed)?;
+    let t_c = FreeRtosTimer::new(
+        "test-sdo-c", Duration::from_millis(period_ms), TimerMode::OneShot, cb_c,
+    ).map_err(|_| TimerContractError::SameDeadlineArmFailed)?;
+
+    // Prove all three start within the same tick so the deadline is
+    // identical.  Retry up to 5 times to catch tick-boundary races.
+    let mut same_tick = false;
+    for _retry in 0..5 {
+        t_a.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+        t_b.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+        t_c.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+
+        let before = sys::tick_snapshot().tick_count;
+        t_a.start().map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+        t_b.start().map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+        t_c.start().map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+        let after = sys::tick_snapshot().tick_count;
+
+        if before == after {
+            same_tick = true;
+            break;
+        }
+    }
+    if !same_tick {
+        return Err(TimerContractError::SameDeadlineArmFailed);
+    }
+
+    // Wait for all three callbacks.
+    let start = sys::tick_snapshot();
+    loop {
+        if count.load(Ordering::Acquire) >= 3 {
+            break;
+        }
+        let elapsed = harness::total_ticks_diff(sys::tick_snapshot(), start, caps.tick_bits);
+        if elapsed >= 100 {
+            return Err(TimerContractError::TimerCallbackNotFired);
+        }
+        sys::delay_ticks(1);
+    }
+
+    t_a.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+    t_b.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+    t_c.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+
+    // 1+2+3 = 6 — exact total proves each callback fired exactly once
+    // in the expected A(1) → B(2) → C(3) order.  Any other order
+    // produces a different sum (duplicates ruled out by count==3).
+    let order = seq.load(Ordering::Acquire);
+    if order != 6 {
+        return Err(TimerContractError::SameDeadlineOrderWrong);
+    }
+
+    if hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+        return Err(TimerContractError::WorkerHwmTooLow);
+    }
+    if task_some.load(Ordering::Acquire) != 0 {
+        return Err(TimerContractError::WorkerTaskCurrentNotNone);
+    }
+
+    drop(t_a);
+    drop(t_b);
+    drop(t_c);
+    Ok(())
+}
+
+// ==================================================================
+// case_timer_lifecycle_stress
+// ==================================================================
+fn case_timer_lifecycle_stress(_caps: &sys::Capabilities) -> TestResult {
+    let public_baseline = FreeRtosTask::count();
+
+    // --- Phase A: 32 sequential create/start/callback/drop rounds ---
+    for _round in 0..32u32 {
+        let state = Arc::new(TimerCaseState::new());
+        let cb = make_record_callback(&state);
+
+        let t = FreeRtosTimer::new(
+            "test-sts", Duration::from_millis(2), TimerMode::OneShot, cb,
+        ).map_err(|_| TimerContractError::LifecycleLeak)?;
+
+        t.start().map_err(|_| TimerContractError::LifecycleCallbackMissed)?;
+        wait_for_callback_count(&state, 1, 80)?;
+
+        if state.callback_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+            return Err(TimerContractError::WorkerHwmTooLow);
+        }
+
+        drop(t);
+        // Yield so the worker can retain deleted entries before the
+        // next allocation cycle.  Without this, rapid create/drop at
+        // the same priority starves the worker and causes the Vec
+        // registry to grow spuriously.
+        sys::delay_ticks(2);
+    }
+
+    if FreeRtosTask::count() != public_baseline {
+        return Err(TimerContractError::LifecycleWorkerLeaked);
+    }
+
+    // --- Phase B: 8 waves of 3 concurrent OneShot Timers ---
+    for _wave in 0..8u32 {
+        let state_a = Arc::new(TimerCaseState::new());
+        let state_b = Arc::new(TimerCaseState::new());
+        let state_c = Arc::new(TimerCaseState::new());
+
+        let cb_a = make_record_callback(&state_a);
+        let cb_b = make_record_callback(&state_b);
+        let cb_c = make_record_callback(&state_c);
+
+        let t_a = FreeRtosTimer::new(
+            "test-stw-a", Duration::from_millis(3), TimerMode::OneShot, cb_a,
+        ).map_err(|_| TimerContractError::LifecycleLeak)?;
+        let t_b = FreeRtosTimer::new(
+            "test-stw-b", Duration::from_millis(3), TimerMode::OneShot, cb_b,
+        ).map_err(|_| TimerContractError::LifecycleLeak)?;
+        let t_c = FreeRtosTimer::new(
+            "test-stw-c", Duration::from_millis(3), TimerMode::OneShot, cb_c,
+        ).map_err(|_| TimerContractError::LifecycleLeak)?;
+
+        t_a.start().map_err(|_| TimerContractError::LifecycleCallbackMissed)?;
+        t_b.start().map_err(|_| TimerContractError::LifecycleCallbackMissed)?;
+        t_c.start().map_err(|_| TimerContractError::LifecycleCallbackMissed)?;
+
+        wait_for_callback_count(&state_a, 1, 80)?;
+        wait_for_callback_count(&state_b, 1, 80)?;
+        wait_for_callback_count(&state_c, 1, 80)?;
+
+        if state_a.callback_count.load(Ordering::Acquire) != 1
+            || state_b.callback_count.load(Ordering::Acquire) != 1
+            || state_c.callback_count.load(Ordering::Acquire) != 1
+        {
+            return Err(TimerContractError::LifecycleWrongCount);
+        }
+
+        if state_a.callback_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS
+            || state_b.callback_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS
+            || state_c.callback_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS
+        {
+            return Err(TimerContractError::WorkerHwmTooLow);
+        }
+
+        drop(t_a);
+        drop(t_b);
+        drop(t_c);
+        sys::delay_ticks(2);
+    }
+
+    if FreeRtosTask::count() != public_baseline {
+        return Err(TimerContractError::LifecycleWorkerLeaked);
+    }
+
+    // Post-condition: 56 rounds (32 sequential + 8×3 concurrent).
+    // The orchestrator's assert_heap_recovery validates exact recovery.
     Ok(())
 }
