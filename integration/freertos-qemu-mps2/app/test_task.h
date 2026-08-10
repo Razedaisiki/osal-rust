@@ -1,4 +1,4 @@
-/* test_task.h — deterministic native helper-task harness (P7G Step 4-0).
+/* test_task.h — deterministic native helper-task harness.
  *
  * Integration-only C bridge for spawning FreeRTOS native helper tasks
  * that let us test OSAL managed objects without depending on the OSAL
@@ -84,7 +84,7 @@ void osal_test_harness_record_start(void *context, uint32_t tick);
 void osal_test_harness_record_end(void *context, uint32_t tick);
 
 /* ------------------------------------------------------------------ */
-/* Integration diagnostics observers (P7G Step 4D).                    */
+/* Integration diagnostics observers. */
 /*                                                                     */
 /* Called from the OSAL sys C shim when OSAL_FREERTOS_INTEGRATION_     */
 /* DIAGNOSTICS is defined.  Track native task-create and EventGroup     */
@@ -126,7 +126,7 @@ uint32_t osal_test_diag_last_internal_handle(void);
 /* Reset all diagnostic counters to zero.                               */
 void osal_test_diag_reset(void);
 
-/* Expected-OOM fixture (P7G Step 4D).                                   */
+/* Expected-OOM fixture. */
 void osal_test_expect_malloc_failure(void);
 uint32_t osal_test_expected_malloc_failure_consumed(void);
 void osal_test_clear_expected_malloc_failure(void);

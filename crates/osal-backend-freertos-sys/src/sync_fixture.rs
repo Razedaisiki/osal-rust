@@ -114,7 +114,7 @@ pub(super) static BLOCKED_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Selects the time domain for sync-object blocking waits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FixtureWaitMode {
-    /// Waits use wall-clock `Duration` timeouts (existing behaviour).
+    /// Waits use wall-clock `Duration` timeouts (default).
     Realtime,
     /// Waits use virtual ticks; timeout only when ticks are advanced
     /// by a test via `advance_ticks_and_notify`.  A wall-clock watchdog

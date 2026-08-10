@@ -460,7 +460,7 @@ impl Queue for FreeRtosQueue {
                         WaitBudget::Finite { .. } | WaitBudget::Forever { .. } => {
                             // Preflight: check scheduler state, compute
                             // deadline — fails before any waiter state
-                            // is modified (ADR 0027 §5, review fix #2).
+                            // is modified (ADR 0027 §5).
                             budget.prepare_blocking()?;
                             state.sender_waiters = state
                                 .sender_waiters
@@ -581,7 +581,7 @@ impl Queue for FreeRtosQueue {
                         WaitBudget::Finite { .. } | WaitBudget::Forever { .. } => {
                             // Preflight: check scheduler state, compute
                             // deadline — fails before any waiter state
-                            // is modified (ADR 0027 §5, review fix #2).
+                            // is modified (ADR 0027 §5).
                             budget.prepare_blocking()?;
                             state.receiver_waiters = state
                                 .receiver_waiters
@@ -676,7 +676,7 @@ impl Queue for FreeRtosQueue {
             return Ok(()); // Idempotent.
         }
 
-        // Commit close first — ByteQueue::close is infallible.
+        // close first — ByteQueue::close is infallible.
         state.buffer.close();
 
         // Wake all registered waiters (ADR 0027 §11).

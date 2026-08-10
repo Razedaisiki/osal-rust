@@ -1,4 +1,4 @@
-//! FreeRTOS Timer scheduling, fairness, and long-wait tests (P7F-S3).
+//! FreeRTOS Timer scheduling, fairness, and long-wait tests .
 //!
 //! Deterministic Virtual mode.
 

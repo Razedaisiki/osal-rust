@@ -1,7 +1,7 @@
 //! Contract tests for MockQueue.
 //!
 //! Mock passes `QueueCoreContract` but not `QueueBlockingContract`
-//! (blocking is deferred until the mock scheduler is implemented).
+//! (blocking requires the mock scheduler).
 //!
 //! Requires `--features testkit`:
 //! ```bash

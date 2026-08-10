@@ -5,10 +5,9 @@
 //! timeout (send+recv, controller-side), close-drain, scheduler
 //! suspended, clone / last-drop, and RuntimeLease.
 //!
-//! Blocking wake, Forever, multi-waiter wake-one, close-broadcast,
-//! timeout/wake race, and stress are deferred to Step 4C-2
-//! (native Queue helper creation fails in the aggregate object suite
-//! due to FreeRTOS heap_4 fragmentation; needs isolation or heap_5).
+//! Blocking wake, Forever, multi-waiter, close-broadcast, and
+//! throughput stress are covered in the queue-blocking profile
+//! (isolated QEMU session — helper spawns require a fresh heap).
 
 use osal_api::error::Error;
 use osal_api::time::Timeout;
@@ -23,7 +22,6 @@ use crate::harness;
 const M0: [u8; 4] = [0x10, 0, 0, 0];
 const M1: [u8; 4] = [0x21, 0, 0, 1];
 const M2: [u8; 4] = [0x32, 0, 0, 2];
-// M3 reserved for future multi-waiter / blocking tests (Step 4C-2).
 
 fn payload_eq(a: &[u8], b: &[u8; 4]) -> bool {
     a.len() == 4 && a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3]
@@ -57,9 +55,6 @@ pub enum QueueError {
     LastDropLeak = 383,
     SuiteHeapLeak = 384,
 }
-
-// (SendOperation, RecvOperation, QueueSendContext, QueueRecvContext,
-//  helper entries, and spawn wrappers deferred to Step 4C-2.)
 
 // ------------------------------------------------------------------
 // Case: queue_core_fifo

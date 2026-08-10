@@ -1,7 +1,7 @@
-//! Timer real-kernel contracts (P7G Step 4E).
+//! FreeRTOS Timer real-kernel contract integration tests.
 //!
-//! Commit 3 — callback reentry, drop, and cross-timer contracts
-//! on real FreeRTOS V11.3.0 (QEMU mps2-an385).
+//! Validates the custom Timer Service Task (ADR 0029) on
+//! FreeRTOS V11.3.0 under QEMU mps2-an385 (Cortex-M3).
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -61,7 +61,7 @@ pub enum TimerContractError {
 
     TimerCoalescingBurstDetected = 660,
 
-    // ---- Commit 3: reentry / drop ----
+    // ---- callback reentry / drop ----
     SelfStopFailed = 700,
     SelfStopExtraCallback = 701,
     SelfResetFailed = 702,
@@ -81,7 +81,7 @@ pub enum TimerContractError {
     CallbackDropOutsideLockNotDropped = 740,
     CallbackDropOutsideLockDeadlock = 741,
 
-    // ---- Commit 4: scheduler / shutdown ----
+    // ---- scheduler / shutdown ----
     SchedulerStartNotBusy = 750,
     SchedulerResetNotBusy = 751,
     SchedulerNotAtomic = 752,
@@ -92,7 +92,7 @@ pub enum TimerContractError {
     SelfShutdownNotAtomic = 763,
     RuntimeStateWrong = 764,
 
-    // ---- Commit 5: ordering / lifecycle stress ----
+    // ---- ordering / lifecycle stress ----
     SameDeadlineArmFailed = 770,
     SameDeadlineOrderWrong = 771,
     LifecycleLeak = 772,
@@ -306,7 +306,7 @@ pub fn run_timer_cases(tick_bits: u8) -> Result<(), i32> {
         }};
     }
 
-    // --- Commit 2 cases ---
+    // --- core timer behaviour ---
     run_case!(s, case_timer_builder_core, c"OSAL_CASE_PASS name=timer_builder_core");
     run_case!(s, case_timer_one_shot, c"OSAL_CASE_PASS name=timer_one_shot");
     run_case!(s, case_timer_periodic, c"OSAL_CASE_PASS name=timer_periodic");
@@ -315,17 +315,17 @@ pub fn run_timer_cases(tick_bits: u8) -> Result<(), i32> {
     run_case!(s, case_timer_change_period_stopped, c"OSAL_CASE_PASS name=timer_change_period_stopped");
     run_case!(s, case_timer_change_period_running, c"OSAL_CASE_PASS name=timer_change_period_running");
     run_case!(s, case_timer_periodic_coalescing, c"OSAL_CASE_PASS name=timer_periodic_coalescing");
-    // --- Commit 3 cases ---
+    // --- callback reentry / drop ---
     run_custom_case!(case_timer_callback_self_control, c"OSAL_CASE_PASS name=timer_callback_self_control");
     run_custom_case!(case_timer_callback_cross_timer, c"OSAL_CASE_PASS name=timer_callback_cross_timer");
     run_case!(s, case_timer_clone_last_drop, c"OSAL_CASE_PASS name=timer_clone_last_drop");
     run_custom_case!(case_timer_inflight_last_drop, c"OSAL_CASE_PASS name=timer_inflight_last_drop");
     run_custom_case!(case_timer_callback_drop_outside_lock, c"OSAL_CASE_PASS name=timer_callback_drop_outside_lock");
-    // --- Commit 4 cases ---
+    // --- scheduler / shutdown / lease ---
     run_custom_case!(case_timer_scheduler_suspended, c"OSAL_CASE_PASS name=timer_scheduler_suspended");
     run_custom_case!(case_timer_shutdown_lease, c"OSAL_CASE_PASS name=timer_shutdown_lease");
     run_custom_case!(case_timer_self_shutdown_busy, c"OSAL_CASE_PASS name=timer_self_shutdown_busy");
-    // --- Commit 5 cases ---
+    // --- ordering / lifecycle stress ---
     run_custom_case!(case_timer_same_deadline_order, c"OSAL_CASE_PASS name=timer_same_deadline_order");
     run_custom_case!(case_timer_lifecycle_stress, c"OSAL_CASE_PASS name=timer_lifecycle_stress");
 

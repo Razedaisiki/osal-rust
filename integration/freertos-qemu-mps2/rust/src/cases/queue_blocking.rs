@@ -2,7 +2,7 @@
 //!
 //! Isolated suite — validates blocking wake, Forever, multi-waiter
 //! wake-one, close-broadcast, and controller-side throughput on a
-//! fresh FreeRTOS session.  Timeout/wake race is deferred to 4C-3.
+//! fresh FreeRTOS session.
 
 use alloc::boxed::Box;
 use core::ffi::c_void;

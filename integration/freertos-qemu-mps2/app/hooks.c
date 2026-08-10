@@ -29,7 +29,7 @@ static void fatal(const char *kind, const char *detail)
 }
 
 /* ------------------------------------------------------------------ */
-/* Expected-OOM fixture (P7G Step 4D)                                  */
+/* Expected-OOM fixture. */
 /*                                                                     */
 /* Allows exactly one pvPortMalloc failure from the controller task    */
 /* during integration diagnostics, so that the real-kernel OOM test    */

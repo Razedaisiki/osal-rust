@@ -52,7 +52,7 @@ void vTaskSetThreadLocalStoragePointer(TaskHandle_t xTaskToSet,
 void *pvTaskGetThreadLocalStoragePointer(TaskHandle_t xTaskToQuery,
                                          BaseType_t xIndex);
 
-// Current task handle query (P7F — Timer Service self-shutdown detection)
+// Current task handle query 
 TaskHandle_t xTaskGetCurrentTaskHandle(void);
 
 #endif

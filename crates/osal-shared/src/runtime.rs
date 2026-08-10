@@ -192,8 +192,6 @@ impl RuntimeLifecycle {
     }
 }
 
-// Note: RuntimeLifecycle is auto-Send + auto-Sync via AtomicUsize.
-
 // ---------------------------------------------------------------------------
 // InitializeTransition
 // ---------------------------------------------------------------------------
@@ -318,8 +316,6 @@ impl Drop for RuntimeLease<'_> {
         }
     }
 }
-
-// Note: RuntimeLease is auto-Send + auto-Sync via the AtomicUsize reference.
 
 // ---------------------------------------------------------------------------
 // Unit tests
@@ -510,8 +506,6 @@ mod tests {
         assert_eq!(rt.active_objects(), max);
         assert_eq!(rt.state(), RuntimeState::Running);
     }
-
-    // ---- acquire during transitions ----
 
     #[test]
     fn acquire_during_initializing_returns_not_initialized() {

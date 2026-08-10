@@ -1,4 +1,4 @@
-/* test_task.c — deterministic native helper-task harness (P7G Step 4-0).
+/* test_task.c — deterministic native helper-task harness.
  *
  * Integration-only FreeRTOS task wrappers.  These let us create and
  * manage native helper tasks for testing OSAL managed objects without
@@ -15,7 +15,7 @@
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
-/* Integration diagnostics counters (P7G Step 4D).                     */
+/* Integration diagnostics counters. */
 /* ------------------------------------------------------------------ */
 
 #ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS

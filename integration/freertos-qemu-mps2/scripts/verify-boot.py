@@ -12,7 +12,7 @@ from __future__ import annotations
 import sys
 
 # ------------------------------------------------------------------
-# Boot protocol (P7G Step 2 + 3B + 3C) — shared across profiles.
+# Boot protocol — shared across profiles.
 # ------------------------------------------------------------------
 MARKER_BOOT_BEGIN = "OSAL_BOOT_BEGIN"
 MARKER_BOOT_PASS  = "OSAL_BOOT_PASS"

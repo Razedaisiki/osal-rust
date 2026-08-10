@@ -1,4 +1,4 @@
-//! FreeRTOS Timer failure-injection and rollback tests (P7F-S3).
+//! FreeRTOS Timer failure-injection and rollback tests .
 //!
 //! Deterministic Virtual mode.
 

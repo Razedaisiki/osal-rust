@@ -1,6 +1,7 @@
-//! Task real-kernel contracts (P7G Step 4D).
+//! FreeRTOS Task real-kernel contract integration tests.
 //!
-//! Commit 2 — Builder, identity, mapping, and live count cases (1–8).
+//! Validates the Task object model (ADR 0028) on
+//! FreeRTOS V11.3.0 under QEMU mps2-an385 (Cortex-M3).
 
 use alloc::sync::Arc;
 use core::ffi::c_void;
@@ -421,7 +422,7 @@ fn spawn_join_drop(
     Ok(result)
 }
 
-/// Case 1: Builder parameter validation.
+/// Builder parameter validation.
 fn case_builder_core(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
     let count_baseline = FreeRtosTask::count();
@@ -566,7 +567,7 @@ fn case_builder_core(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 2: Entry executes exactly once, join caches result.
+/// Entry executes exactly once, join caches result.
 fn case_entry_once(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
     let state = Arc::new(TaskCaseState::new());
@@ -625,7 +626,7 @@ fn case_entry_once(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 3: Three concurrent tasks have distinct handles.
+/// Three concurrent tasks have distinct handles.
 fn case_handle_unique(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
@@ -711,7 +712,7 @@ fn case_handle_unique(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 4: Stack bytes → words mapping and overflow rejection.
+/// Stack bytes → words mapping and overflow rejection.
 fn case_stack_mapping(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
@@ -767,7 +768,7 @@ fn case_stack_mapping(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 5: Priority mapping — requested u32::MAX → native 7.
+/// Priority mapping (requested u32::MAX → native configMAX_PRIORITIES-1).
 /// No controller gate to avoid starvation.
 fn case_priority_mapping(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
@@ -811,7 +812,7 @@ fn case_priority_mapping(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 6: Task::current() returns Some(handle) inside OSAL task.
+/// Task::current() returns Some(handle) inside an OSAL task.
 fn case_current_identity(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
@@ -861,7 +862,7 @@ fn case_current_identity(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 7: Task::current() == None from native (non-OSAL) context.
+/// Task::current() returns None from a native (non-OSAL) context.
 fn case_non_osal_context(tick_bits: u8) -> TestResult {
     let baseline = sys::heap_free();
     let count_baseline = FreeRtosTask::count();
@@ -898,7 +899,7 @@ fn case_non_osal_context(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 8: Task::count() tracks live entries, not handles.
+/// Task::count() tracks live entries, not handles.
 fn case_live_count(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
     let count_baseline = FreeRtosTask::count();
@@ -986,7 +987,7 @@ fn case_live_count(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 9: NoWait and After(ZERO) return Timeout on a running task.
+/// NoWait and After(ZERO) return Timeout on a running task.
 fn case_join_nowait_zero(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
     let state = Arc::new(TaskCaseState::new());
@@ -1035,7 +1036,7 @@ fn case_join_nowait_zero(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 10: After(finite) returns Timeout while task runs, later join succeeds.
+/// After(finite) returns Timeout while task runs, later join succeeds.
 fn case_join_finite_timeout(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
     let state = Arc::new(TaskCaseState::new());
@@ -1095,7 +1096,7 @@ fn case_join_finite_timeout(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 11: join(Forever) succeeds, then all subsequent joins return cached.
+/// join(Forever) succeeds; subsequent joins return cached result.
 fn case_join_forever_cached(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
@@ -1137,7 +1138,7 @@ fn case_join_forever_cached(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 12: Self-join returns Busy from within the task entry.
+/// Self-join returns Busy from within the task entry.
 fn case_self_join(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
@@ -1195,7 +1196,7 @@ fn case_self_join(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 13: Three joiners block concurrently on one gated target.
+/// Three joiners block concurrently on one gated target.
 /// All three return the same ExitCode — proves EventGroup sticky bit
 /// is not consumed by the first waking joiner.
 ///
@@ -1322,7 +1323,7 @@ fn case_concurrent_joiners(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 14: Join after completion with scheduler suspended returns cached immediately.
+/// Join after completion with scheduler suspended returns cached immediately.
 fn case_late_join_cached(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
@@ -1360,7 +1361,7 @@ fn case_late_join_cached(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 15: Join during scheduler suspend returns Timeout/Busy appropriately.
+/// Join during scheduler suspend returns Timeout/Busy appropriately.
 fn case_scheduler_suspended(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
     let state = Arc::new(TaskCaseState::new());
@@ -1420,7 +1421,7 @@ fn case_scheduler_suspended(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 16: Drop handle without join — task completes independently.
+/// Drop handle without join — task completes independently.
 ///
 /// After the lone handle is dropped, the task must finish via self-delete
 /// and the Idle task must reclaim native resources.  The suite's final
@@ -1478,7 +1479,7 @@ fn case_drop_without_join(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 17: Finished handle holds RuntimeLease — shutdown Busy until drop.
+/// Finished handle holds RuntimeLease — shutdown Busy until drop.
 fn case_finished_handle_lease(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 
@@ -1524,7 +1525,7 @@ fn case_finished_handle_lease(tick_bits: u8) -> TestResult {
     Ok(())
 }
 
-/// Case 18: Spawn rollback — overflow + OOM paths with zero-leak proof.
+/// Spawn rollback — overflow and OOM paths with zero-leak proof.
 ///
 /// Overflow is caught before any allocation.  Real-kernel OOM uses the
 /// expected-OOM arm in vApplicationMallocFailedHook to allow exactly one
@@ -1688,10 +1689,10 @@ pub fn run_task_cases(tick_bits: u8) -> TestResult {
 }
 
 // ------------------------------------------------------------------
-// Case 19: lifecycle stress
+// Lifecycle stress: 32 sequential + 8 waves of 3
 // ------------------------------------------------------------------
 
-/// Case 19: 32 sequential rounds + 8 waves of 3 — lifecycle stress.
+/// 32 sequential rounds + 8 waves of 3 concurrent tasks — lifecycle stress.
 fn case_lifecycle_stress(tick_bits: u8) -> TestResult {
     let global_baseline = sys::heap_free();
 

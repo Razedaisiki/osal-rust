@@ -1,7 +1,7 @@
 //! POSIX QueueBlockingContract — tests requiring real concurrent blocking.
 //!
 //! These use `std::thread` and are only meaningful on the POSIX backend.
-//! The Mock backend does not run these; its blocking scheduler is deferred.
+//! The Mock backend does not run these (no blocking scheduler).
 //!
 //! Run via:
 //! ```bash

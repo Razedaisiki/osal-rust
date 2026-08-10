@@ -15,7 +15,7 @@ use crate::time::Timeout;
 /// The mutex is **non-recursive**. The owning task cannot lock the same
 /// mutex again while a guard is still alive. Attempting to do so returns
 /// `Error::LockFailed` (for `NoWait`) or `Error::Timeout` (for `After`).
-/// Recursive locking is deferred to a future `RecursiveMutex` type.
+/// The mutex is non-recursive; no recursive variant is provided.
 ///
 /// # ISR safety
 ///

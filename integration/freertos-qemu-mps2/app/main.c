@@ -38,14 +38,14 @@ static void boot_fail(const char *reason);
 static void boot_fail_u32(const char *reason, uint32_t code);
 static void console_write_u32(uint32_t value);
 
-/* Rust staticlib entry (allocator smoke, P7G Step 3C).               */
+/* Rust staticlib entry (allocator smoke). */
 extern int32_t osal_rust_smoke_entry(void);
 
-/* Rust object test entry (P7G Step 4).                                */
+/* Rust object test entry — managed-object real-kernel validation. */
 extern int32_t osal_test_object_entry(void);
 
 #ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
-/* Rust Task contract bridges (P7G Step 4D).                             */
+/* Rust Task contract bridges. */
 extern void osal_test_record_non_osal_identity(void);
 #endif
 
@@ -102,7 +102,7 @@ void osal_test_trace_u64(const char *name, uint64_t value)
 }
 
 /* ------------------------------------------------------------------ */
-/* Native helper task — harness smoke (P7G Step 4-0).                 */
+/* Native helper task — harness smoke. */
 /*                                                                     */
 /* Context-aware: `context` is an opaque pointer to the Rust           */
 /* CaseState.  The entry is shared by both helper instances; each      */
@@ -152,7 +152,7 @@ void harness_smoke_helper(void *context)
 
 #ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
 /* ------------------------------------------------------------------ */
-/* Native helper — non-OSAL context check (P7G Step 4D case 7).       */
+/* Native helper — non-OSAL context check. */
 /*                                                                     */
 /* Calls back into Rust to record Task::current() and Task::count()    */
 /* from a native FreeRTOS context (no TLS identity, no RuntimeLease).  */
@@ -277,7 +277,7 @@ static void boot_task(void *context)
     );
     console_write_line("OSAL_BOOT_END status=pass");
 
-    /* 6. Run managed-object real-kernel validation (P7G Step 4).      */
+    /* 6. Run managed-object real-kernel validation. */
     int32_t object_code = osal_test_object_entry();
     if (object_code != 0) {
         boot_fail_u32("object-entry", (uint32_t)object_code);
