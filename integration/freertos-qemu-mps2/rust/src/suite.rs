@@ -206,7 +206,7 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
     }
 
     harness::console_line(
-        c"OSAL_OBJECT_PASS profile=timer timer=true timer_worker=true timer_identity=true timer_stack_margin=true timer_builder=true timer_one_shot=true timer_periodic=true timer_control=true timer_change_period=true timer_coalescing=true helper_self_delete=true idle_cleanup=true heap_recovered=true",
+        c"OSAL_OBJECT_PASS profile=timer timer=true timer_worker=true timer_identity=true timer_stack_margin=true timer_builder=true timer_one_shot=true timer_periodic=true timer_control=true timer_change_period=true timer_coalescing=true timer_reentry=true timer_callback_unlock=true timer_drop=true helper_self_delete=true idle_cleanup=true heap_recovered=true",
     );
     harness::console_line(c"OSAL_OBJECT_END status=pass");
 

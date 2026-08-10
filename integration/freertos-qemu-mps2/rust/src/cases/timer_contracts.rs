@@ -1,11 +1,12 @@
 //! Timer real-kernel contracts (P7G Step 4E).
 //!
-//! Commit 2B — hardened evidence for core, deadline, and coalescing
-//! contracts on real FreeRTOS V11.3.0 (QEMU mps2-an385).
+//! Commit 3 — callback reentry, drop, and cross-timer contracts
+//! on real FreeRTOS V11.3.0 (QEMU mps2-an385).
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::ptr::null_mut;
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 use core::time::Duration;
 
 use osal_api::error::Error;
@@ -59,6 +60,26 @@ pub enum TimerContractError {
 
     TimerCoalescingBurstDetected = 660,
 
+    // ---- Commit 3: reentry / drop ----
+    SelfStopFailed = 700,
+    SelfStopExtraCallback = 701,
+    SelfResetFailed = 702,
+    SelfResetMissingSecondCallback = 703,
+    SelfResetSecondCallbackTooEarly = 704,
+
+    CrossTimerStartFailed = 710,
+    CrossTimerBCallbackMissing = 711,
+
+    CloneDropNonLastCanceled = 720,
+    CloneDropLastDropLeakedCallback = 721,
+
+    InflightDropBlocked = 730,
+    InflightExtraCallback = 731,
+    InflightDropProbeMissing = 732,
+
+    CallbackDropOutsideLockNotDropped = 740,
+    CallbackDropOutsideLockDeadlock = 741,
+
     HeapNotRecovered = 690,
 }
 
@@ -95,8 +116,14 @@ fn raw_tick_snap(raw: u32) -> sys::TickSnapshot {
     sys::TickSnapshot { overflow_count: 0, tick_count: raw as u64 }
 }
 
+/// Dereference a published AtomicPtr slot.  Caller must ensure the
+/// pointer has been stored and the pointee outlives the borrow.
+unsafe fn timer_from_slot(slot: &AtomicPtr<FreeRtosTimer>) -> &FreeRtosTimer {
+    unsafe { &*slot.load(Ordering::Acquire) }
+}
+
 // ------------------------------------------------------------------
-// TimerCaseState
+// TimerCaseState — shared by simple record-and-count cases.
 // ------------------------------------------------------------------
 pub struct TimerCaseState {
     /// Publish-store: written LAST, after all per-callback data is
@@ -121,17 +148,6 @@ impl TimerCaseState {
         }
     }
 
-    /// Record one callback firing.
-    ///
-    /// All per-callback data is stored with Relaxed ordering; the
-    /// callback_count publish-store with Release happens LAST so the
-    /// controller never observes a new count before the tick/HWM data
-    /// backing it is visible.
-    ///
-    /// Timer worker serialises callbacks for a single timer, so no
-    /// `fetch_add` is needed for mutual exclusion — a simple load +
-    /// store is sufficient and avoids a spurious AcqRel barrier that
-    /// would not actually protect the data it's meant to guard.
     pub fn record(&self) {
         if FreeRtosTask::current().is_some() {
             self.callback_task_current_some.store(1, Ordering::Relaxed);
@@ -149,7 +165,6 @@ impl TimerCaseState {
 
         self.callback_hwm.store(task_stack_hwm(), Ordering::Relaxed);
 
-        // Publish: all data above is now visible to any Acquire reader.
         self.callback_count.store(idx + 1, Ordering::Release);
     }
 }
@@ -180,7 +195,6 @@ fn wait_for_callback_count(state: &TimerCaseState, target: u32, deadline_ticks: 
 }
 
 fn assert_worker_identity(state: &TimerCaseState) -> TestResult {
-    // Acquire pairs with the Release store in record().
     if state.callback_task_current_some.load(Ordering::Acquire) != 0 {
         return Err(TimerContractError::WorkerTaskCurrentNotNone);
     }
@@ -266,6 +280,19 @@ pub fn run_timer_cases(tick_bits: u8) -> Result<(), i32> {
         }};
     }
 
+    // Cases that manage their own state (no TimerCaseState argument).
+    macro_rules! run_custom_case {
+        ($case_fn:expr, $name:expr) => {{
+            let inner = $case_fn(&caps);
+            if let Err(e) = inner {
+                return Err(-(e as i32));
+            }
+            assert_heap_recovery(worker_baseline).map_err(|e| -(e as i32))?;
+            harness::console_line($name);
+        }};
+    }
+
+    // --- Commit 2 cases ---
     run_case!(s, case_timer_builder_core, c"OSAL_CASE_PASS name=timer_builder_core");
     run_case!(s, case_timer_one_shot, c"OSAL_CASE_PASS name=timer_one_shot");
     run_case!(s, case_timer_periodic, c"OSAL_CASE_PASS name=timer_periodic");
@@ -274,6 +301,12 @@ pub fn run_timer_cases(tick_bits: u8) -> Result<(), i32> {
     run_case!(s, case_timer_change_period_stopped, c"OSAL_CASE_PASS name=timer_change_period_stopped");
     run_case!(s, case_timer_change_period_running, c"OSAL_CASE_PASS name=timer_change_period_running");
     run_case!(s, case_timer_periodic_coalescing, c"OSAL_CASE_PASS name=timer_periodic_coalescing");
+    // --- Commit 3 cases ---
+    run_custom_case!(case_timer_callback_self_control, c"OSAL_CASE_PASS name=timer_callback_self_control");
+    run_custom_case!(case_timer_callback_cross_timer, c"OSAL_CASE_PASS name=timer_callback_cross_timer");
+    run_case!(s, case_timer_clone_last_drop, c"OSAL_CASE_PASS name=timer_clone_last_drop");
+    run_custom_case!(case_timer_inflight_last_drop, c"OSAL_CASE_PASS name=timer_inflight_last_drop");
+    run_custom_case!(case_timer_callback_drop_outside_lock, c"OSAL_CASE_PASS name=timer_callback_drop_outside_lock");
 
     let _ = tick_bits;
     Ok(())
@@ -432,8 +465,6 @@ fn case_timer_one_shot(caps: &sys::Capabilities, state: &Arc<TimerCaseState>) ->
     let t = FreeRtosTimer::new("test-os1", period, TimerMode::OneShot, cb)
         .map_err(|_| TimerContractError::TimerCallbackNotFired)?;
 
-    // Capture start_tick AFTER new() so constructor overhead doesn't
-    // falsely widen the measured window.
     let start_tick = sys::tick_snapshot();
     t.start().map_err(|_| TimerContractError::TimerCallbackNotFired)?;
 
@@ -481,13 +512,11 @@ fn case_timer_periodic(caps: &sys::Capabilities, state: &Arc<TimerCaseState>) ->
     let t1 = state.callback_tick_1.load(Ordering::Acquire);
     let t2 = state.callback_tick_2.load(Ordering::Acquire);
 
-    // First callback must not fire before the period boundary.
     let d0 = harness::total_ticks_diff(raw_tick_snap(t0), start_tick, caps.tick_bits);
     if d0 < 4 {
         return Err(TimerContractError::TimerPeriodicFirstCallbackTooEarly);
     }
 
-    // Subsequent callbacks must be monotonic (not the same tick).
     let d01 = harness::total_ticks_diff(raw_tick_snap(t1), raw_tick_snap(t0), caps.tick_bits);
     let d12 = harness::total_ticks_diff(raw_tick_snap(t2), raw_tick_snap(t1), caps.tick_bits);
     if d01 == 0 || d12 == 0 {
@@ -545,7 +574,6 @@ fn case_timer_start_reset(caps: &sys::Capabilities, state: &Arc<TimerCaseState>)
     drop(t_b);
 
     // ---- Sub-case C: start on already-running timer acts as reset. ----
-    // Behavior contract: start() on running timer ≡ reset().
     let state_c = Arc::new(TimerCaseState::new());
     let cb_c = make_record_callback(&state_c);
     let t_c = FreeRtosTimer::new(
@@ -648,9 +676,6 @@ fn case_timer_change_period_stopped(
 fn case_timer_change_period_running(
     caps: &sys::Capabilities, state: &Arc<TimerCaseState>,
 ) -> TestResult {
-    // Wide gap: old=40, new=5.  If the implementation keeps using 40,
-    // the second callback will arrive far too late to pass the bounded
-    // wait below.
     let old_period = Duration::from_millis(40);
     let new_period = Duration::from_millis(5);
 
@@ -665,7 +690,6 @@ fn case_timer_change_period_running(
     t.change_period(new_period)
         .map_err(|_| TimerContractError::TimerChangePeriodFirstDeadlineWrong)?;
 
-    // First callback: must respect the original (old) deadline.
     wait_for_callback_count(state, 1, 80)?;
     let t0 = state.callback_tick_0.load(Ordering::Acquire);
     let elapsed_0 = harness::total_ticks_diff(raw_tick_snap(t0), start_tick, caps.tick_bits);
@@ -673,9 +697,6 @@ fn case_timer_change_period_running(
         return Err(TimerContractError::TimerChangePeriodFirstDeadlineWrong);
     }
 
-    // Second callback: must arrive within a bounded window around the
-    // NEW period.  Large margin accounts for scheduler latency, but
-    // still tight enough that stuck-on-old-period=40 would always fail.
     let second_deadline = 20u32;
     let wait_start = sys::tick_snapshot();
     loop {
@@ -710,12 +731,8 @@ fn case_timer_periodic_coalescing(
     _caps: &sys::Capabilities, state: &Arc<TimerCaseState>,
 ) -> TestResult {
     let period_ticks: u32 = 5;
-    // Block long enough to miss 3 period boundaries (5/10/15).
     let block_ticks = period_ticks * 3 + 1; // 16
 
-    // Only the FIRST callback blocks.  This lets any catch-up burst
-    // propagate without artificial throttling — if the implementation
-    // fires a callback for every missed period, we'll see count ≫ 2.
     let entered = Arc::new(AtomicU32::new(0));
     let s = Arc::clone(state);
     let e = Arc::clone(&entered);
@@ -733,14 +750,9 @@ fn case_timer_periodic_coalescing(
     ).map_err(|_| TimerContractError::TimerCoalescingBurstDetected)?;
     t.start().map_err(|_| TimerContractError::TimerCoalescingBurstDetected)?;
 
-    // Wait for exactly 2 callbacks: the blocked first one, then the
-    // single coalesced callback covering all missed periods.
-    // Stop immediately so the next periodic boundary (if any) can't
-    // add a third callback before the controller inspects count.
     wait_for_callback_count(state, 2, 80)?;
     t.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
 
-    // Coalescing: exactly 2 callbacks.  Catch-up bug: 4+.
     let count = state.callback_count.load(Ordering::Acquire);
     if count > 2 {
         return Err(TimerContractError::TimerCoalescingBurstDetected);
@@ -752,5 +764,511 @@ fn case_timer_periodic_coalescing(
     t.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
     assert_worker_identity(state)?;
     drop(t);
+    Ok(())
+}
+
+// ==================================================================
+// Commit-3 state structs
+// ==================================================================
+
+/// Minimal record-only state used by self-control cases.
+struct SelfControlState {
+    callback_count: AtomicU32,
+    callback_tick_0: AtomicU32,
+    callback_tick_1: AtomicU32,
+    callback_hwm: AtomicU32,
+    callback_task_current_some: AtomicU32,
+}
+
+impl SelfControlState {
+    fn new() -> Self {
+        Self {
+            callback_count: AtomicU32::new(0),
+            callback_tick_0: AtomicU32::new(0),
+            callback_tick_1: AtomicU32::new(0),
+            callback_hwm: AtomicU32::new(0),
+            callback_task_current_some: AtomicU32::new(0),
+        }
+    }
+
+    fn record(&self) {
+        if FreeRtosTask::current().is_some() {
+            self.callback_task_current_some.store(1, Ordering::Relaxed);
+        }
+        let raw = sys::tick_snapshot().tick_count as u32;
+        let idx = self.callback_count.load(Ordering::Relaxed);
+        match idx {
+            0 => self.callback_tick_0.store(raw, Ordering::Relaxed),
+            1 => self.callback_tick_1.store(raw, Ordering::Relaxed),
+            _ => {}
+        }
+        self.callback_hwm.store(task_stack_hwm(), Ordering::Relaxed);
+        self.callback_count.store(idx + 1, Ordering::Release);
+    }
+}
+
+/// State for the cross-timer callback case.
+struct CrossTimerState {
+    /// Timer A callback count.
+    a_count: AtomicU32,
+    a_tick: AtomicU32,
+    /// Timer B start result: 0=not called, 1=Ok, 2=Err.
+    b_start_result: AtomicU32,
+    /// Timer B callback count.
+    b_count: AtomicU32,
+    b_tick: AtomicU32,
+    hwm: AtomicU32,
+}
+
+impl CrossTimerState {
+    fn new() -> Self {
+        Self {
+            a_count: AtomicU32::new(0),
+            a_tick: AtomicU32::new(0),
+            b_start_result: AtomicU32::new(0),
+            b_count: AtomicU32::new(0),
+            b_tick: AtomicU32::new(0),
+            hwm: AtomicU32::new(0),
+        }
+    }
+}
+
+/// State for the inflight last-drop case.
+struct InflightState {
+    started: AtomicBool,
+    release: AtomicBool,
+    completed: AtomicBool,
+    callback_count: AtomicU32,
+    hwm: AtomicU32,
+}
+
+impl InflightState {
+    fn new() -> Self {
+        Self {
+            started: AtomicBool::new(false),
+            release: AtomicBool::new(false),
+            completed: AtomicBool::new(false),
+            callback_count: AtomicU32::new(0),
+            hwm: AtomicU32::new(0),
+        }
+    }
+}
+
+// ==================================================================
+// case_timer_callback_self_control
+// ==================================================================
+fn case_timer_callback_self_control(caps: &sys::Capabilities) -> TestResult {
+    // ---- Sub-case A: callback self-stop on Periodic ----
+    let state_a = Arc::new(SelfControlState::new());
+    let slot_a = Arc::new(AtomicPtr::<FreeRtosTimer>::new(null_mut()));
+
+    {
+        let s = Arc::clone(&state_a);
+        let sl = Arc::clone(&slot_a);
+        let cb_a: TimerCallback = Box::new(move || {
+            s.record();
+            // SAFETY: controller publishes pointer before start() and
+            // waits for callback completion before cleanup — the
+            // pointee outlives every callback invocation.
+            let ptr = sl.load(Ordering::Acquire);
+            if !ptr.is_null() {
+                let t = unsafe { &*ptr };
+                let _ = t.stop();
+            }
+        });
+
+        let t = FreeRtosTimer::new(
+            "test-slfA", Duration::from_millis(4), TimerMode::Periodic, cb_a,
+        ).map_err(|_| TimerContractError::SelfStopFailed)?;
+
+        // Publish pointer BEFORE start so callback can find it.
+        let boxed = Box::new(t);
+        slot_a.store(Box::into_raw(boxed), Ordering::Release);
+
+        unsafe { timer_from_slot(&slot_a) }.start().map_err(|_| TimerContractError::SelfStopFailed)?;
+
+        wait_self_control_count(&state_a, 1, 80)?;
+
+        // Wait > 3 periods; if self-stop failed, more callbacks would fire.
+        sys::delay_ticks(20);
+        if state_a.callback_count.load(Ordering::Acquire) != 1 {
+            return Err(TimerContractError::SelfStopExtraCallback);
+        }
+
+        // Cleanup: reclaim the boxed handle.
+        let ptr = slot_a.swap(null_mut(), Ordering::AcqRel);
+        if !ptr.is_null() {
+            let _ = unsafe { Box::from_raw(ptr) };
+        }
+    }
+
+    // ---- Sub-case B: callback self-reset on OneShot ----
+    let state_b = Arc::new(SelfControlState::new());
+    let slot_b = Arc::new(AtomicPtr::<FreeRtosTimer>::new(null_mut()));
+
+    {
+        let s = Arc::clone(&state_b);
+        let sl = Arc::clone(&slot_b);
+        let cb_b: TimerCallback = Box::new(move || {
+            s.record();
+            let ptr = sl.load(Ordering::Acquire);
+            if !ptr.is_null() {
+                let t = unsafe { &*ptr };
+                let _ = t.reset();
+            }
+        });
+
+        let t = FreeRtosTimer::new(
+            "test-slfB", Duration::from_millis(4), TimerMode::OneShot, cb_b,
+        ).map_err(|_| TimerContractError::SelfResetFailed)?;
+
+        let boxed = Box::new(t);
+        slot_b.store(Box::into_raw(boxed), Ordering::Release);
+
+        let reset_tick = sys::tick_snapshot();
+        unsafe { timer_from_slot(&slot_b) }.start().map_err(|_| TimerContractError::SelfResetFailed)?;
+
+        // Self-reset should cause a second callback.
+        wait_self_control_count(&state_b, 2, 80)?;
+
+        let t0 = state_b.callback_tick_0.load(Ordering::Acquire);
+        let t1 = state_b.callback_tick_1.load(Ordering::Acquire);
+        let d01 = harness::total_ticks_diff(raw_tick_snap(t1), raw_tick_snap(t0), caps.tick_bits);
+        // Second callback must arrive after at least one period from reset.
+        // The reset happened during the first callback, so the second
+        // callback is at least one period from the first.
+        if d01 < 4 {
+            return Err(TimerContractError::SelfResetSecondCallbackTooEarly);
+        }
+
+        let _ = reset_tick;
+
+        let ptr = slot_b.swap(null_mut(), Ordering::AcqRel);
+        if !ptr.is_null() {
+            let timer = unsafe { Box::from_raw(ptr) };
+            timer.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+            drop(timer);
+        }
+    }
+
+    Ok(())
+}
+
+fn wait_self_control_count(state: &SelfControlState, target: u32, deadline_ticks: u32) -> TestResult {
+    let start = sys::tick_snapshot();
+    loop {
+        if state.callback_count.load(Ordering::Acquire) >= target {
+            return Ok(());
+        }
+        let elapsed = harness::total_ticks_diff(sys::tick_snapshot(), start, 32);
+        if elapsed >= deadline_ticks as u128 {
+            return Err(TimerContractError::TimerCallbackNotFired);
+        }
+        if sys::delay_ticks(1) != sys::DelayStatus::Ok {
+            return Err(TimerContractError::TimerCallbackNotFired);
+        }
+    }
+}
+
+// ==================================================================
+// case_timer_callback_cross_timer
+// ==================================================================
+fn case_timer_callback_cross_timer(caps: &sys::Capabilities) -> TestResult {
+    let state = Arc::new(CrossTimerState::new());
+
+    // --- Timer B: OneShot, initially stopped. ---
+    let b_slot = Arc::new(AtomicPtr::<FreeRtosTimer>::new(null_mut()));
+
+    let s_b = Arc::clone(&state);
+    let cb_b: TimerCallback = Box::new(move || {
+        let raw = sys::tick_snapshot().tick_count as u32;
+        s_b.b_tick.store(raw, Ordering::Release);
+        s_b.b_count.fetch_add(1, Ordering::Release);
+        s_b.hwm.store(task_stack_hwm(), Ordering::Release);
+    });
+
+    let t_b = FreeRtosTimer::new(
+        "test-xb", Duration::from_millis(4), TimerMode::OneShot, cb_b,
+    ).map_err(|_| TimerContractError::CrossTimerStartFailed)?;
+
+    let b_boxed = Box::new(t_b);
+    b_slot.store(Box::into_raw(b_boxed), Ordering::Release);
+
+    // --- Timer A: OneShot, callback starts B. ---
+    let s_a = Arc::clone(&state);
+    let sl_b = Arc::clone(&b_slot);
+    let cb_a: TimerCallback = Box::new(move || {
+        let raw = sys::tick_snapshot().tick_count as u32;
+        s_a.a_tick.store(raw, Ordering::Release);
+        s_a.a_count.fetch_add(1, Ordering::Release);
+        s_a.hwm.store(task_stack_hwm(), Ordering::Release);
+
+        // Cross-timer: start B from within A's callback.
+        let ptr = sl_b.load(Ordering::Acquire);
+        if !ptr.is_null() {
+            let b = unsafe { &*ptr };
+            match b.start() {
+                Ok(()) => s_a.b_start_result.store(1, Ordering::Release),
+                Err(_) => s_a.b_start_result.store(2, Ordering::Release),
+            }
+        }
+    });
+
+    let t_a = FreeRtosTimer::new(
+        "test-xa", Duration::from_millis(3), TimerMode::OneShot, cb_a,
+    ).map_err(|_| TimerContractError::CrossTimerStartFailed)?;
+
+    t_a.start().map_err(|_| TimerContractError::CrossTimerStartFailed)?;
+
+    // Wait for A's callback.
+    {
+        let start = sys::tick_snapshot();
+        loop {
+            if state.a_count.load(Ordering::Acquire) >= 1 {
+                break;
+            }
+            if harness::total_ticks_diff(sys::tick_snapshot(), start, caps.tick_bits) >= 50 {
+                return Err(TimerContractError::TimerCallbackNotFired);
+            }
+            if sys::delay_ticks(1) != sys::DelayStatus::Ok {
+                return Err(TimerContractError::TimerCallbackNotFired);
+            }
+        }
+    }
+
+    // B.start() must have succeeded.
+    if state.b_start_result.load(Ordering::Acquire) != 1 {
+        return Err(TimerContractError::CrossTimerStartFailed);
+    }
+
+    // Wait for B's callback.
+    {
+        let start = sys::tick_snapshot();
+        loop {
+            if state.b_count.load(Ordering::Acquire) >= 1 {
+                break;
+            }
+            if harness::total_ticks_diff(sys::tick_snapshot(), start, caps.tick_bits) >= 80 {
+                return Err(TimerContractError::CrossTimerBCallbackMissing);
+            }
+            if sys::delay_ticks(1) != sys::DelayStatus::Ok {
+                return Err(TimerContractError::CrossTimerBCallbackMissing);
+            }
+        }
+    }
+
+    if state.hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+        return Err(TimerContractError::WorkerHwmTooLow);
+    }
+
+    drop(t_a);
+
+    let b_ptr = b_slot.swap(null_mut(), Ordering::AcqRel);
+    if !b_ptr.is_null() {
+        let _ = unsafe { Box::from_raw(b_ptr) };
+    }
+
+    Ok(())
+}
+
+// ==================================================================
+// case_timer_clone_last_drop
+// ==================================================================
+fn case_timer_clone_last_drop(
+    _caps: &sys::Capabilities, state: &Arc<TimerCaseState>,
+) -> TestResult {
+    let cb = make_record_callback(state);
+    let t1 = FreeRtosTimer::new(
+        "test-cld", Duration::from_millis(4), TimerMode::Periodic, cb,
+    ).map_err(|_| TimerContractError::CloneDropNonLastCanceled)?;
+    let t2 = t1.clone();
+
+    t1.start().map_err(|_| TimerContractError::CloneDropNonLastCanceled)?;
+
+    // Non-last clone drop: timer must keep running.
+    drop(t1);
+    wait_for_callback_count(state, 1, 50)?;
+    wait_for_callback_count(state, 2, 50)?;
+
+    // Last handle drop: must stop future callbacks.
+    let count_before = state.callback_count.load(Ordering::Acquire);
+    drop(t2);
+
+    sys::delay_ticks(20);
+    let count_after = state.callback_count.load(Ordering::Acquire);
+    if count_after != count_before {
+        return Err(TimerContractError::CloneDropLastDropLeakedCallback);
+    }
+
+    assert_worker_identity(state)?;
+    Ok(())
+}
+
+// ==================================================================
+// case_timer_inflight_last_drop
+// ==================================================================
+fn case_timer_inflight_last_drop(_caps: &sys::Capabilities) -> TestResult {
+    let state = Arc::new(InflightState::new());
+
+    // Build callback: signals started, blocks until release, then
+    // records and signals completed.  Uses delay_ticks(1) polling so
+    // the controller (lower priority) isn't starved.
+    let s = Arc::clone(&state);
+    let cb: TimerCallback = Box::new(move || {
+        s.started.store(true, Ordering::Release);
+
+        // Busy-wait with tick delay — pure spin would starve the
+        // controller since the Timer worker runs at highest priority.
+        while !s.release.load(Ordering::Acquire) {
+            sys::delay_ticks(1);
+        }
+
+        s.callback_count.fetch_add(1, Ordering::Release);
+        s.hwm.store(task_stack_hwm(), Ordering::Release);
+        s.completed.store(true, Ordering::Release);
+    });
+
+    let t = FreeRtosTimer::new(
+        "test-ifd", Duration::from_millis(3), TimerMode::Periodic, cb,
+    ).map_err(|_| TimerContractError::InflightDropBlocked)?;
+
+    t.start().map_err(|_| TimerContractError::InflightDropBlocked)?;
+
+    // Wait for callback to start.
+    {
+        let start = sys::tick_snapshot();
+        loop {
+            if state.started.load(Ordering::Acquire) {
+                break;
+            }
+            if harness::total_ticks_diff(sys::tick_snapshot(), start, 32) >= 100 {
+                return Err(TimerContractError::TimerCallbackNotFired);
+            }
+            if sys::delay_ticks(1) != sys::DelayStatus::Ok {
+                return Err(TimerContractError::TimerCallbackNotFired);
+            }
+        }
+    }
+
+    // Drop the last handle while callback is in-flight.
+    drop(t);
+
+    // Drop must have returned (we're here!). Callback is still running.
+    if state.completed.load(Ordering::Acquire) {
+        return Err(TimerContractError::InflightDropBlocked);
+    }
+
+    // Release the callback.
+    state.release.store(true, Ordering::Release);
+
+    // Wait for callback to complete.
+    {
+        let start = sys::tick_snapshot();
+        loop {
+            if state.completed.load(Ordering::Acquire) {
+                break;
+            }
+            if harness::total_ticks_diff(sys::tick_snapshot(), start, 32) >= 100 {
+                return Err(TimerContractError::TimerCallbackNotFired);
+            }
+            if sys::delay_ticks(1) != sys::DelayStatus::Ok {
+                return Err(TimerContractError::TimerCallbackNotFired);
+            }
+        }
+    }
+
+    // After the in-flight callback finished, no more callbacks should
+    // fire (the entry was deleted by the last-handle drop).
+    let count = state.callback_count.load(Ordering::Acquire);
+    sys::delay_ticks(20);
+    if state.callback_count.load(Ordering::Acquire) != count {
+        return Err(TimerContractError::InflightExtraCallback);
+    }
+    if count < 1 {
+        return Err(TimerContractError::TimerCallbackNotFired);
+    }
+
+    if state.hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+        return Err(TimerContractError::WorkerHwmTooLow);
+    }
+
+    Ok(())
+}
+
+// ==================================================================
+// case_timer_callback_drop_outside_lock
+// ==================================================================
+
+/// Probe that re-enters the Timer API during its own Drop.
+///
+/// If the registry lock is held when the callback closure is dropped
+/// (during `deregister`), calling `t.stop()` on another timer would
+/// deadlock.  A successful stop proves the destructor runs outside
+/// any internal lock.
+struct ReentrantDropProbe {
+    other_timer: Option<FreeRtosTimer>,
+    drops: Arc<AtomicU32>,
+    reentry_ok: Arc<AtomicU32>,
+}
+
+impl Drop for ReentrantDropProbe {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::Release);
+        if let Some(ref t) = self.other_timer {
+            match t.stop() {
+                Ok(()) => self.reentry_ok.store(1, Ordering::Release),
+                Err(_) => self.reentry_ok.store(2, Ordering::Release),
+            }
+        }
+    }
+}
+
+fn case_timer_callback_drop_outside_lock(_caps: &sys::Capabilities) -> TestResult {
+    let drops = Arc::new(AtomicU32::new(0));
+    let reentry_ok = Arc::new(AtomicU32::new(0));
+
+    // Timer B (stopped, never started) — target of re-entrant stop.
+    let cb_b: TimerCallback = Box::new(|| {});
+    let t_b = FreeRtosTimer::new(
+        "test-dolB", Duration::from_millis(5), TimerMode::OneShot, cb_b,
+    ).map_err(|_| TimerContractError::CallbackDropOutsideLockNotDropped)?;
+
+    // ReentrantDropProbe captures another timer handle.  When this
+    // probe is dropped (inside the callback closure's destructor),
+    // it calls t.stop() to prove it's not inside the registry lock.
+    let probe = ReentrantDropProbe {
+        other_timer: Some(t_b.clone()),
+        drops: Arc::clone(&drops),
+        reentry_ok: Arc::clone(&reentry_ok),
+    };
+
+    // Timer A: never started.  The callback captures `probe`.
+    // Dropping the last handle triggers deregister which takes the
+    // callback and drops it (and thus drops probe) outside the lock.
+    let cb_a: TimerCallback = Box::new(move || {
+        let _ = &probe; // keep probe alive in closure
+    });
+    let t_a = FreeRtosTimer::new(
+        "test-dolA", Duration::from_millis(10), TimerMode::OneShot, cb_a,
+    ).map_err(|_| TimerContractError::CallbackDropOutsideLockNotDropped)?;
+
+    // Drop the last handle to A — triggers deregister → drop callback
+    // → drop probe → ReentrantDropProbe::drop() → t_b.stop()
+    drop(t_a);
+
+    // Probe must have been dropped exactly once.
+    if drops.load(Ordering::Acquire) != 1 {
+        return Err(TimerContractError::CallbackDropOutsideLockNotDropped);
+    }
+
+    // Re-entrant stop must have succeeded (no deadlock).
+    if reentry_ok.load(Ordering::Acquire) != 1 {
+        return Err(TimerContractError::CallbackDropOutsideLockDeadlock);
+    }
+
+    // Timer B must still be usable after the probe drop.
+    t_b.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+    drop(t_b);
+
     Ok(())
 }
