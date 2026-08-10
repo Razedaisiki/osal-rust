@@ -1443,21 +1443,24 @@ fn case_timer_scheduler_suspended(_caps: &sys::Capabilities) -> TestResult {
     let state = Arc::new(TimerCaseState::new());
 
     // Ensure the worker exists by running a first callback.
-    let cb1 = make_record_callback(&state);
+    let cb = make_record_callback(&state);
     let t = FreeRtosTimer::new(
-        "test-sss", Duration::from_millis(4), TimerMode::OneShot, cb1,
+        "test-sss", Duration::from_millis(4), TimerMode::OneShot, cb,
     ).map_err(|_| TimerContractError::TimerCallbackNotFired)?;
 
     t.start().map_err(|_| TimerContractError::TimerCallbackNotFired)?;
     wait_for_callback_count(&state, 1, 80)?;
     t.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
 
+    // ------------------------------------------------------------------
+    // Phase A: Busy failure-atomic — no stop() between Busy and resume,
+    // so a buggy start/reset that silently arms the timer would fire.
+    // ------------------------------------------------------------------
     let heap_before = sys::heap_free();
     let count_before = state.callback_count.load(Ordering::Acquire);
 
-    // Suspend scheduler — worker was already created above.
     unsafe { osal_test_scheduler_suspend(); }
-    let _guard = unsafe { SchedulerResumeGuard::new() };
+    let guard_a = unsafe { SchedulerResumeGuard::new() };
 
     // start() must return Busy (ADR 0029).
     match t.start() {
@@ -1471,14 +1474,13 @@ fn case_timer_scheduler_suspended(_caps: &sys::Capabilities) -> TestResult {
         _ => return Err(TimerContractError::SchedulerResetNotBusy),
     }
 
-    // stop() must succeed — no scheduler dependency.
-    t.stop().map_err(|_| TimerContractError::SchedulerNotAtomic)?;
+    drop(guard_a); // resume scheduler — no stop() in between
 
-    // change_period() must succeed — no scheduler dependency.
-    t.change_period(Duration::from_millis(10))
-        .map_err(|_| TimerContractError::SchedulerNotAtomic)?;
+    // Wait longer than the timer period.  If start/reset had silently
+    // armed the timer despite returning Busy, a callback would fire.
+    sys::delay_ticks(10); // period is 4ms ~= 4 ticks
 
-    // Failure-atomic check: Busy must not have mutated state.
+    // Busy must not have mutated state.
     if state.callback_count.load(Ordering::Acquire) != count_before {
         return Err(TimerContractError::SchedulerNotAtomic);
     }
@@ -1489,11 +1491,33 @@ fn case_timer_scheduler_suspended(_caps: &sys::Capabilities) -> TestResult {
         return Err(TimerContractError::RuntimeStateWrong);
     }
 
-    drop(_guard); // resume scheduler
+    // ------------------------------------------------------------------
+    // Phase B: allowed operations while suspended.
+    //   stop            → Ok
+    //   change_period   → Ok (stopped timer stays stopped)
+    // ------------------------------------------------------------------
+    unsafe { osal_test_scheduler_suspend(); }
+    let guard_b = unsafe { SchedulerResumeGuard::new() };
 
-    // Worker must still be functional after resume.
+    // stop() must succeed — no scheduler dependency.
+    t.stop().map_err(|_| TimerContractError::SchedulerNotAtomic)?;
+
+    // change_period() must succeed — no scheduler dependency.
+    t.change_period(Duration::from_millis(10))
+        .map_err(|_| TimerContractError::SchedulerNotAtomic)?;
+
+    drop(guard_b); // resume
+
+    // Wait longer than the new 10 ms period.  change_period on a stopped
+    // timer must not start it, so callback_count stays unchanged.
+    sys::delay_ticks(15);
+    if state.callback_count.load(Ordering::Acquire) != count_before {
+        return Err(TimerContractError::SchedulerNotAtomic);
+    }
+
+    // Worker still functional: start now fires with the new period.
     t.start().map_err(|_| TimerContractError::SchedulerResumeNotWorking)?;
-    wait_for_callback_count(&state, 2, 80)?; // second callback
+    wait_for_callback_count(&state, count_before + 1, 80)?;
     t.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
 
     assert_worker_identity(&state)?;
