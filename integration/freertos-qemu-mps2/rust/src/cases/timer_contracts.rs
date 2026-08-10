@@ -1056,6 +1056,28 @@ fn bounded_wait_u32<F: Fn(u32) -> bool>(
     }
 }
 
+/// Bounded poll for an AtomicBool to reach expected.
+fn bounded_wait_bool(
+    atom: &AtomicBool,
+    expected: bool,
+    deadline_ticks: u32,
+    tick_bits: u8,
+) -> Result<(), ()> {
+    let start = sys::tick_snapshot();
+    loop {
+        if atom.load(Ordering::Acquire) == expected {
+            return Ok(());
+        }
+        let elapsed = harness::total_ticks_diff(sys::tick_snapshot(), start, tick_bits);
+        if elapsed >= deadline_ticks as u128 {
+            return Err(());
+        }
+        if sys::delay_ticks(1) != sys::DelayStatus::Ok {
+            return Err(());
+        }
+    }
+}
+
 // ==================================================================
 // case_timer_callback_cross_timer
 // ==================================================================
@@ -1151,7 +1173,7 @@ fn case_timer_clone_last_drop(
 ) -> TestResult {
     let cb = make_record_callback(state);
     let t1 = FreeRtosTimer::new(
-        "test-cld", Duration::from_millis(4), TimerMode::Periodic, cb,
+        "test-cld", Duration::from_millis(4), TimerMode::OneShot, cb,
     ).map_err(|_| TimerContractError::CloneDropNonLastCanceled)?;
     let t2 = t1.clone();
 
@@ -1160,9 +1182,14 @@ fn case_timer_clone_last_drop(
     // Non-last clone drop: timer must keep running.
     drop(t1);
     wait_for_callback_count(state, 1, 50)?;
-    wait_for_callback_count(state, 2, 50)?;
 
-    // Last handle drop: must stop future callbacks.
+    // Re-arm as OneShot so there is exactly one pending future
+    // callback to cancel.  This avoids conflating in-flight
+    // completion (verified by timer_inflight_last_drop) with
+    // last-drop cancellation.
+    t2.reset().map_err(|_| TimerContractError::CloneDropLastDropLeakedCallback)?;
+
+    // Last handle drop: must cancel the pending callback.
     let count_before = state.callback_count.load(Ordering::Acquire);
     drop(t2);
 
@@ -1214,13 +1241,8 @@ fn case_timer_inflight_last_drop(caps: &sys::Capabilities) -> TestResult {
     t.start().map_err(|_| TimerContractError::InflightDropBlocked)?;
 
     // Wait for callback to start.
-    bounded_wait_u32(
-        // Reinterpret AtomicBool as AtomicU32 for the generic helper:
-        // started is the first (and only) field, same alignment.
-        unsafe { &*(&state.started as *const AtomicBool as *const AtomicU32) },
-        |v| v != 0,
-        100,
-    ).map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+    bounded_wait_bool(&state.started, true, 100, caps.tick_bits)
+        .map_err(|_| TimerContractError::TimerCallbackNotFired)?;
 
     // Drop the last handle while callback is in-flight.
     drop(t);
@@ -1234,11 +1256,8 @@ fn case_timer_inflight_last_drop(caps: &sys::Capabilities) -> TestResult {
     state.release.store(true, Ordering::Release);
 
     // Wait for callback body to complete.
-    bounded_wait_u32(
-        unsafe { &*(&state.completed as *const AtomicBool as *const AtomicU32) },
-        |v| v != 0,
-        100,
-    ).map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+    bounded_wait_bool(&state.completed, true, 100, caps.tick_bits)
+        .map_err(|_| TimerContractError::TimerCallbackNotFired)?;
 
     // completed is visible, but the callback closure may not be dropped
     // yet — dispatch_one() must re-lock the registry, detect the
