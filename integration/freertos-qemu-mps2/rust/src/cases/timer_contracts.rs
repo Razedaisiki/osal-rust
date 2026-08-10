@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 use core::time::Duration;
 
 use osal_api::error::Error;
+use osal_api::runtime::RuntimeState;
 use osal_api::traits::task::Task;
 use osal_api::traits::timer::{Timer, TimerCallback};
 use osal_api::types::TimerMode;
@@ -79,6 +80,17 @@ pub enum TimerContractError {
 
     CallbackDropOutsideLockNotDropped = 740,
     CallbackDropOutsideLockDeadlock = 741,
+
+    // ---- Commit 4: scheduler / shutdown ----
+    SchedulerStartNotBusy = 750,
+    SchedulerResetNotBusy = 751,
+    SchedulerNotAtomic = 752,
+    SchedulerResumeNotWorking = 753,
+    ShutdownLeak = 760,
+    ShutdownLeaseCountWrong = 761,
+    SelfShutdownNotBusy = 762,
+    SelfShutdownNotAtomic = 763,
+    RuntimeStateWrong = 764,
 
     HeapNotRecovered = 690,
 }
@@ -301,6 +313,10 @@ pub fn run_timer_cases(tick_bits: u8) -> Result<(), i32> {
     run_case!(s, case_timer_clone_last_drop, c"OSAL_CASE_PASS name=timer_clone_last_drop");
     run_custom_case!(case_timer_inflight_last_drop, c"OSAL_CASE_PASS name=timer_inflight_last_drop");
     run_custom_case!(case_timer_callback_drop_outside_lock, c"OSAL_CASE_PASS name=timer_callback_drop_outside_lock");
+    // --- Commit 4 cases ---
+    run_custom_case!(case_timer_scheduler_suspended, c"OSAL_CASE_PASS name=timer_scheduler_suspended");
+    run_custom_case!(case_timer_shutdown_lease, c"OSAL_CASE_PASS name=timer_shutdown_lease");
+    run_custom_case!(case_timer_self_shutdown_busy, c"OSAL_CASE_PASS name=timer_self_shutdown_busy");
 
     let _ = tick_bits;
     Ok(())
@@ -1374,6 +1390,233 @@ fn case_timer_callback_drop_outside_lock(_caps: &sys::Capabilities) -> TestResul
     // Timer B must still be usable after the probe drop.
     t_b.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
     drop(t_b);
+
+    Ok(())
+}
+
+// ==================================================================
+// Commit-4 state structs
+// ==================================================================
+
+/// State for self-shutdown detection from within a callback.
+struct SelfShutdownState {
+    /// Gate: callback blocks on this until controller sets it true.
+    gate: AtomicBool,
+    /// 0=not called, 1=Ok, 2=Busy, 3=other error.
+    shutdown_result: AtomicU32,
+    /// True once the callback has entered the gate.
+    callback_entered: AtomicBool,
+    /// True once the callback has completed.
+    callback_completed: AtomicBool,
+    hwm: AtomicU32,
+}
+
+impl SelfShutdownState {
+    fn new() -> Self {
+        Self {
+            gate: AtomicBool::new(false),
+            shutdown_result: AtomicU32::new(0),
+            callback_entered: AtomicBool::new(false),
+            callback_completed: AtomicBool::new(false),
+            hwm: AtomicU32::new(0),
+        }
+    }
+}
+
+// ==================================================================
+// case_timer_scheduler_suspended
+// ==================================================================
+fn case_timer_scheduler_suspended(_caps: &sys::Capabilities) -> TestResult {
+    unsafe extern "C" {
+        fn osal_test_scheduler_suspend();
+        fn osal_test_scheduler_resume();
+    }
+
+    struct SchedulerResumeGuard;
+    impl SchedulerResumeGuard {
+        unsafe fn new() -> Self { Self }
+    }
+    impl Drop for SchedulerResumeGuard {
+        fn drop(&mut self) { unsafe { osal_test_scheduler_resume(); } }
+    }
+
+    let state = Arc::new(TimerCaseState::new());
+
+    // Ensure the worker exists by running a first callback.
+    let cb1 = make_record_callback(&state);
+    let t = FreeRtosTimer::new(
+        "test-sss", Duration::from_millis(4), TimerMode::OneShot, cb1,
+    ).map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+
+    t.start().map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+    wait_for_callback_count(&state, 1, 80)?;
+    t.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+
+    let heap_before = sys::heap_free();
+    let count_before = state.callback_count.load(Ordering::Acquire);
+
+    // Suspend scheduler — worker was already created above.
+    unsafe { osal_test_scheduler_suspend(); }
+    let _guard = unsafe { SchedulerResumeGuard::new() };
+
+    // start() must return Busy (ADR 0029).
+    match t.start() {
+        Err(Error::Busy) => {}
+        _ => return Err(TimerContractError::SchedulerStartNotBusy),
+    }
+
+    // reset() must return Busy (ADR 0029).
+    match t.reset() {
+        Err(Error::Busy) => {}
+        _ => return Err(TimerContractError::SchedulerResetNotBusy),
+    }
+
+    // stop() must succeed — no scheduler dependency.
+    t.stop().map_err(|_| TimerContractError::SchedulerNotAtomic)?;
+
+    // change_period() must succeed — no scheduler dependency.
+    t.change_period(Duration::from_millis(10))
+        .map_err(|_| TimerContractError::SchedulerNotAtomic)?;
+
+    // Failure-atomic check: Busy must not have mutated state.
+    if state.callback_count.load(Ordering::Acquire) != count_before {
+        return Err(TimerContractError::SchedulerNotAtomic);
+    }
+    if sys::heap_free() != heap_before {
+        return Err(TimerContractError::HeapNotRecovered);
+    }
+    if osal::runtime_state() != RuntimeState::Running {
+        return Err(TimerContractError::RuntimeStateWrong);
+    }
+
+    drop(_guard); // resume scheduler
+
+    // Worker must still be functional after resume.
+    t.start().map_err(|_| TimerContractError::SchedulerResumeNotWorking)?;
+    wait_for_callback_count(&state, 2, 80)?; // second callback
+    t.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+
+    assert_worker_identity(&state)?;
+    drop(t);
+    Ok(())
+}
+
+// ==================================================================
+// case_timer_shutdown_lease
+// ==================================================================
+fn case_timer_shutdown_lease(_caps: &sys::Capabilities) -> TestResult {
+    let state = Arc::new(TimerCaseState::new());
+    let cb = make_record_callback(&state);
+
+    let t = FreeRtosTimer::new(
+        "test-shl", Duration::from_millis(4), TimerMode::OneShot, cb,
+    ).map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+
+    let heap_before = sys::heap_free();
+
+    // Shutdown must be Busy while a public Timer handle lives.
+    match osal::shutdown() {
+        Err(Error::Busy) => {}
+        _ => return Err(TimerContractError::ShutdownLeak),
+    }
+
+    // Runtime must still be Running (Busy must be failure-atomic).
+    if osal::runtime_state() != RuntimeState::Running {
+        return Err(TimerContractError::RuntimeStateWrong);
+    }
+    if sys::heap_free() != heap_before {
+        return Err(TimerContractError::HeapNotRecovered);
+    }
+
+    // Timer must remain functional after the failed shutdown attempt.
+    t.start().map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+    wait_for_callback_count(&state, 1, 80)?;
+    t.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+
+    // Clone does NOT acquire a new lease — it shares the Arc.
+    let t2 = t.clone();
+    drop(t);
+
+    // Shutdown still Busy (clone didn't change lease count).
+    match osal::shutdown() {
+        Err(Error::Busy) => {}
+        _ => return Err(TimerContractError::ShutdownLeaseCountWrong),
+    }
+
+    if osal::runtime_state() != RuntimeState::Running {
+        return Err(TimerContractError::RuntimeStateWrong);
+    }
+
+    // Last handle drop releases the lease.
+    drop(t2);
+
+    assert_worker_identity(&state)?;
+    Ok(())
+}
+
+// ==================================================================
+// case_timer_self_shutdown_busy
+// ==================================================================
+fn case_timer_self_shutdown_busy(caps: &sys::Capabilities) -> TestResult {
+    let state = Arc::new(SelfShutdownState::new());
+
+    let s = Arc::clone(&state);
+    let cb: TimerCallback = Box::new(move || {
+        s.callback_entered.store(true, Ordering::Release);
+
+        // Block until controller releases the gate.
+        while !s.gate.load(Ordering::Acquire) {
+            sys::delay_ticks(1);
+        }
+
+        // All public handles were dropped; RuntimeLease is back to 0.
+        // Call shutdown() from within the Timer worker — must be Busy
+        // because the worker cannot wait for its own completion.
+        let result = match osal::shutdown() {
+            Ok(()) => 1,
+            Err(Error::Busy) => 2,
+            Err(_) => 3,
+        };
+        s.shutdown_result.store(result, Ordering::Release);
+        s.hwm.store(task_stack_hwm(), Ordering::Release);
+        s.callback_completed.store(true, Ordering::Release);
+    });
+
+    let t = FreeRtosTimer::new(
+        "test-sdb", Duration::from_millis(3), TimerMode::OneShot, cb,
+    ).map_err(|_| TimerContractError::SelfShutdownNotBusy)?;
+
+    t.start().map_err(|_| TimerContractError::SelfShutdownNotBusy)?;
+
+    // Wait for callback to enter the gate.
+    bounded_wait_bool(&state.callback_entered, true, 80, caps.tick_bits)
+        .map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+
+    // Drop the last public handle — deregisters the timer and releases
+    // the RuntimeLease.  Clears the path so shutdown()'s self-detection
+    // (not the live-timer guard) is what rejects the call.
+    drop(t);
+
+    // Release the gate so the callback can proceed.
+    state.gate.store(true, Ordering::Release);
+
+    // Wait for callback to complete.
+    bounded_wait_bool(&state.callback_completed, true, 80, caps.tick_bits)
+        .map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+
+    // shutdown() must have returned Busy (self-detection).
+    if state.shutdown_result.load(Ordering::Acquire) != 2 {
+        return Err(TimerContractError::SelfShutdownNotBusy);
+    }
+
+    // Runtime must still be Running — Busy must be failure-atomic.
+    if osal::runtime_state() != RuntimeState::Running {
+        return Err(TimerContractError::SelfShutdownNotAtomic);
+    }
+
+    if state.hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+        return Err(TimerContractError::WorkerHwmTooLow);
+    }
 
     Ok(())
 }

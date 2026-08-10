@@ -304,7 +304,15 @@ impl TimerService {
             .registry_mutex
             .as_ref()
             .expect("registry mutex missing");
-        let status = sys::mutex_take(mtx, sys::max_finite_delay_ticks() + 1);
+        // When the scheduler is suspended the worker cannot run,
+        // so the mutex must be free.  Use a zero-timeout try to
+        // avoid the FreeRTOS assertion that forbids non-zero waits
+        // while suspended.
+        let timeout = match sys::scheduler_state() {
+            sys::SchedulerState::Suspended => 0,
+            _ => sys::max_finite_delay_ticks() + 1,
+        };
+        let status = sys::mutex_take(mtx, timeout);
         assert_eq!(status, sys::TakeStatus::Acquired, "registry mutex dead");
         let result = f(unsafe { &mut *self.state.get() });
         let status = sys::mutex_give(mtx);
@@ -721,11 +729,10 @@ pub fn shutdown() -> Result<()> {
 pub fn ensure_worker() -> Result<()> {
     timer_control::with_slot(|slot| match slot {
         ServiceSlot::Running { service, worker } => {
-            if worker.is_some() {
-                return Ok(());
-            }
-
-            // Scheduler state preflight.
+            // Scheduler preflight MUST precede the worker.is_some()
+            // fast path.  ADR 0029 requires start/reset to return Busy
+            // when the scheduler is suspended, regardless of whether
+            // the worker already exists.
             match sys::scheduler_state() {
                 sys::SchedulerState::NotStarted => return Err(Error::NotInitialized),
                 sys::SchedulerState::Suspended => return Err(Error::Busy),
@@ -733,6 +740,10 @@ pub fn ensure_worker() -> Result<()> {
                 sys::SchedulerState::Unknown(_) => {
                     return Err(Error::Internal("unknown scheduler state"));
                 }
+            }
+
+            if worker.is_some() {
+                return Ok(());
             }
 
             let caps = crate::runtime::capabilities().ok_or(Error::NotInitialized)?;
