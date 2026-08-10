@@ -116,12 +116,6 @@ fn raw_tick_snap(raw: u32) -> sys::TickSnapshot {
     sys::TickSnapshot { overflow_count: 0, tick_count: raw as u64 }
 }
 
-/// Dereference a published AtomicPtr slot.  Caller must ensure the
-/// pointer has been stored and the pointee outlives the borrow.
-unsafe fn timer_from_slot(slot: &AtomicPtr<FreeRtosTimer>) -> &FreeRtosTimer {
-    unsafe { &*slot.load(Ordering::Acquire) }
-}
-
 // ------------------------------------------------------------------
 // TimerCaseState — shared by simple record-and-count cases.
 // ------------------------------------------------------------------
@@ -771,13 +765,20 @@ fn case_timer_periodic_coalescing(
 // Commit-3 state structs
 // ==================================================================
 
-/// Minimal record-only state used by self-control cases.
+/// State for self-control callbacks.
+/// controller polls control_result (not just callback_count) after
+/// waiting for the callback to ensure the re-entrant API call completed.
 struct SelfControlState {
     callback_count: AtomicU32,
     callback_tick_0: AtomicU32,
     callback_tick_1: AtomicU32,
     callback_hwm: AtomicU32,
     callback_task_current_some: AtomicU32,
+    /// 0 = not called yet, 1 = Ok, 2 = Err.
+    /// Published with Release AFTER the re-entrant API call completes.
+    control_result: AtomicU32,
+    /// Raw tick captured during self-reset (sub-case B only).
+    reset_tick: AtomicU32,
 }
 
 impl SelfControlState {
@@ -788,6 +789,8 @@ impl SelfControlState {
             callback_tick_1: AtomicU32::new(0),
             callback_hwm: AtomicU32::new(0),
             callback_task_current_some: AtomicU32::new(0),
+            control_result: AtomicU32::new(0),
+            reset_tick: AtomicU32::new(0),
         }
     }
 
@@ -808,13 +811,16 @@ impl SelfControlState {
 }
 
 /// State for the cross-timer callback case.
+///
+/// PUBLISH ORDERING: every callback stores per-call data with Relaxed,
+/// then publishes its count with Release **last**.  The controller polls
+/// the count with Acquire, which guarantees all Relaxed stores above it
+/// are visible.
 struct CrossTimerState {
-    /// Timer A callback count.
     a_count: AtomicU32,
     a_tick: AtomicU32,
     /// Timer B start result: 0=not called, 1=Ok, 2=Err.
     b_start_result: AtomicU32,
-    /// Timer B callback count.
     b_count: AtomicU32,
     b_tick: AtomicU32,
     hwm: AtomicU32,
@@ -854,6 +860,17 @@ impl InflightState {
     }
 }
 
+/// Drop-probe: records exactly-one destruction of the callback closure.
+struct CallbackDropProbe {
+    drops: Arc<AtomicU32>,
+}
+
+impl Drop for CallbackDropProbe {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
 // ==================================================================
 // case_timer_callback_self_control
 // ==================================================================
@@ -868,38 +885,57 @@ fn case_timer_callback_self_control(caps: &sys::Capabilities) -> TestResult {
         let cb_a: TimerCallback = Box::new(move || {
             s.record();
             // SAFETY: controller publishes pointer before start() and
-            // waits for callback completion before cleanup — the
-            // pointee outlives every callback invocation.
+            // nulls it before dropping the Box — the pointee outlives
+            // every callback invocation.
             let ptr = sl.load(Ordering::Acquire);
             if !ptr.is_null() {
                 let t = unsafe { &*ptr };
-                let _ = t.stop();
+                match t.stop() {
+                    Ok(()) => s.control_result.store(1, Ordering::Release),
+                    Err(_) => s.control_result.store(2, Ordering::Release),
+                }
             }
         });
 
-        let t = FreeRtosTimer::new(
-            "test-slfA", Duration::from_millis(4), TimerMode::Periodic, cb_a,
-        ).map_err(|_| TimerContractError::SelfStopFailed)?;
+        // RAII Box — error-path cleanup is automatic.
+        let timer = Box::new(
+            FreeRtosTimer::new(
+                "test-slfA", Duration::from_millis(4), TimerMode::Periodic, cb_a,
+            ).map_err(|_| TimerContractError::SelfStopFailed)?
+        );
 
-        // Publish pointer BEFORE start so callback can find it.
-        let boxed = Box::new(t);
-        slot_a.store(Box::into_raw(boxed), Ordering::Release);
+        // Publish non-owning pointer.  The Box heap address is stable.
+        slot_a.store(
+            (&*timer as *const FreeRtosTimer).cast_mut(),
+            Ordering::Release,
+        );
 
-        unsafe { timer_from_slot(&slot_a) }.start().map_err(|_| TimerContractError::SelfStopFailed)?;
+        timer.start().map_err(|_| TimerContractError::SelfStopFailed)?;
 
+        // Wait for the callback to fire.
         wait_self_control_count(&state_a, 1, 80)?;
 
-        // Wait > 3 periods; if self-stop failed, more callbacks would fire.
+        // Now wait for the re-entrant self-stop to complete.
+        // callback_count==1 only means the callback *entered*, not
+        // that self-stop finished.  control_result is the real signal.
+        bounded_wait_u32(&state_a.control_result, |v| v != 0, 50)
+            .map_err(|_| TimerContractError::SelfStopFailed)?;
+        if state_a.control_result.load(Ordering::Acquire) != 1 {
+            return Err(TimerContractError::SelfStopFailed);
+        }
+
+        // Wait > 3 periods; self-stop must prevent further callbacks.
         sys::delay_ticks(20);
         if state_a.callback_count.load(Ordering::Acquire) != 1 {
             return Err(TimerContractError::SelfStopExtraCallback);
         }
 
-        // Cleanup: reclaim the boxed handle.
-        let ptr = slot_a.swap(null_mut(), Ordering::AcqRel);
-        if !ptr.is_null() {
-            let _ = unsafe { Box::from_raw(ptr) };
-        }
+        // Null the pointer before dropping the Box so a stray
+        // callback (impossible after verified stop, but defense in
+        // depth) cannot dereference freed memory.
+        slot_a.store(null_mut(), Ordering::Release);
+        timer.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+        drop(timer);
     }
 
     // ---- Sub-case B: callback self-reset on OneShot ----
@@ -910,45 +946,63 @@ fn case_timer_callback_self_control(caps: &sys::Capabilities) -> TestResult {
         let s = Arc::clone(&state_b);
         let sl = Arc::clone(&slot_b);
         let cb_b: TimerCallback = Box::new(move || {
+            let index = s.callback_count.load(Ordering::Relaxed);
             s.record();
-            let ptr = sl.load(Ordering::Acquire);
-            if !ptr.is_null() {
-                let t = unsafe { &*ptr };
-                let _ = t.reset();
+
+            // Only the first callback performs self-reset.
+            if index == 0 {
+                let reset_raw = sys::tick_snapshot().tick_count as u32;
+                s.reset_tick.store(reset_raw, Ordering::Relaxed);
+
+                let ptr = sl.load(Ordering::Acquire);
+                if !ptr.is_null() {
+                    let t = unsafe { &*ptr };
+                    match t.reset() {
+                        Ok(()) => s.control_result.store(1, Ordering::Release),
+                        Err(_) => s.control_result.store(2, Ordering::Release),
+                    }
+                }
             }
         });
 
-        let t = FreeRtosTimer::new(
-            "test-slfB", Duration::from_millis(4), TimerMode::OneShot, cb_b,
-        ).map_err(|_| TimerContractError::SelfResetFailed)?;
+        let timer = Box::new(
+            FreeRtosTimer::new(
+                "test-slfB", Duration::from_millis(4), TimerMode::OneShot, cb_b,
+            ).map_err(|_| TimerContractError::SelfResetFailed)?
+        );
 
-        let boxed = Box::new(t);
-        slot_b.store(Box::into_raw(boxed), Ordering::Release);
+        slot_b.store(
+            (&*timer as *const FreeRtosTimer).cast_mut(),
+            Ordering::Release,
+        );
 
-        let reset_tick = sys::tick_snapshot();
-        unsafe { timer_from_slot(&slot_b) }.start().map_err(|_| TimerContractError::SelfResetFailed)?;
+        timer.start().map_err(|_| TimerContractError::SelfResetFailed)?;
 
-        // Self-reset should cause a second callback.
-        wait_self_control_count(&state_b, 2, 80)?;
+        // Wait for second callback — self-reset must have re-armed.
+        wait_self_control_count(&state_b, 2, 80)
+            .map_err(|_| TimerContractError::SelfResetMissingSecondCallback)?;
 
-        let t0 = state_b.callback_tick_0.load(Ordering::Acquire);
+        // Verify self-reset returned Ok.
+        if state_b.control_result.load(Ordering::Acquire) != 1 {
+            return Err(TimerContractError::SelfResetFailed);
+        }
+
+        // Second callback must arrive >= one period after the real
+        // reset tick captured inside the first callback.
+        let reset_tick = state_b.reset_tick.load(Ordering::Acquire);
         let t1 = state_b.callback_tick_1.load(Ordering::Acquire);
-        let d01 = harness::total_ticks_diff(raw_tick_snap(t1), raw_tick_snap(t0), caps.tick_bits);
-        // Second callback must arrive after at least one period from reset.
-        // The reset happened during the first callback, so the second
-        // callback is at least one period from the first.
-        if d01 < 4 {
+        let d_reset_to_cb2 = harness::total_ticks_diff(
+            raw_tick_snap(t1), raw_tick_snap(reset_tick), caps.tick_bits,
+        );
+        if d_reset_to_cb2 < 4 {
             return Err(TimerContractError::SelfResetSecondCallbackTooEarly);
         }
 
-        let _ = reset_tick;
+        assert_self_control_worker(&state_b)?;
 
-        let ptr = slot_b.swap(null_mut(), Ordering::AcqRel);
-        if !ptr.is_null() {
-            let timer = unsafe { Box::from_raw(ptr) };
-            timer.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
-            drop(timer);
-        }
+        slot_b.store(null_mut(), Ordering::Release);
+        timer.stop().map_err(|_| TimerContractError::WorkerCleanupFailed)?;
+        drop(timer);
     }
 
     Ok(())
@@ -970,10 +1024,42 @@ fn wait_self_control_count(state: &SelfControlState, target: u32, deadline_ticks
     }
 }
 
+fn assert_self_control_worker(state: &SelfControlState) -> TestResult {
+    if state.callback_task_current_some.load(Ordering::Acquire) != 0 {
+        return Err(TimerContractError::WorkerTaskCurrentNotNone);
+    }
+    if state.callback_hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
+        return Err(TimerContractError::WorkerHwmTooLow);
+    }
+    Ok(())
+}
+
+/// Bounded poll for an AtomicU32 to satisfy `pred`.
+fn bounded_wait_u32<F: Fn(u32) -> bool>(
+    atom: &AtomicU32,
+    pred: F,
+    deadline_ticks: u32,
+) -> Result<(), ()> {
+    let start = sys::tick_snapshot();
+    loop {
+        let v = atom.load(Ordering::Acquire);
+        if pred(v) {
+            return Ok(());
+        }
+        let elapsed = harness::total_ticks_diff(sys::tick_snapshot(), start, 32);
+        if elapsed >= deadline_ticks as u128 {
+            return Err(());
+        }
+        if sys::delay_ticks(1) != sys::DelayStatus::Ok {
+            return Err(());
+        }
+    }
+}
+
 // ==================================================================
 // case_timer_callback_cross_timer
 // ==================================================================
-fn case_timer_callback_cross_timer(caps: &sys::Capabilities) -> TestResult {
+fn case_timer_callback_cross_timer(_caps: &sys::Capabilities) -> TestResult {
     let state = Arc::new(CrossTimerState::new());
 
     // --- Timer B: OneShot, initially stopped. ---
@@ -982,36 +1068,48 @@ fn case_timer_callback_cross_timer(caps: &sys::Capabilities) -> TestResult {
     let s_b = Arc::clone(&state);
     let cb_b: TimerCallback = Box::new(move || {
         let raw = sys::tick_snapshot().tick_count as u32;
-        s_b.b_tick.store(raw, Ordering::Release);
-        s_b.b_count.fetch_add(1, Ordering::Release);
-        s_b.hwm.store(task_stack_hwm(), Ordering::Release);
+        // All per-call data stored Relaxed; count published Release LAST.
+        s_b.b_tick.store(raw, Ordering::Relaxed);
+        s_b.hwm.store(task_stack_hwm(), Ordering::Relaxed);
+        s_b.b_count.store(1, Ordering::Release);
     });
 
-    let t_b = FreeRtosTimer::new(
-        "test-xb", Duration::from_millis(4), TimerMode::OneShot, cb_b,
-    ).map_err(|_| TimerContractError::CrossTimerStartFailed)?;
+    let t_b = Box::new(
+        FreeRtosTimer::new(
+            "test-xb", Duration::from_millis(4), TimerMode::OneShot, cb_b,
+        ).map_err(|_| TimerContractError::CrossTimerStartFailed)?
+    );
 
-    let b_boxed = Box::new(t_b);
-    b_slot.store(Box::into_raw(b_boxed), Ordering::Release);
+    b_slot.store(
+        (&*t_b as *const FreeRtosTimer).cast_mut(),
+        Ordering::Release,
+    );
 
     // --- Timer A: OneShot, callback starts B. ---
     let s_a = Arc::clone(&state);
     let sl_b = Arc::clone(&b_slot);
     let cb_a: TimerCallback = Box::new(move || {
         let raw = sys::tick_snapshot().tick_count as u32;
-        s_a.a_tick.store(raw, Ordering::Release);
-        s_a.a_count.fetch_add(1, Ordering::Release);
-        s_a.hwm.store(task_stack_hwm(), Ordering::Release);
+        // All per-call data stored Relaxed.
+        s_a.a_tick.store(raw, Ordering::Relaxed);
+        s_a.hwm.store(task_stack_hwm(), Ordering::Relaxed);
 
         // Cross-timer: start B from within A's callback.
-        let ptr = sl_b.load(Ordering::Acquire);
-        if !ptr.is_null() {
-            let b = unsafe { &*ptr };
-            match b.start() {
-                Ok(()) => s_a.b_start_result.store(1, Ordering::Release),
-                Err(_) => s_a.b_start_result.store(2, Ordering::Release),
+        let b_start_result = {
+            let ptr = sl_b.load(Ordering::Acquire);
+            if !ptr.is_null() {
+                let b = unsafe { &*ptr };
+                match b.start() {
+                    Ok(()) => 1,
+                    Err(_) => 2,
+                }
+            } else {
+                2
             }
-        }
+        };
+        s_a.b_start_result.store(b_start_result, Ordering::Relaxed);
+        // Publish LAST — all Relaxed stores above are now visible.
+        s_a.a_count.store(1, Ordering::Release);
     });
 
     let t_a = FreeRtosTimer::new(
@@ -1020,53 +1118,27 @@ fn case_timer_callback_cross_timer(caps: &sys::Capabilities) -> TestResult {
 
     t_a.start().map_err(|_| TimerContractError::CrossTimerStartFailed)?;
 
-    // Wait for A's callback.
-    {
-        let start = sys::tick_snapshot();
-        loop {
-            if state.a_count.load(Ordering::Acquire) >= 1 {
-                break;
-            }
-            if harness::total_ticks_diff(sys::tick_snapshot(), start, caps.tick_bits) >= 50 {
-                return Err(TimerContractError::TimerCallbackNotFired);
-            }
-            if sys::delay_ticks(1) != sys::DelayStatus::Ok {
-                return Err(TimerContractError::TimerCallbackNotFired);
-            }
-        }
-    }
+    // Wait for A's callback.  Acquire on a_count guarantees visibility
+    // of a_tick, hwm, and b_start_result.
+    bounded_wait_u32(&state.a_count, |v| v >= 1, 50)
+        .map_err(|_| TimerContractError::TimerCallbackNotFired)?;
 
     // B.start() must have succeeded.
     if state.b_start_result.load(Ordering::Acquire) != 1 {
         return Err(TimerContractError::CrossTimerStartFailed);
     }
 
-    // Wait for B's callback.
-    {
-        let start = sys::tick_snapshot();
-        loop {
-            if state.b_count.load(Ordering::Acquire) >= 1 {
-                break;
-            }
-            if harness::total_ticks_diff(sys::tick_snapshot(), start, caps.tick_bits) >= 80 {
-                return Err(TimerContractError::CrossTimerBCallbackMissing);
-            }
-            if sys::delay_ticks(1) != sys::DelayStatus::Ok {
-                return Err(TimerContractError::CrossTimerBCallbackMissing);
-            }
-        }
-    }
+    // Wait for B's callback.  Acquire on b_count guarantees hwm.
+    bounded_wait_u32(&state.b_count, |v| v >= 1, 80)
+        .map_err(|_| TimerContractError::CrossTimerBCallbackMissing)?;
 
     if state.hwm.load(Ordering::Acquire) < HWM_MIN_WORDS {
         return Err(TimerContractError::WorkerHwmTooLow);
     }
 
     drop(t_a);
-
-    let b_ptr = b_slot.swap(null_mut(), Ordering::AcqRel);
-    if !b_ptr.is_null() {
-        let _ = unsafe { Box::from_raw(b_ptr) };
-    }
+    b_slot.store(null_mut(), Ordering::Release);
+    drop(t_b);
 
     Ok(())
 }
@@ -1107,24 +1179,31 @@ fn case_timer_clone_last_drop(
 // ==================================================================
 // case_timer_inflight_last_drop
 // ==================================================================
-fn case_timer_inflight_last_drop(_caps: &sys::Capabilities) -> TestResult {
+fn case_timer_inflight_last_drop(caps: &sys::Capabilities) -> TestResult {
     let state = Arc::new(InflightState::new());
+    let drops = Arc::new(AtomicU32::new(0));
 
-    // Build callback: signals started, blocks until release, then
-    // records and signals completed.  Uses delay_ticks(1) polling so
-    // the controller (lower priority) isn't starved.
+    let probe = CallbackDropProbe {
+        drops: Arc::clone(&drops),
+    };
+
+    // Build callback: signals started, blocks until release, records
+    // and signals completed.  Uses delay_ticks(1) polling so the
+    // controller (lower priority) isn't starved.
+    // CallbackDropProbe is captured to verify the closure is dropped
+    // exactly once after in-flight completion.
     let s = Arc::clone(&state);
     let cb: TimerCallback = Box::new(move || {
+        let _probe = &probe;
+
         s.started.store(true, Ordering::Release);
 
-        // Busy-wait with tick delay — pure spin would starve the
-        // controller since the Timer worker runs at highest priority.
         while !s.release.load(Ordering::Acquire) {
             sys::delay_ticks(1);
         }
 
-        s.callback_count.fetch_add(1, Ordering::Release);
-        s.hwm.store(task_stack_hwm(), Ordering::Release);
+        s.callback_count.fetch_add(1, Ordering::Relaxed);
+        s.hwm.store(task_stack_hwm(), Ordering::Relaxed);
         s.completed.store(true, Ordering::Release);
     });
 
@@ -1135,20 +1214,13 @@ fn case_timer_inflight_last_drop(_caps: &sys::Capabilities) -> TestResult {
     t.start().map_err(|_| TimerContractError::InflightDropBlocked)?;
 
     // Wait for callback to start.
-    {
-        let start = sys::tick_snapshot();
-        loop {
-            if state.started.load(Ordering::Acquire) {
-                break;
-            }
-            if harness::total_ticks_diff(sys::tick_snapshot(), start, 32) >= 100 {
-                return Err(TimerContractError::TimerCallbackNotFired);
-            }
-            if sys::delay_ticks(1) != sys::DelayStatus::Ok {
-                return Err(TimerContractError::TimerCallbackNotFired);
-            }
-        }
-    }
+    bounded_wait_u32(
+        // Reinterpret AtomicBool as AtomicU32 for the generic helper:
+        // started is the first (and only) field, same alignment.
+        unsafe { &*(&state.started as *const AtomicBool as *const AtomicU32) },
+        |v| v != 0,
+        100,
+    ).map_err(|_| TimerContractError::TimerCallbackNotFired)?;
 
     // Drop the last handle while callback is in-flight.
     drop(t);
@@ -1161,24 +1233,38 @@ fn case_timer_inflight_last_drop(_caps: &sys::Capabilities) -> TestResult {
     // Release the callback.
     state.release.store(true, Ordering::Release);
 
-    // Wait for callback to complete.
+    // Wait for callback body to complete.
+    bounded_wait_u32(
+        unsafe { &*(&state.completed as *const AtomicBool as *const AtomicU32) },
+        |v| v != 0,
+        100,
+    ).map_err(|_| TimerContractError::TimerCallbackNotFired)?;
+
+    // completed is visible, but the callback closure may not be dropped
+    // yet — dispatch_one() must re-lock the registry, detect the
+    // deleted entry, and drop the closure.  Bounded-wait for exactly
+    // one drop.
     {
         let start = sys::tick_snapshot();
         loop {
-            if state.completed.load(Ordering::Acquire) {
+            let c = drops.load(Ordering::Acquire);
+            if c == 1 {
                 break;
             }
-            if harness::total_ticks_diff(sys::tick_snapshot(), start, 32) >= 100 {
-                return Err(TimerContractError::TimerCallbackNotFired);
+            if c > 1 {
+                return Err(TimerContractError::InflightDropProbeMissing);
+            }
+            if harness::total_ticks_diff(sys::tick_snapshot(), start, caps.tick_bits) >= 50 {
+                return Err(TimerContractError::InflightDropProbeMissing);
             }
             if sys::delay_ticks(1) != sys::DelayStatus::Ok {
-                return Err(TimerContractError::TimerCallbackNotFired);
+                return Err(TimerContractError::InflightDropProbeMissing);
             }
         }
     }
 
-    // After the in-flight callback finished, no more callbacks should
-    // fire (the entry was deleted by the last-handle drop).
+    // After the in-flight callback finished and its closure was
+    // dropped, no more callbacks should fire.
     let count = state.callback_count.load(Ordering::Acquire);
     sys::delay_ticks(20);
     if state.callback_count.load(Ordering::Acquire) != count {
