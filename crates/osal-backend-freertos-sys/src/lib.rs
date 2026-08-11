@@ -577,8 +577,19 @@ pub fn mutex_create() -> Option<MutexHandle> {
     }
     #[cfg(not(feature = "test-fixture"))]
     {
+        #[cfg(feature = "integration-test-hooks")]
+        integration_diag::record_mutex_create_attempt();
+        #[cfg(feature = "integration-test-hooks")]
+        if integration_diag::check_fail() {
+            return None;
+        }
         let raw = unsafe { osal_freertos_mutex_create() };
-        core::ptr::NonNull::new(raw).map(|nn| MutexHandle { raw: nn })
+        let result = core::ptr::NonNull::new(raw).map(|nn| MutexHandle { raw: nn });
+        #[cfg(feature = "integration-test-hooks")]
+        if result.is_some() {
+            integration_diag::record_mutex_create_success();
+        }
+        result
     }
 }
 
@@ -616,6 +627,8 @@ pub fn mutex_delete(handle: MutexHandle) {
     }
     #[cfg(not(feature = "test-fixture"))]
     {
+        #[cfg(feature = "integration-test-hooks")]
+        integration_diag::record_mutex_delete();
         unsafe { osal_freertos_mutex_delete(handle.raw.as_ptr()) };
     }
 }
@@ -632,8 +645,19 @@ pub fn counting_semaphore_create(max: u32, initial: u32) -> Option<SemaphoreHand
     }
     #[cfg(not(feature = "test-fixture"))]
     {
+        #[cfg(feature = "integration-test-hooks")]
+        integration_diag::record_semaphore_create_attempt();
+        #[cfg(feature = "integration-test-hooks")]
+        if integration_diag::check_fail() {
+            return None;
+        }
         let raw = unsafe { osal_freertos_counting_semaphore_create(max, initial) };
-        core::ptr::NonNull::new(raw).map(|nn| SemaphoreHandle { raw: nn })
+        let result = core::ptr::NonNull::new(raw).map(|nn| SemaphoreHandle { raw: nn });
+        #[cfg(feature = "integration-test-hooks")]
+        if result.is_some() {
+            integration_diag::record_semaphore_create_success();
+        }
+        result
     }
 }
 
@@ -645,8 +669,19 @@ pub fn binary_semaphore_create() -> Option<SemaphoreHandle> {
     }
     #[cfg(not(feature = "test-fixture"))]
     {
+        #[cfg(feature = "integration-test-hooks")]
+        integration_diag::record_semaphore_create_attempt();
+        #[cfg(feature = "integration-test-hooks")]
+        if integration_diag::check_fail() {
+            return None;
+        }
         let raw = unsafe { osal_freertos_binary_semaphore_create() };
-        core::ptr::NonNull::new(raw).map(|nn| SemaphoreHandle { raw: nn })
+        let result = core::ptr::NonNull::new(raw).map(|nn| SemaphoreHandle { raw: nn });
+        #[cfg(feature = "integration-test-hooks")]
+        if result.is_some() {
+            integration_diag::record_semaphore_create_success();
+        }
+        result
     }
 }
 
@@ -696,6 +731,8 @@ pub fn semaphore_delete(handle: SemaphoreHandle) {
     }
     #[cfg(not(feature = "test-fixture"))]
     {
+        #[cfg(feature = "integration-test-hooks")]
+        integration_diag::record_semaphore_delete();
         unsafe { osal_freertos_semaphore_delete(handle.raw.as_ptr()) };
     }
 }
@@ -963,6 +1000,83 @@ mod fixture_task;
 #[cfg(not(feature = "test-fixture"))]
 mod fixture_task {
     // Stub — never compiled; all callers are cfg-gated.
+}
+
+// ---------------------------------------------------------------------------
+// Integration diagnostics — only compiled for QEMU integration firmware.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "integration-test-hooks")]
+pub mod integration_diag {
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    static FAIL_COUNTDOWN: AtomicU32 = AtomicU32::new(0);
+
+    static MUTEX_CREATE_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
+    static MUTEX_CREATE_SUCCESSES: AtomicU32 = AtomicU32::new(0);
+    static MUTEX_DELETES: AtomicU32 = AtomicU32::new(0);
+
+    static SEMAPHORE_CREATE_ATTEMPTS: AtomicU32 = AtomicU32::new(0);
+    static SEMAPHORE_CREATE_SUCCESSES: AtomicU32 = AtomicU32::new(0);
+    static SEMAPHORE_DELETES: AtomicU32 = AtomicU32::new(0);
+
+    pub fn arm_sync_create_failure(nth: u32) {
+        FAIL_COUNTDOWN.store(nth, Ordering::Release);
+    }
+    pub fn clear_sync_create_failure() {
+        FAIL_COUNTDOWN.store(0, Ordering::Release);
+    }
+
+    pub fn mutex_create_attempts() -> u32 {
+        MUTEX_CREATE_ATTEMPTS.load(Ordering::Relaxed)
+    }
+    pub fn mutex_create_successes() -> u32 {
+        MUTEX_CREATE_SUCCESSES.load(Ordering::Relaxed)
+    }
+    pub fn mutex_deletes() -> u32 {
+        MUTEX_DELETES.load(Ordering::Relaxed)
+    }
+    pub fn semaphore_create_attempts() -> u32 {
+        SEMAPHORE_CREATE_ATTEMPTS.load(Ordering::Relaxed)
+    }
+    pub fn semaphore_create_successes() -> u32 {
+        SEMAPHORE_CREATE_SUCCESSES.load(Ordering::Relaxed)
+    }
+    pub fn semaphore_deletes() -> u32 {
+        SEMAPHORE_DELETES.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn check_fail() -> bool {
+        let current = FAIL_COUNTDOWN.load(Ordering::Relaxed);
+        if current == 0 {
+            return false;
+        }
+        if current == 1 {
+            FAIL_COUNTDOWN.store(0, Ordering::Relaxed);
+            return true;
+        }
+        FAIL_COUNTDOWN.store(current - 1, Ordering::Relaxed);
+        false
+    }
+
+    pub(crate) fn record_mutex_create_attempt() {
+        MUTEX_CREATE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn record_mutex_create_success() {
+        MUTEX_CREATE_SUCCESSES.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn record_mutex_delete() {
+        MUTEX_DELETES.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn record_semaphore_create_attempt() {
+        SEMAPHORE_CREATE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn record_semaphore_create_success() {
+        SEMAPHORE_CREATE_SUCCESSES.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn record_semaphore_delete() {
+        SEMAPHORE_DELETES.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 // ---------------------------------------------------------------------------

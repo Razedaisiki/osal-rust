@@ -13,7 +13,7 @@ crate-type = ["rlib"]
 [features]
 test-fixture = ["osal-backend-freertos-sys/test-fixture"]
 testkit = ["dep:osal-testkit", "test-fixture"]
-integration-test-hooks = []
+integration-test-hooks = ["osal-backend-freertos-sys/integration-test-hooks"]
 
 [dependencies]
 osal-api = { path = "../osal-api" }

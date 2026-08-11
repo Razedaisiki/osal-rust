@@ -12,6 +12,7 @@ crate-type = ["rlib"]
 
 [features]
 test-fixture = []
+integration-test-hooks = []
 
 [build-dependencies]
 cc = { version = "1", default-features = false }
