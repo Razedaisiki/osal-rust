@@ -36,7 +36,8 @@ Output in `build/`:
 ```bash
 make verify                                  # build + symbol check (aggregate)
 make verify CARGO_FEATURES=suite-task        # build + symbol check (Task)
-PROFILE=task scripts/run-qemu.sh             # boot in QEMU, verify output
+make verify CARGO_FEATURES=suite-mixed       # build + symbol check (Mixed)
+PROFILE=mixed scripts/run-qemu.sh            # boot in QEMU, verify output
 ```
 
 ## Profiles

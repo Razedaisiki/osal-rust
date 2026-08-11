@@ -1,5 +1,6 @@
 //! Managed-object real-kernel validation suite dispatcher (P7G Step 4).
 
+use osal_api::error::Error;
 use osal_api::runtime::RuntimeState;
 use osal_backend_freertos_sys as sys;
 
@@ -241,18 +242,24 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
         return -(e as i32);
     }
 
-    // Poll shutdown with bounded retry — the Timer worker (same
-    // priority) may still be processing the final deregister
-    // wake-signal.  A few ticks of delay give it CPU time to
-    // call retain() and become idle before we check active_objects.
+    // Join completion may precede the final native-task cleanup that
+    // releases task-owned runtime state.  Retry only the failure-atomic
+    // Busy result for a bounded number of ticks.
     let shutdown_ok = {
         let mut ok = false;
         for _ in 0..5 {
-            if osal::runtime_state() == RuntimeState::Running && osal::shutdown().is_ok() {
-                ok = true;
-                break;
+            match osal::shutdown() {
+                Ok(()) => {
+                    ok = true;
+                    break;
+                }
+                Err(Error::Busy) => {
+                    if sys::delay_ticks(1) != sys::DelayStatus::Ok {
+                        break;
+                    }
+                }
+                Err(_) => break,
             }
-            sys::delay_ticks(1);
         }
         ok
     };
