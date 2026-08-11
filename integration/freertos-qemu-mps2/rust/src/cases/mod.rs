@@ -23,3 +23,6 @@ pub mod task_contracts;
 
 #[cfg(feature = "suite-timer")]
 pub mod timer_contracts;
+
+#[cfg(feature = "suite-mixed")]
+pub mod mixed;

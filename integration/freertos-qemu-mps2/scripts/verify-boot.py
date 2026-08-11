@@ -2,7 +2,7 @@
 """verify-boot.py — validate OSAL FreeRTOS MPS2 boot and object protocols.
 
 Usage:
-  verify-boot.py <qemu.log> [--profile aggregate|queue-blocking|task|timer]
+  verify-boot.py <qemu.log> [--profile aggregate|queue-blocking|task|timer|mixed]
 
 If --profile is omitted, the profile is auto-detected from
 OSAL_OBJECT_BEGIN profile=... in the log.
@@ -254,6 +254,20 @@ PROFILES = {
             "heap_recovered=true",
         ],
     },
+    "mixed": {
+        "cases": [
+            "harness_native_task",
+            "mixed_object_pipeline",
+        ],
+        "fields": [
+            "profile=mixed",
+            "mixed=true",
+            "mixed_pipeline=true",
+            "helper_self_delete=true",
+            "idle_cleanup=true",
+            "heap_recovered=true",
+        ],
+    },
 }
 
 
@@ -267,6 +281,8 @@ def detect_profile(text: str) -> str | None:
                 return "task"
             if "profile=timer" in line:
                 return "timer"
+            if "profile=mixed" in line:
+                return "mixed"
             # If no profile marker, default to aggregate.
             return "aggregate"
     return None
@@ -288,7 +304,7 @@ def verify(log_path: str, profile: str | None = None) -> int:
     if profile is None:
         profile = detect_profile(text)
     if profile is None or profile not in PROFILES:
-        print("FAIL: cannot determine profile (use --profile aggregate|queue-blocking|task|timer)")
+        print("FAIL: cannot determine profile (use --profile aggregate|queue-blocking|task|timer|mixed)")
         return 1
 
     profile_def = PROFILES[profile]
@@ -578,7 +594,7 @@ if __name__ == "__main__":
             break
 
     if len(args) != 1:
-        print(f"Usage: {sys.argv[0]} <qemu.log> [--profile aggregate|queue-blocking|task|timer]",
+        print(f"Usage: {sys.argv[0]} <qemu.log> [--profile aggregate|queue-blocking|task|timer|mixed]",
               file=sys.stderr)
         sys.exit(1)
 

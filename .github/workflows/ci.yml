@@ -383,3 +383,52 @@ jobs:
             integration/freertos-qemu-mps2/build/*.map
             integration/freertos-qemu-mps2/build/*.log
             integration/freertos-qemu-mps2/build/*.txt
+
+  freertos-qemu-mixed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85.0"
+
+      - name: Install Rust bare-metal target
+        run: rustup target add thumbv7m-none-eabi
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi qemu-system-arm make python3
+
+      - name: Record tool versions
+        run: |
+          arm-none-eabi-gcc --version | head -1
+          qemu-system-arm --version | head -1
+          cargo --version
+          rustup target list --installed | grep thumb
+
+      - name: Build firmware (mixed)
+        env:
+          CARGO_FEATURES: suite-mixed
+        run: integration/freertos-qemu-mps2/scripts/build.sh
+
+      - name: Run mixed smoke
+        env:
+          PROFILE: mixed
+        run: integration/freertos-qemu-mps2/scripts/run-qemu.sh
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: freertos-qemu-mixed
+          path: |
+            integration/freertos-qemu-mps2/build/*.elf
+            integration/freertos-qemu-mps2/build/*.map
+            integration/freertos-qemu-mps2/build/*.log
+            integration/freertos-qemu-mps2/build/*.txt

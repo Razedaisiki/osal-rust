@@ -21,6 +21,7 @@ suite-aggregate = []
 suite-queue-blocking = []
 suite-task = []
 suite-timer = []
+suite-mixed = []
 
 [profile.dev]
 panic = "abort"

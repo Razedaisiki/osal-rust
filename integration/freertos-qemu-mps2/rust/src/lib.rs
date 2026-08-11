@@ -12,9 +12,13 @@
     all(feature = "suite-aggregate", feature = "suite-queue-blocking"),
     all(feature = "suite-aggregate", feature = "suite-task"),
     all(feature = "suite-aggregate", feature = "suite-timer"),
+    all(feature = "suite-aggregate", feature = "suite-mixed"),
     all(feature = "suite-queue-blocking", feature = "suite-task"),
     all(feature = "suite-queue-blocking", feature = "suite-timer"),
+    all(feature = "suite-queue-blocking", feature = "suite-mixed"),
     all(feature = "suite-task", feature = "suite-timer"),
+    all(feature = "suite-task", feature = "suite-mixed"),
+    all(feature = "suite-timer", feature = "suite-mixed"),
 ))]
 compile_error!("exactly one integration suite feature must be selected; multiple features are mutually exclusive");
 
@@ -23,8 +27,9 @@ compile_error!("exactly one integration suite feature must be selected; multiple
     feature = "suite-queue-blocking",
     feature = "suite-task",
     feature = "suite-timer",
+    feature = "suite-mixed",
 )))]
-compile_error!("at least one integration suite feature must be selected; use --features suite-aggregate, suite-queue-blocking, suite-task, or suite-timer");
+compile_error!("at least one integration suite feature must be selected; use --features suite-aggregate, suite-queue-blocking, suite-task, suite-timer, or suite-mixed");
 
 extern crate alloc;
 

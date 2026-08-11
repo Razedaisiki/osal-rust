@@ -23,6 +23,7 @@ make                                    # aggregate suite (Mutex + Semaphore + Q
 make CARGO_FEATURES=suite-queue-blocking  # Queue Blocking isolated suite
 make CARGO_FEATURES=suite-task            # Task real-kernel contract suite
 make CARGO_FEATURES=suite-timer           # Timer real-kernel contract suite
+make CARGO_FEATURES=suite-mixed           # Mixed-object real-kernel contract suite
 ```
 
 Output in `build/`:
@@ -43,9 +44,10 @@ PROFILE=task scripts/run-qemu.sh             # boot in QEMU, verify output
 | Profile | Cargo Feature | Cases | Description |
 |---------|--------------|-------|-------------|
 | `suite-aggregate` | (default) | 36 | Mutex (8) + Semaphore (18) + Queue Core (9) + harness (1) |
-| `suite-queue-blocking` | `suite-queue-blocking` | 11 | Queue Blocking isolated (independent QEMU run) |
+| `suite-queue-blocking` | `suite-queue-blocking` | 15 | Queue Blocking isolated (independent QEMU run) |
 | `suite-task` | `suite-task` | 20 | Task real-kernel contracts (1 harness + 19 Task cases) |
 | `suite-timer` | `suite-timer` | 20 | Timer real-kernel contracts (1 harness + 19 Timer cases) |
+| `suite-mixed` | `suite-mixed` | 2 | Mixed-object pipeline (1 harness + 1 mixed case) |
 
 ### suite-task
 

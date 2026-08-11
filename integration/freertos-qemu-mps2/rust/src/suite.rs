@@ -212,3 +212,56 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
 
     0
 }
+
+// ------------------------------------------------------------------
+// Mixed suite (suite-mixed feature)
+// ------------------------------------------------------------------
+
+#[cfg(feature = "suite-mixed")]
+pub fn run_object_suite(tick_bits: u8) -> i32 {
+    const SUITE_RUNTIME_INIT_FAILED: i32 = -190;
+    const SUITE_RUNTIME_SHUTDOWN_FAILED: i32 = -191;
+    const SUITE_FINAL_HEAP_LEAK: i32 = -192;
+
+    harness::console_line(c"OSAL_OBJECT_BEGIN profile=mixed");
+
+    if let Err(e) = harness::run_harness_case(tick_bits) {
+        return e as i32;
+    }
+
+    let profile_baseline = sys::heap_free();
+
+    if osal::initialize().is_err() {
+        return SUITE_RUNTIME_INIT_FAILED;
+    }
+
+    let mixed_result = cases::mixed::run_mixed_cases(tick_bits);
+
+    if let Err(e) = mixed_result {
+        return -(e as i32);
+    }
+
+    // Give the Timer worker a chance to process the final deregister
+    // wake-signal before shutdown checks.
+    sys::delay_ticks(10);
+
+    let runtime_state = osal::runtime_state();
+    let shutdown_ok = match runtime_state {
+        RuntimeState::Running => osal::shutdown().is_ok(),
+        RuntimeState::Uninitialized => true,
+        _ => false,
+    };
+    if !shutdown_ok {
+        return SUITE_RUNTIME_SHUTDOWN_FAILED;
+    }
+    if harness::wait_until_heap_recovered(profile_baseline, 100, tick_bits).is_err() {
+        return SUITE_FINAL_HEAP_LEAK;
+    }
+
+    harness::console_line(
+        c"OSAL_OBJECT_PASS profile=mixed mixed=true mixed_pipeline=true helper_self_delete=true idle_cleanup=true heap_recovered=true",
+    );
+    harness::console_line(c"OSAL_OBJECT_END status=pass");
+
+    0
+}
