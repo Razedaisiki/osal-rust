@@ -241,15 +241,20 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
         return -(e as i32);
     }
 
-    // Give the Timer worker a chance to process the final deregister
-    // wake-signal before shutdown checks.
-    sys::delay_ticks(10);
-
-    let runtime_state = osal::runtime_state();
-    let shutdown_ok = match runtime_state {
-        RuntimeState::Running => osal::shutdown().is_ok(),
-        RuntimeState::Uninitialized => true,
-        _ => false,
+    // Poll shutdown with bounded retry — the Timer worker (same
+    // priority) may still be processing the final deregister
+    // wake-signal.  A few ticks of delay give it CPU time to
+    // call retain() and become idle before we check active_objects.
+    let shutdown_ok = {
+        let mut ok = false;
+        for _ in 0..5 {
+            if osal::runtime_state() == RuntimeState::Running && osal::shutdown().is_ok() {
+                ok = true;
+                break;
+            }
+            sys::delay_ticks(1);
+        }
+        ok
     };
     if !shutdown_ok {
         return SUITE_RUNTIME_SHUTDOWN_FAILED;

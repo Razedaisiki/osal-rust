@@ -24,6 +24,8 @@ use crate::harness;
 const M0: [u8; 4] = [0xA0, 0xB1, 0xC2, 0xD3];
 
 // ------------------------------------------------------------------
+// Mixed-object pipeline errors
+// ------------------------------------------------------------------
 #[repr(i32)]
 pub enum MixedError {
     MutexCreate = 800,
@@ -40,10 +42,9 @@ pub enum MixedError {
     TimerCountWrong = 811,
     TaskCountWrong = 812,
     BinaryReleaseFailed = 813,
-    HeapNotRecovered = 814,
+    TaskAOperationFailed = 814,
+    TaskBOperationFailed = 815,
 }
-
-type TestResult = Result<(), MixedError>;
 
 struct PipelineState {
     task_a_started: AtomicBool,
@@ -128,13 +129,20 @@ fn mixed_object_pipeline(tick_bits: u8) -> Result<(), MixedError> {
                 }
             }
             {
-                let mut guard = mtx_b
-                    .lock(Timeout::After(Duration::from_millis(100)))
-                    .expect("mutex lock in task B");
+                let mut guard = match mtx_b.lock(Timeout::After(Duration::from_millis(100))) {
+                    Ok(g) => g,
+                    Err(_) => {
+                        s_b.task_b_done.store(3, Ordering::Release);
+                        return;
+                    }
+                };
                 *guard += 1;
                 s_b.b_counter.store(*guard, Ordering::Release);
             }
-            counting_b.release().expect("counting release in task B");
+            if counting_b.release().is_err() {
+                s_b.task_b_done.store(4, Ordering::Release);
+                return;
+            }
             s_b.task_b_done.store(1, Ordering::Release);
         })
         .map_err(|_| MixedError::TaskSpawnFailed)?;
@@ -148,11 +156,20 @@ fn mixed_object_pipeline(tick_bits: u8) -> Result<(), MixedError> {
         .priority(2)
         .spawn(move || {
             s_a.task_a_started.store(true, Ordering::Release);
-            binary_a
+            if binary_a
                 .acquire(Timeout::After(Duration::from_millis(100)))
-                .expect("binary acquire in task A");
-            q_a.send(&M0, Timeout::After(Duration::from_millis(100)))
-                .expect("queue send in task A");
+                .is_err()
+            {
+                s_a.task_a_done.store(2, Ordering::Release);
+                return;
+            }
+            if q_a
+                .send(&M0, Timeout::After(Duration::from_millis(100)))
+                .is_err()
+            {
+                s_a.task_a_done.store(3, Ordering::Release);
+                return;
+            }
             s_a.task_a_done.store(1, Ordering::Release);
         })
         .map_err(|_| MixedError::TaskSpawnFailed)?;
@@ -196,10 +213,10 @@ fn mixed_object_pipeline(tick_bits: u8) -> Result<(), MixedError> {
         return Err(MixedError::BinaryReleaseFailed);
     }
     if state.task_a_done.load(Ordering::Acquire) != 1 {
-        return Err(MixedError::TaskJoinFailed);
+        return Err(MixedError::TaskAOperationFailed);
     }
     if state.task_b_done.load(Ordering::Acquire) != 1 {
-        return Err(MixedError::TaskJoinFailed);
+        return Err(MixedError::TaskBOperationFailed);
     }
     if state.b_received_word.load(Ordering::Acquire) != u32::from_le_bytes(M0) {
         return Err(MixedError::PayloadMismatch);
