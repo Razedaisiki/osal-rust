@@ -61,7 +61,7 @@ pub enum QueueBlockingError {
     StackMarginTooSmall = 413,
     HeapNotRecovered = 414,
 
-    // ---- timeout-race contracts (4F-2) ----
+    // ---- timeout-race contract errors ----
     HookBoundaryTimeout = 420,
     RaceWrongOutcome = 421,
     RacePayloadMismatch = 422,
@@ -817,14 +817,14 @@ fn queue_recv_timeout_wake_race(tick_bits: u8) -> Result<(), QueueBlockingError>
         .map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
     harness::validate_helper(&ctx_ref.state).map_err(|_| QueueBlockingError::HelperSpawnFailed)?;
     let outcome = ctx_ref.outcome.load(Ordering::Acquire);
+    // Read evidence BEFORE freeing the context allocation.
+    let word = ctx_ref.received_word.load(Ordering::Acquire);
 
     harness::wait_until_heap_recovered(task_baseline, 100, tick_bits)
         .map_err(|_| QueueBlockingError::HeapNotRecovered)?;
     unsafe { drop(Box::from_raw(raw)); }
 
     if outcome != OUTCOME_SUCCESS { return Err(QueueBlockingError::RaceWrongOutcome); }
-    // Helper consumed M0 during reconciliation — verify via received_word.
-    let word = ctx_ref.received_word.load(Ordering::Acquire);
     if word != u32::from_le_bytes(M0) { return Err(QueueBlockingError::RacePayloadMismatch); }
     if q.len().map_err(|_| QueueBlockingError::Create)? != 0 { return Err(QueueBlockingError::RaceQueueNotEmpty); }
     Ok(())

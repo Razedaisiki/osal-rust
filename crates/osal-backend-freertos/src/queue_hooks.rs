@@ -81,7 +81,9 @@ pub fn on_timeout_boundary() {
     }
     AT_BOUNDARY.store(true, Ordering::Release);
     while GATE_ARMED.load(Ordering::Acquire) {
-        sys::delay_ticks(1);
+        if sys::delay_ticks(1) != sys::DelayStatus::Ok {
+            break;
+        }
     }
     AT_BOUNDARY.store(false, Ordering::Release);
 }
@@ -93,7 +95,7 @@ pub fn on_timeout_boundary() {
 /// RAII guard for the timeout-boundary hook.
 ///
 /// ```ignore
-/// let guard = TimeoutHookGuard::arm();
+/// let mut guard = TimeoutHookGuard::arm();
 /// // spawn helper, wait for boundary, inject operation ...
 /// guard.release();
 /// // guard.drop() cleans up if any ?-path returned early
