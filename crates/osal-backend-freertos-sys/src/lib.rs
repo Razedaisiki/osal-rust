@@ -1046,17 +1046,14 @@ pub mod integration_diag {
         SEMAPHORE_DELETES.load(Ordering::Relaxed)
     }
 
+    /// Atomic read-modify-write: decrements the countdown by 1
+    /// and returns `true` when the pre-decrement value was 1.
+    /// Returns `false` without change when the countdown is 0.
+    /// Safe against concurrent calls from multiple tasks.
     pub(crate) fn check_fail() -> bool {
-        let current = FAIL_COUNTDOWN.load(Ordering::Relaxed);
-        if current == 0 {
-            return false;
-        }
-        if current == 1 {
-            FAIL_COUNTDOWN.store(0, Ordering::Relaxed);
-            return true;
-        }
-        FAIL_COUNTDOWN.store(current - 1, Ordering::Relaxed);
-        false
+        FAIL_COUNTDOWN.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_sub(1)
+        }) == Ok(1)
     }
 
     pub(crate) fn record_mutex_create_attempt() {
