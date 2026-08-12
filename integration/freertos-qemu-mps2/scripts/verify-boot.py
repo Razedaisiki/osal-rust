@@ -257,11 +257,13 @@ PROFILES = {
     "mixed": {
         "cases": [
             "harness_native_task",
+            "mixed_native_create_rollback",
             "mixed_object_pipeline",
         ],
         "fields": [
             "profile=mixed",
             "mixed=true",
+            "mixed_rollback=true",
             "mixed_pipeline=true",
             "helper_self_delete=true",
             "idle_cleanup=true",

@@ -82,7 +82,7 @@ pub(crate) fn acquire_object() -> Result<RuntimeLease<'static>> {
 }
 
 /// Return the current active-object count (test-only).
-#[cfg(feature = "testkit")]
+#[cfg(any(feature = "testkit", feature = "integration-test-hooks"))]
 pub fn active_objects() -> usize {
     RUNTIME.active_objects()
 }

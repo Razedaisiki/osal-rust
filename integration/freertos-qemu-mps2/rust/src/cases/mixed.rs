@@ -44,6 +44,13 @@ pub enum MixedError {
     BinaryReleaseFailed = 813,
     TaskAOperationFailed = 814,
     TaskBOperationFailed = 815,
+
+    // ---- rollback ----
+    RollbackWrongError = 816,
+    RollbackDiagMismatch = 817,
+    RollbackLeaseLeak = 818,
+    RollbackHeapLeak = 819,
+    RollbackRecoveryCreateFailed = 820,
 }
 
 struct PipelineState {
@@ -90,9 +97,264 @@ fn bounded_wait_bool(atom: &AtomicBool, expected: bool, deadline_ticks: u32, tic
     }
 }
 
+// ------------------------------------------------------------------
+// Injection helpers
+// ------------------------------------------------------------------
+
+struct SyncCreateFailureGuard;
+
+impl SyncCreateFailureGuard {
+    fn arm(nth: u32) -> Self {
+        sys::integration_diag::clear_sync_create_failure();
+        sys::integration_diag::arm_sync_create_failure(nth);
+        Self
+    }
+}
+
+impl Drop for SyncCreateFailureGuard {
+    fn drop(&mut self) {
+        sys::integration_diag::clear_sync_create_failure();
+    }
+}
+
+#[derive(Default)]
+struct SyncDiag {
+    mutex_attempts: u32,
+    mutex_successes: u32,
+    mutex_deletes: u32,
+    sem_attempts: u32,
+    sem_successes: u32,
+    sem_deletes: u32,
+}
+
+fn read_sync_diag() -> SyncDiag {
+    SyncDiag {
+        mutex_attempts: sys::integration_diag::mutex_create_attempts(),
+        mutex_successes: sys::integration_diag::mutex_create_successes(),
+        mutex_deletes: sys::integration_diag::mutex_deletes(),
+        sem_attempts: sys::integration_diag::semaphore_create_attempts(),
+        sem_successes: sys::integration_diag::semaphore_create_successes(),
+        sem_deletes: sys::integration_diag::semaphore_deletes(),
+    }
+}
+
+macro_rules! assert_diag_delta {
+    ($before:expr, $after:expr, $field:ident, $expected:expr) => {
+        if ($after.$field.wrapping_sub($before.$field)) != ($expected) {
+            return Err(MixedError::RollbackDiagMismatch);
+        }
+    };
+}
+
+// ------------------------------------------------------------------
+// Public entry
+// ------------------------------------------------------------------
+
 pub fn run_mixed_cases(tick_bits: u8) -> Result<(), MixedError> {
+    mixed_native_create_rollback(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=mixed_native_create_rollback");
+
     mixed_object_pipeline(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=mixed_object_pipeline");
+    Ok(())
+}
+
+fn mixed_native_create_rollback(tick_bits: u8) -> Result<(), MixedError> {
+    // --- Mutex: native create failure ---
+    {
+        let _guard = SyncCreateFailureGuard::arm(1);
+        let heap_before = sys::heap_free();
+        let active_before = osal_backend_freertos::runtime::active_objects();
+        let diag_before = read_sync_diag();
+
+        let result = osal::backend::Mutex::<u32>::new(0u32);
+        if !matches!(result, Err(osal_api::error::Error::OutOfMemory)) {
+            return Err(MixedError::RollbackWrongError);
+        }
+        let diag_after = read_sync_diag();
+        assert_diag_delta!(diag_before, diag_after, mutex_attempts, 1);
+        assert_diag_delta!(diag_before, diag_after, mutex_successes, 0);
+        assert_diag_delta!(diag_before, diag_after, mutex_deletes, 0);
+        assert_diag_delta!(diag_before, diag_after, sem_attempts, 0);
+
+        if osal_backend_freertos::runtime::active_objects() != active_before {
+            return Err(MixedError::RollbackLeaseLeak);
+        }
+        harness::wait_until_heap_recovered(heap_before, 50, tick_bits)
+            .map_err(|_| MixedError::RollbackHeapLeak)?;
+    }
+    // Recovery smoke
+    {
+        let heap_before = sys::heap_free();
+        let m = osal::backend::Mutex::<u32>::new(42u32)
+            .map_err(|_| MixedError::RollbackRecoveryCreateFailed)?;
+        drop(m);
+        harness::wait_until_heap_recovered(heap_before, 50, tick_bits)
+            .map_err(|_| MixedError::RollbackHeapLeak)?;
+    }
+
+    // --- CountingSemaphore: native create failure ---
+    {
+        let _guard = SyncCreateFailureGuard::arm(1);
+        let heap_before = sys::heap_free();
+        let active_before = osal_backend_freertos::runtime::active_objects();
+        let diag_before = read_sync_diag();
+
+        let result = osal::backend::CountingSemaphore::new(1, 0);
+        if !matches!(result, Err(osal_api::error::Error::OutOfMemory)) {
+            return Err(MixedError::RollbackWrongError);
+        }
+        let diag_after = read_sync_diag();
+        assert_diag_delta!(diag_before, diag_after, mutex_attempts, 0);
+        assert_diag_delta!(diag_before, diag_after, sem_attempts, 1);
+        assert_diag_delta!(diag_before, diag_after, sem_successes, 0);
+
+        if osal_backend_freertos::runtime::active_objects() != active_before {
+            return Err(MixedError::RollbackLeaseLeak);
+        }
+        harness::wait_until_heap_recovered(heap_before, 50, tick_bits)
+            .map_err(|_| MixedError::RollbackHeapLeak)?;
+    }
+    {
+        let heap_before = sys::heap_free();
+        let s = osal::backend::CountingSemaphore::new(1, 0)
+            .map_err(|_| MixedError::RollbackRecoveryCreateFailed)?;
+        drop(s);
+        harness::wait_until_heap_recovered(heap_before, 50, tick_bits)
+            .map_err(|_| MixedError::RollbackHeapLeak)?;
+    }
+
+    // --- BinarySemaphore: native create failure ---
+    {
+        let _guard = SyncCreateFailureGuard::arm(1);
+        let heap_before = sys::heap_free();
+        let active_before = osal_backend_freertos::runtime::active_objects();
+        let diag_before = read_sync_diag();
+
+        let result = osal::backend::BinarySemaphore::new();
+        if !matches!(result, Err(osal_api::error::Error::OutOfMemory)) {
+            return Err(MixedError::RollbackWrongError);
+        }
+        let diag_after = read_sync_diag();
+        assert_diag_delta!(diag_before, diag_after, mutex_attempts, 0);
+        assert_diag_delta!(diag_before, diag_after, sem_attempts, 1);
+        assert_diag_delta!(diag_before, diag_after, sem_successes, 0);
+
+        if osal_backend_freertos::runtime::active_objects() != active_before {
+            return Err(MixedError::RollbackLeaseLeak);
+        }
+        harness::wait_until_heap_recovered(heap_before, 50, tick_bits)
+            .map_err(|_| MixedError::RollbackHeapLeak)?;
+    }
+    {
+        let heap_before = sys::heap_free();
+        let s = osal::backend::BinarySemaphore::new()
+            .map_err(|_| MixedError::RollbackRecoveryCreateFailed)?;
+        drop(s);
+        harness::wait_until_heap_recovered(heap_before, 50, tick_bits)
+            .map_err(|_| MixedError::RollbackHeapLeak)?;
+    }
+
+    // --- Queue stage 1: state mutex failure ---
+    {
+        let _guard = SyncCreateFailureGuard::arm(1);
+        let heap_before = sys::heap_free();
+        let active_before = osal_backend_freertos::runtime::active_objects();
+        let diag_before = read_sync_diag();
+
+        let result = osal::backend::Queue::new(1, 4);
+        if !matches!(result, Err(osal_api::error::Error::OutOfMemory)) {
+            return Err(MixedError::RollbackWrongError);
+        }
+        let diag_after = read_sync_diag();
+        assert_diag_delta!(diag_before, diag_after, mutex_attempts, 1);
+        assert_diag_delta!(diag_before, diag_after, mutex_successes, 0);
+        assert_diag_delta!(diag_before, diag_after, mutex_deletes, 0);
+        assert_diag_delta!(diag_before, diag_after, sem_attempts, 0);
+
+        if osal_backend_freertos::runtime::active_objects() != active_before {
+            return Err(MixedError::RollbackLeaseLeak);
+        }
+        harness::wait_until_heap_recovered(heap_before, 50, tick_bits)
+            .map_err(|_| MixedError::RollbackHeapLeak)?;
+    }
+    {
+        let heap_before = sys::heap_free();
+        let q = osal::backend::Queue::new(1, 4)
+            .map_err(|_| MixedError::RollbackRecoveryCreateFailed)?;
+        drop(q);
+        harness::wait_until_heap_recovered(heap_before, 50, tick_bits)
+            .map_err(|_| MixedError::RollbackHeapLeak)?;
+    }
+
+    // --- Queue stage 2: sender wake semaphore failure ---
+    {
+        let _guard = SyncCreateFailureGuard::arm(2);
+        let heap_before = sys::heap_free();
+        let active_before = osal_backend_freertos::runtime::active_objects();
+        let diag_before = read_sync_diag();
+
+        let result = osal::backend::Queue::new(1, 4);
+        if !matches!(result, Err(osal_api::error::Error::OutOfMemory)) {
+            return Err(MixedError::RollbackWrongError);
+        }
+        let diag_after = read_sync_diag();
+        assert_diag_delta!(diag_before, diag_after, mutex_attempts, 1);
+        assert_diag_delta!(diag_before, diag_after, mutex_successes, 1);
+        assert_diag_delta!(diag_before, diag_after, mutex_deletes, 1);
+        assert_diag_delta!(diag_before, diag_after, sem_attempts, 1);
+        assert_diag_delta!(diag_before, diag_after, sem_successes, 0);
+        assert_diag_delta!(diag_before, diag_after, sem_deletes, 0);
+
+        if osal_backend_freertos::runtime::active_objects() != active_before {
+            return Err(MixedError::RollbackLeaseLeak);
+        }
+        harness::wait_until_heap_recovered(heap_before, 50, tick_bits)
+            .map_err(|_| MixedError::RollbackHeapLeak)?;
+    }
+    {
+        let heap_before = sys::heap_free();
+        let q = osal::backend::Queue::new(1, 4)
+            .map_err(|_| MixedError::RollbackRecoveryCreateFailed)?;
+        drop(q);
+        harness::wait_until_heap_recovered(heap_before, 50, tick_bits)
+            .map_err(|_| MixedError::RollbackHeapLeak)?;
+    }
+
+    // --- Queue stage 3: receiver wake semaphore failure ---
+    {
+        let _guard = SyncCreateFailureGuard::arm(3);
+        let heap_before = sys::heap_free();
+        let active_before = osal_backend_freertos::runtime::active_objects();
+        let diag_before = read_sync_diag();
+
+        let result = osal::backend::Queue::new(1, 4);
+        if !matches!(result, Err(osal_api::error::Error::OutOfMemory)) {
+            return Err(MixedError::RollbackWrongError);
+        }
+        let diag_after = read_sync_diag();
+        assert_diag_delta!(diag_before, diag_after, mutex_attempts, 1);
+        assert_diag_delta!(diag_before, diag_after, mutex_successes, 1);
+        assert_diag_delta!(diag_before, diag_after, mutex_deletes, 1);
+        assert_diag_delta!(diag_before, diag_after, sem_attempts, 2);
+        assert_diag_delta!(diag_before, diag_after, sem_successes, 1);
+        assert_diag_delta!(diag_before, diag_after, sem_deletes, 1);
+
+        if osal_backend_freertos::runtime::active_objects() != active_before {
+            return Err(MixedError::RollbackLeaseLeak);
+        }
+        harness::wait_until_heap_recovered(heap_before, 50, tick_bits)
+            .map_err(|_| MixedError::RollbackHeapLeak)?;
+    }
+    {
+        let heap_before = sys::heap_free();
+        let q = osal::backend::Queue::new(1, 4)
+            .map_err(|_| MixedError::RollbackRecoveryCreateFailed)?;
+        drop(q);
+        harness::wait_until_heap_recovered(heap_before, 50, tick_bits)
+            .map_err(|_| MixedError::RollbackHeapLeak)?;
+    }
+
     Ok(())
 }
 
