@@ -21,6 +21,13 @@ use osal_backend_freertos_sys as sys;
 
 use crate::harness;
 
+// Expected-OOM FFI (only linked when DIAGNOSTICS is enabled).
+unsafe extern "C" {
+    fn osal_test_expect_malloc_failure();
+    fn osal_test_expected_malloc_failure_consumed() -> u32;
+    fn osal_test_clear_expected_malloc_failure();
+}
+
 const M0: [u8; 4] = [0xA0, 0xB1, 0xC2, 0xD3];
 
 // ------------------------------------------------------------------
@@ -51,6 +58,16 @@ pub enum MixedError {
     RollbackLeaseLeak = 818,
     RollbackHeapLeak = 819,
     RollbackRecoveryCreateFailed = 820,
+
+    // ---- resource pressure ----
+    PressureAllocationFailed = 821,
+    PressureDidNotReduceHeap = 822,
+    PressureOomNotObserved = 823,
+    PressureOomHookNotConsumed = 824,
+    PressureLeaseLeak = 825,
+    PressureHeapLeak = 826,
+    PressureRecoveryTaskFailed = 827,
+    PressureRecoveryObjectFailed = 828,
 }
 
 struct PipelineState {
@@ -117,6 +134,45 @@ impl Drop for SyncCreateFailureGuard {
     }
 }
 
+struct ExpectedMallocFailureGuard;
+
+impl ExpectedMallocFailureGuard {
+    fn arm() -> Self {
+        unsafe { osal_test_expect_malloc_failure() };
+        Self
+    }
+    fn consumed(&self) -> u32 {
+        unsafe { osal_test_expected_malloc_failure_consumed() }
+    }
+}
+
+impl Drop for ExpectedMallocFailureGuard {
+    fn drop(&mut self) {
+        unsafe { osal_test_clear_expected_malloc_failure() };
+    }
+}
+
+struct HeapPressureGuard {
+    ptr: *mut u8,
+}
+
+impl HeapPressureGuard {
+    fn alloc(size: usize) -> Option<Self> {
+        let ptr = unsafe { sys::heap_alloc(size) };
+        if ptr.is_null() {
+            None
+        } else {
+            Some(Self { ptr })
+        }
+    }
+}
+
+impl Drop for HeapPressureGuard {
+    fn drop(&mut self) {
+        unsafe { sys::heap_dealloc(self.ptr) };
+    }
+}
+
 #[derive(Default)]
 struct SyncDiag {
     mutex_attempts: u32,
@@ -153,6 +209,9 @@ macro_rules! assert_diag_delta {
 pub fn run_mixed_cases(tick_bits: u8) -> Result<(), MixedError> {
     mixed_native_create_rollback(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=mixed_native_create_rollback");
+
+    mixed_resource_pressure_recovery(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=mixed_resource_pressure_recovery");
 
     mixed_object_pipeline(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=mixed_object_pipeline");
@@ -355,6 +414,121 @@ fn mixed_native_create_rollback(tick_bits: u8) -> Result<(), MixedError> {
             .map_err(|_| MixedError::RollbackHeapLeak)?;
     }
 
+    Ok(())
+}
+
+fn mixed_resource_pressure_recovery(tick_bits: u8) -> Result<(), MixedError> {
+    let heap_baseline = sys::heap_free();
+    let active_baseline = osal_backend_freertos::runtime::active_objects();
+    let task_baseline = FreeRtosTask::count();
+
+    // Allocate a real pressure block (~25% of free heap).
+    let free = sys::heap_free();
+    let pressure_bytes = (free / 4) as usize;
+    let _oom_guard = ExpectedMallocFailureGuard::arm();
+    let pressure = HeapPressureGuard::alloc(pressure_bytes)
+        .ok_or(MixedError::PressureAllocationFailed)?;
+    drop(_oom_guard); // pressure alloc succeeded, clear expected-OOM
+
+    let pressured_free = sys::heap_free();
+    if pressured_free >= heap_baseline {
+        return Err(MixedError::PressureDidNotReduceHeap);
+    }
+
+    // Probe stack larger than remaining free heap → must OOM.
+    let probe_stack = (pressured_free as usize).saturating_add(4096);
+
+    let oom_guard = ExpectedMallocFailureGuard::arm();
+    let result = FreeRtosTaskBuilder::new()
+        .stack_size(probe_stack)
+        .priority(2)
+        .spawn(move || {});
+    let consumed = oom_guard.consumed();
+    drop(oom_guard);
+
+    if consumed != 1 {
+        return Err(MixedError::PressureOomHookNotConsumed);
+    }
+    if !matches!(result, Err(osal_api::error::Error::OutOfMemory)) {
+        return Err(MixedError::PressureOomNotObserved);
+    }
+    if FreeRtosTask::count() != task_baseline {
+        return Err(MixedError::PressureLeaseLeak);
+    }
+    if osal_backend_freertos::runtime::active_objects() != active_baseline {
+        return Err(MixedError::PressureLeaseLeak);
+    }
+    harness::wait_until_heap_recovered(pressured_free, 50, tick_bits)
+        .map_err(|_| MixedError::PressureHeapLeak)?;
+
+    // Release pressure → exact global recovery.
+    drop(pressure);
+    harness::wait_until_heap_recovered(heap_baseline, 100, tick_bits)
+        .map_err(|_| MixedError::PressureHeapLeak)?;
+
+    // Same stack must now succeed (proves OOM was from pressure).
+    let t = FreeRtosTaskBuilder::new()
+        .stack_size(probe_stack)
+        .priority(2)
+        .spawn(move || {})
+        .map_err(|_| MixedError::PressureRecoveryTaskFailed)?;
+    t.join(Timeout::After(Duration::from_millis(100)))
+        .map_err(|_| MixedError::PressureRecoveryTaskFailed)?;
+    drop(t);
+    harness::wait_until_heap_recovered(heap_baseline, 50, tick_bits)
+        .map_err(|_| MixedError::PressureHeapLeak)?;
+
+    // Cross-object recovery smoke.
+    {
+        let m = osal::backend::Mutex::<u32>::new(0u32)
+            .map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        {
+            let _g = m.lock(Timeout::After(Duration::from_millis(100)))
+                .map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        }
+        drop(m);
+        harness::wait_until_heap_recovered(heap_baseline, 50, tick_bits)
+            .map_err(|_| MixedError::PressureHeapLeak)?;
+    }
+    {
+        let b = osal::backend::BinarySemaphore::new()
+            .map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        b.release().map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        b.acquire(Timeout::After(Duration::from_millis(100)))
+            .map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        drop(b);
+        harness::wait_until_heap_recovered(heap_baseline, 50, tick_bits)
+            .map_err(|_| MixedError::PressureHeapLeak)?;
+    }
+    {
+        let c = osal::backend::CountingSemaphore::new(1, 0)
+            .map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        c.release().map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        c.acquire(Timeout::After(Duration::from_millis(100)))
+            .map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        drop(c);
+        harness::wait_until_heap_recovered(heap_baseline, 50, tick_bits)
+            .map_err(|_| MixedError::PressureHeapLeak)?;
+    }
+    {
+        let q = osal::backend::Queue::new(1, 4)
+            .map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        q.send(&M0, Timeout::NoWait)
+            .map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        let mut buf = [0u8; 4];
+        q.recv(&mut buf, Timeout::NoWait)
+            .map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        drop(q);
+        harness::wait_until_heap_recovered(heap_baseline, 50, tick_bits)
+            .map_err(|_| MixedError::PressureHeapLeak)?;
+    }
+
+    if osal_backend_freertos::runtime::active_objects() != active_baseline {
+        return Err(MixedError::PressureLeaseLeak);
+    }
+    if FreeRtosTask::count() != task_baseline {
+        return Err(MixedError::PressureLeaseLeak);
+    }
     Ok(())
 }
 

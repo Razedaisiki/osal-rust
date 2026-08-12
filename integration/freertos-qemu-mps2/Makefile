@@ -122,6 +122,9 @@ endif
 ifeq ($(CARGO_FEATURES),suite-timer)
 PROJECT_CFLAGS += -DOSAL_FREERTOS_INTEGRATION_DIAGNOSTICS=1
 endif
+ifeq ($(CARGO_FEATURES),suite-mixed)
+PROJECT_CFLAGS += -DOSAL_FREERTOS_INTEGRATION_DIAGNOSTICS=1
+endif
 
 # Pass the ARM cross-compiler and FreeRTOS include paths so the
 # -sys crate build.rs compiles the C shim with arm-none-eabi-gcc.
@@ -138,9 +141,14 @@ endif
 ifeq ($(CARGO_FEATURES),suite-timer)
 RUST_BUILD_ENV += CFLAGS_thumbv7m_none_eabi="$(RUST_BASE_CFLAGS) -DOSAL_FREERTOS_INTEGRATION_DIAGNOSTICS=1"
 endif
+ifeq ($(CARGO_FEATURES),suite-mixed)
+RUST_BUILD_ENV += CFLAGS_thumbv7m_none_eabi="$(RUST_BASE_CFLAGS) -DOSAL_FREERTOS_INTEGRATION_DIAGNOSTICS=1"
+endif
 ifneq ($(CARGO_FEATURES),suite-task)
 ifneq ($(CARGO_FEATURES),suite-timer)
+ifneq ($(CARGO_FEATURES),suite-mixed)
 RUST_BUILD_ENV += CFLAGS_thumbv7m_none_eabi="$(RUST_BASE_CFLAGS)"
+endif
 endif
 endif
 RUST_BUILD_ENV += OSAL_FREERTOS_KERNEL_INCLUDE=$(abspath $(KERNEL)/include)
