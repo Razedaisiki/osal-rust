@@ -26,7 +26,12 @@ unsafe extern "C" {
     fn osal_test_expect_malloc_failure();
     fn osal_test_expected_malloc_failure_consumed() -> u32;
     fn osal_test_clear_expected_malloc_failure();
+    fn osal_test_diag_task_create_attempts() -> u32;
+    fn osal_test_diag_task_create_successes() -> u32;
 }
+
+fn diag_task_create_attempts() -> u32 { unsafe { osal_test_diag_task_create_attempts() } }
+fn diag_task_create_successes() -> u32 { unsafe { osal_test_diag_task_create_successes() } }
 
 const M0: [u8; 4] = [0xA0, 0xB1, 0xC2, 0xD3];
 
@@ -68,6 +73,7 @@ pub enum MixedError {
     PressureHeapLeak = 826,
     PressureRecoveryTaskFailed = 827,
     PressureRecoveryObjectFailed = 828,
+    PressureProbeOverflow = 829,
 }
 
 struct PipelineState {
@@ -436,7 +442,12 @@ fn mixed_resource_pressure_recovery(tick_bits: u8) -> Result<(), MixedError> {
     }
 
     // Probe stack larger than remaining free heap → must OOM.
-    let probe_stack = (pressured_free as usize).saturating_add(4096);
+    let probe_stack = (pressured_free as usize)
+        .checked_add(4096)
+        .ok_or(MixedError::PressureProbeOverflow)?;
+
+    let create_attempts_before = diag_task_create_attempts();
+    let create_successes_before = diag_task_create_successes();
 
     let oom_guard = ExpectedMallocFailureGuard::arm();
     let result = FreeRtosTaskBuilder::new()
@@ -446,10 +457,20 @@ fn mixed_resource_pressure_recovery(tick_bits: u8) -> Result<(), MixedError> {
     let consumed = oom_guard.consumed();
     drop(oom_guard);
 
+    // Prove the OOM reached xTaskCreate (attempt incremented, success not).
+    let create_attempts_delta = diag_task_create_attempts().wrapping_sub(create_attempts_before);
+    let create_successes_delta = diag_task_create_successes().wrapping_sub(create_successes_before);
+
     if consumed != 1 {
         return Err(MixedError::PressureOomHookNotConsumed);
     }
     if !matches!(result, Err(osal_api::error::Error::OutOfMemory)) {
+        return Err(MixedError::PressureOomNotObserved);
+    }
+    if create_attempts_delta != 1 {
+        return Err(MixedError::PressureOomNotObserved);
+    }
+    if create_successes_delta != 0 {
         return Err(MixedError::PressureOomNotObserved);
     }
     if FreeRtosTask::count() != task_baseline {
@@ -477,6 +498,67 @@ fn mixed_resource_pressure_recovery(tick_bits: u8) -> Result<(), MixedError> {
     drop(t);
     harness::wait_until_heap_recovered(heap_baseline, 50, tick_bits)
         .map_err(|_| MixedError::PressureHeapLeak)?;
+
+    // Mutex real-pressure subcase: measure native mutex heap cost,
+    // then reduce free heap below that cost and require Mutex::new()
+    // to return OutOfMemory from the real native allocation path.
+    let mutex_native_cost = {
+        let before = sys::heap_free();
+        let m = osal::backend::Mutex::<u32>::new(0u32)
+            .map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        let during = sys::heap_free();
+        drop(m);
+        harness::wait_until_heap_recovered(before, 50, tick_bits)
+            .map_err(|_| MixedError::PressureHeapLeak)?;
+        before.saturating_sub(during)
+    };
+    if mutex_native_cost == 0 {
+        return Err(MixedError::PressureDidNotReduceHeap);
+    }
+    {
+        let free = sys::heap_free();
+        // Leave less free than the native mutex needs (plus a small
+        // safety margin so the pressure block itself is far from the
+        // allocator's failure threshold).
+        let target_free = mutex_native_cost / 2;
+        let pressure_bytes = free.saturating_sub(target_free) as usize;
+        let pressure = HeapPressureGuard::alloc(pressure_bytes)
+            .ok_or(MixedError::PressureAllocationFailed)?;
+
+        let pressured_free = sys::heap_free();
+        if pressured_free >= mutex_native_cost {
+            return Err(MixedError::PressureDidNotReduceHeap);
+        }
+
+        let oom_guard = ExpectedMallocFailureGuard::arm();
+        let result = osal::backend::Mutex::<u32>::new(0u32);
+        let consumed = oom_guard.consumed();
+        drop(oom_guard);
+        if consumed != 1 {
+            return Err(MixedError::PressureOomHookNotConsumed);
+        }
+        if !matches!(result, Err(osal_api::error::Error::OutOfMemory)) {
+            return Err(MixedError::PressureOomNotObserved);
+        }
+        if osal_backend_freertos::runtime::active_objects() != active_baseline {
+            return Err(MixedError::PressureLeaseLeak);
+        }
+        harness::wait_until_heap_recovered(pressured_free, 50, tick_bits)
+            .map_err(|_| MixedError::PressureHeapLeak)?;
+
+        drop(pressure);
+        harness::wait_until_heap_recovered(heap_baseline, 100, tick_bits)
+            .map_err(|_| MixedError::PressureHeapLeak)?;
+    }
+    // Normal Mutex now succeeds after pressure release.
+    {
+        let before = sys::heap_free();
+        let m = osal::backend::Mutex::<u32>::new(0u32)
+            .map_err(|_| MixedError::PressureRecoveryObjectFailed)?;
+        drop(m);
+        harness::wait_until_heap_recovered(before, 50, tick_bits)
+            .map_err(|_| MixedError::PressureHeapLeak)?;
+    }
 
     // Cross-object recovery smoke.
     {
