@@ -28,10 +28,12 @@ unsafe extern "C" {
     fn osal_test_clear_expected_malloc_failure();
     fn osal_test_diag_task_create_attempts() -> u32;
     fn osal_test_diag_task_create_successes() -> u32;
+    fn osal_test_diag_internal_task_create_attempts() -> u32;
 }
 
 fn diag_task_create_attempts() -> u32 { unsafe { osal_test_diag_task_create_attempts() } }
 fn diag_task_create_successes() -> u32 { unsafe { osal_test_diag_task_create_successes() } }
+fn diag_worker_create_attempts() -> u32 { unsafe { osal_test_diag_internal_task_create_attempts() } }
 
 const M0: [u8; 4] = [0xA0, 0xB1, 0xC2, 0xD3];
 
@@ -74,6 +76,15 @@ pub enum MixedError {
     PressureRecoveryTaskFailed = 827,
     PressureRecoveryObjectFailed = 828,
     PressureProbeOverflow = 829,
+
+    // ---- lifecycle stress ----
+    StressSetupFailed = 830,
+    StressOperationFailed = 831,
+    StressCrossTalk = 832,
+    StressTaskCountLeak = 833,
+    StressActiveObjectLeak = 834,
+    StressHeapLeak = 835,
+    StressWorkerRecreated = 836,
 }
 
 struct PipelineState {
@@ -106,6 +117,24 @@ fn bounded_wait_bool(atom: &AtomicBool, expected: bool, deadline_ticks: u32, tic
     let start = sys::tick_snapshot();
     loop {
         if atom.load(Ordering::Acquire) == expected {
+            return true;
+        }
+        let now = sys::tick_snapshot();
+        let start_total = ((start.overflow_count as u128) << tick_bits) | (start.tick_count as u128);
+        let now_total = ((now.overflow_count as u128) << tick_bits) | (now.tick_count as u128);
+        if now_total.saturating_sub(start_total) >= deadline_ticks as u128 {
+            return false;
+        }
+        if sys::delay_ticks(1) != sys::DelayStatus::Ok {
+            return false;
+        }
+    }
+}
+
+fn wait_active_objects(target: usize, deadline_ticks: u32, tick_bits: u8) -> bool {
+    let start = sys::tick_snapshot();
+    loop {
+        if osal_backend_freertos::runtime::active_objects() == target {
             return true;
         }
         let now = sys::tick_snapshot();
@@ -221,6 +250,9 @@ pub fn run_mixed_cases(tick_bits: u8) -> Result<(), MixedError> {
 
     mixed_object_pipeline(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=mixed_object_pipeline");
+
+    mixed_lifecycle_stress(tick_bits)?;
+    harness::console_line(c"OSAL_CASE_PASS name=mixed_lifecycle_stress");
     Ok(())
 }
 
@@ -614,149 +646,248 @@ fn mixed_resource_pressure_recovery(tick_bits: u8) -> Result<(), MixedError> {
     Ok(())
 }
 
-fn mixed_object_pipeline(tick_bits: u8) -> Result<(), MixedError> {
-    let public_task_baseline = FreeRtosTask::count();
-    let state = Arc::new(PipelineState::new());
+struct PipelineBundle {
+    mtx: osal::backend::Mutex<u32>,
+    binary: osal::backend::BinarySemaphore,
+    counting: osal::backend::CountingSemaphore,
+    q: osal::backend::Queue,
+    ta: FreeRtosTask,
+    tb: FreeRtosTask,
+    timer: FreeRtosTimer,
+    state: Arc<PipelineState>,
+}
 
-    let mtx = osal::backend::Mutex::new(0u32).map_err(|_| MixedError::MutexCreate)?;
-    let binary = osal::backend::BinarySemaphore::new()
-        .map_err(|_| MixedError::BinaryCreate)?;
-    let counting =
-        osal::backend::CountingSemaphore::new(1, 0)
-            .map_err(|_| MixedError::CountingCreate)?;
-    let q = osal::backend::Queue::new(1, 4).map_err(|_| MixedError::QueueCreate)?;
+impl PipelineBundle {
+    fn construct(payload: [u8; 4]) -> Result<Self, MixedError> {
+        let state = Arc::new(PipelineState::new());
+        let mtx = osal::backend::Mutex::new(0u32).map_err(|_| MixedError::MutexCreate)?;
+        let binary = osal::backend::BinarySemaphore::new()
+            .map_err(|_| MixedError::BinaryCreate)?;
+        let counting =
+            osal::backend::CountingSemaphore::new(1, 0)
+                .map_err(|_| MixedError::CountingCreate)?;
+        let q = osal::backend::Queue::new(1, 4).map_err(|_| MixedError::QueueCreate)?;
 
-    // Task B: recv from Queue, increment Mutex, release CountingSemaphore
-    let s_b = Arc::clone(&state);
-    let q_b = q.clone();
-    let mtx_b = mtx.clone();
-    let counting_b = counting.clone();
-    let tb = FreeRtosTaskBuilder::new()
-        .stack_size(4096)
-        .priority(2)
-        .spawn(move || {
-            s_b.task_b_started.store(true, Ordering::Release);
-            let mut buf = [0u8; 4];
-            match q_b.recv(&mut buf, Timeout::After(Duration::from_millis(100))) {
-                Ok(()) => {
-                    s_b.b_received_word.store(u32::from_le_bytes(buf), Ordering::Release);
-                }
-                Err(_) => {
-                    s_b.task_b_done.store(2, Ordering::Release);
-                    return;
-                }
-            }
-            {
-                let mut guard = match mtx_b.lock(Timeout::After(Duration::from_millis(100))) {
-                    Ok(g) => g,
+        // Task B: recv payload, increment Mutex, release CountingSemaphore
+        let s_b = Arc::clone(&state);
+        let q_b = q.clone();
+        let mtx_b = mtx.clone();
+        let counting_b = counting.clone();
+        let tb = FreeRtosTaskBuilder::new()
+            .stack_size(4096)
+            .priority(2)
+            .spawn(move || {
+                s_b.task_b_started.store(true, Ordering::Release);
+                let mut buf = [0u8; 4];
+                match q_b.recv(&mut buf, Timeout::After(Duration::from_millis(100))) {
+                    Ok(()) => {
+                        s_b.b_received_word.store(u32::from_le_bytes(buf), Ordering::Release);
+                    }
                     Err(_) => {
-                        s_b.task_b_done.store(3, Ordering::Release);
+                        s_b.task_b_done.store(2, Ordering::Release);
                         return;
                     }
-                };
-                *guard += 1;
-                s_b.b_counter.store(*guard, Ordering::Release);
-            }
-            if counting_b.release().is_err() {
-                s_b.task_b_done.store(4, Ordering::Release);
-                return;
-            }
-            s_b.task_b_done.store(1, Ordering::Release);
-        })
-        .map_err(|_| MixedError::TaskSpawnFailed)?;
+                }
+                {
+                    let mut guard = match mtx_b.lock(Timeout::After(Duration::from_millis(100))) {
+                        Ok(g) => g,
+                        Err(_) => {
+                            s_b.task_b_done.store(3, Ordering::Release);
+                            return;
+                        }
+                    };
+                    *guard += 1;
+                    s_b.b_counter.store(*guard, Ordering::Release);
+                }
+                if counting_b.release().is_err() {
+                    s_b.task_b_done.store(4, Ordering::Release);
+                    return;
+                }
+                s_b.task_b_done.store(1, Ordering::Release);
+            })
+            .map_err(|_| MixedError::TaskSpawnFailed)?;
 
-    // Task A: acquire BinarySemaphore, send M0 to Queue
-    let s_a = Arc::clone(&state);
-    let binary_a = binary.clone();
-    let q_a = q.clone();
-    let ta = FreeRtosTaskBuilder::new()
-        .stack_size(4096)
-        .priority(2)
-        .spawn(move || {
-            s_a.task_a_started.store(true, Ordering::Release);
-            if binary_a
-                .acquire(Timeout::After(Duration::from_millis(100)))
-                .is_err()
-            {
-                s_a.task_a_done.store(2, Ordering::Release);
-                return;
-            }
-            if q_a
-                .send(&M0, Timeout::After(Duration::from_millis(100)))
-                .is_err()
-            {
-                s_a.task_a_done.store(3, Ordering::Release);
-                return;
-            }
-            s_a.task_a_done.store(1, Ordering::Release);
-        })
-        .map_err(|_| MixedError::TaskSpawnFailed)?;
+        // Task A: acquire BinarySemaphore, send payload to Queue
+        let s_a = Arc::clone(&state);
+        let binary_a = binary.clone();
+        let q_a = q.clone();
+        let ta = FreeRtosTaskBuilder::new()
+            .stack_size(4096)
+            .priority(2)
+            .spawn(move || {
+                s_a.task_a_started.store(true, Ordering::Release);
+                if binary_a
+                    .acquire(Timeout::After(Duration::from_millis(100)))
+                    .is_err()
+                {
+                    s_a.task_a_done.store(2, Ordering::Release);
+                    return;
+                }
+                if q_a
+                    .send(&payload, Timeout::After(Duration::from_millis(100)))
+                    .is_err()
+                {
+                    s_a.task_a_done.store(3, Ordering::Release);
+                    return;
+                }
+                s_a.task_a_done.store(1, Ordering::Release);
+            })
+            .map_err(|_| MixedError::TaskSpawnFailed)?;
 
-    if !bounded_wait_bool(&state.task_b_started, true, 80, tick_bits) {
-        return Err(MixedError::PipelineTimeout);
+        // Timer: release BinarySemaphore (unblocks Task A). Not started yet.
+        let s_timer = Arc::clone(&state);
+        let binary_timer = binary.clone();
+        let cb: TimerCallback = Box::new(move || {
+            match binary_timer.release() {
+                Ok(()) => s_timer.binary_release_ok.store(1, Ordering::Relaxed),
+                Err(_) => s_timer.binary_release_ok.store(2, Ordering::Relaxed),
+            }
+            s_timer.timer_callback_count.fetch_add(1, Ordering::Release);
+        });
+        let timer = FreeRtosTimer::new("t-mixed-pipe", Duration::from_millis(5), TimerMode::OneShot, cb)
+            .map_err(|_| MixedError::TimerCreate)?;
+
+        Ok(Self { mtx, binary, counting, q, ta, tb, timer, state })
     }
-    if !bounded_wait_bool(&state.task_a_started, true, 80, tick_bits) {
-        return Err(MixedError::PipelineTimeout);
-    }
 
-    // Timer: release BinarySemaphore (unblocks Task A)
-    let s_timer = Arc::clone(&state);
-    let binary_timer = binary.clone();
-    let cb: TimerCallback = Box::new(move || {
-        match binary_timer.release() {
-            Ok(()) => s_timer.binary_release_ok.store(1, Ordering::Relaxed),
-            Err(_) => s_timer.binary_release_ok.store(2, Ordering::Relaxed),
+    fn wait_started(&self, tick_bits: u8) -> Result<(), MixedError> {
+        if !bounded_wait_bool(&self.state.task_a_started, true, 80, tick_bits)
+            || !bounded_wait_bool(&self.state.task_b_started, true, 80, tick_bits)
+        {
+            return Err(MixedError::PipelineTimeout);
         }
-        s_timer.timer_callback_count.fetch_add(1, Ordering::Release);
-    });
-    let timer = FreeRtosTimer::new("t-mixed-pipe", Duration::from_millis(5), TimerMode::OneShot, cb)
-        .map_err(|_| MixedError::TimerCreate)?;
-    timer.start().map_err(|_| MixedError::TimerStart)?;
-
-    // Controller waits on CountingSemaphore (released by Task B)
-    counting
-        .acquire(Timeout::After(Duration::from_millis(200)))
-        .map_err(|_| MixedError::PipelineTimeout)?;
-
-    ta.join(Timeout::After(Duration::from_millis(100)))
-        .map_err(|_| MixedError::TaskJoinFailed)?;
-    tb.join(Timeout::After(Duration::from_millis(100)))
-        .map_err(|_| MixedError::TaskJoinFailed)?;
-
-    // Verify
-    if state.timer_callback_count.load(Ordering::Acquire) != 1 {
-        return Err(MixedError::TimerCountWrong);
-    }
-    if state.binary_release_ok.load(Ordering::Acquire) != 1 {
-        return Err(MixedError::BinaryReleaseFailed);
-    }
-    if state.task_a_done.load(Ordering::Acquire) != 1 {
-        return Err(MixedError::TaskAOperationFailed);
-    }
-    if state.task_b_done.load(Ordering::Acquire) != 1 {
-        return Err(MixedError::TaskBOperationFailed);
-    }
-    if state.b_received_word.load(Ordering::Acquire) != u32::from_le_bytes(M0) {
-        return Err(MixedError::PayloadMismatch);
-    }
-    if state.b_counter.load(Ordering::Acquire) != 1 {
-        return Err(MixedError::CounterMismatch);
-    }
-    if q.len().map_err(|_| MixedError::QueueCreate)? != 0 {
-        return Err(MixedError::PayloadMismatch);
+        Ok(())
     }
 
-    drop(ta);
-    drop(tb);
-    drop(timer);
-    drop(q);
-    drop(binary);
-    drop(counting);
-    drop(mtx);
-    drop(state);
+    fn start_timer(&self) -> Result<(), MixedError> {
+        self.timer.start().map_err(|_| MixedError::TimerStart)
+    }
 
-    if FreeRtosTask::count() != public_task_baseline {
+    fn wait_complete(&self, tick_bits: u8, payload: [u8; 4]) -> Result<(), MixedError> {
+        self.counting
+            .acquire(Timeout::After(Duration::from_millis(200)))
+            .map_err(|_| MixedError::PipelineTimeout)?;
+        self.ta.join(Timeout::After(Duration::from_millis(100)))
+            .map_err(|_| MixedError::TaskJoinFailed)?;
+        self.tb.join(Timeout::After(Duration::from_millis(100)))
+            .map_err(|_| MixedError::TaskJoinFailed)?;
+
+        if self.state.timer_callback_count.load(Ordering::Acquire) != 1 {
+            return Err(MixedError::TimerCountWrong);
+        }
+        if self.state.binary_release_ok.load(Ordering::Acquire) != 1 {
+            return Err(MixedError::BinaryReleaseFailed);
+        }
+        if self.state.task_a_done.load(Ordering::Acquire) != 1 {
+            return Err(MixedError::TaskAOperationFailed);
+        }
+        if self.state.task_b_done.load(Ordering::Acquire) != 1 {
+            return Err(MixedError::TaskBOperationFailed);
+        }
+        if self.state.b_received_word.load(Ordering::Acquire) != u32::from_le_bytes(payload) {
+            return Err(MixedError::PayloadMismatch);
+        }
+        if self.state.b_counter.load(Ordering::Acquire) != 1 {
+            return Err(MixedError::CounterMismatch);
+        }
+        if self.q.len().map_err(|_| MixedError::QueueCreate)? != 0 {
+            return Err(MixedError::PayloadMismatch);
+        }
+        let _ = tick_bits;
+        Ok(())
+    }
+}
+
+/// Run one full mixed pipeline to completion (no CASE_PASS output).
+fn run_pipeline_once(tick_bits: u8, payload: [u8; 4]) -> Result<(), MixedError> {
+    let bundle = PipelineBundle::construct(payload)?;
+    bundle.wait_started(tick_bits)?;
+    bundle.start_timer()?;
+    bundle.wait_complete(tick_bits, payload)
+}
+
+fn mixed_object_pipeline(tick_bits: u8) -> Result<(), MixedError> {
+    let task_baseline = FreeRtosTask::count();
+    run_pipeline_once(tick_bits, M0)?;
+    if FreeRtosTask::count() != task_baseline {
         return Err(MixedError::TaskCountWrong);
+    }
+    Ok(())
+}
+
+fn mixed_lifecycle_stress(tick_bits: u8) -> Result<(), MixedError> {
+    // Warm up the Timer worker so it becomes a permanent part of the
+    // runtime.  The bounded delay also lets any transient task-trampoline
+    // lease from the preceding case settle before we snapshot baselines.
+    {
+        let s = Arc::new(PipelineState::new());
+        let s_cb = Arc::clone(&s);
+        let cb: TimerCallback = Box::new(move || {
+            s_cb.timer_callback_count.fetch_add(1, Ordering::Release);
+        });
+        let timer = FreeRtosTimer::new("t-warm", Duration::from_millis(2), TimerMode::OneShot, cb)
+            .map_err(|_| MixedError::StressSetupFailed)?;
+        timer.start().map_err(|_| MixedError::StressSetupFailed)?;
+        loop {
+            if s.timer_callback_count.load(Ordering::Acquire) >= 1 {
+                break;
+            }
+            sys::delay_ticks(1);
+        }
+        drop(timer);
+    }
+
+    // Snapshot stable baselines AFTER the warmup (previous-case cleanup
+    // has settled, worker is now permanently resident).
+    let active_baseline = osal_backend_freertos::runtime::active_objects();
+    let task_baseline = FreeRtosTask::count();
+    let worker_baseline = sys::heap_free();
+    let worker_create_attempts_baseline = diag_worker_create_attempts();
+
+    // Phase A: 16 sequential rounds with distinct payloads.
+    for round in 0..16u32 {
+        let payload = [0x41, 0, 0, round as u8];
+        run_pipeline_once(tick_bits, payload)?;
+
+        harness::wait_until_heap_recovered(worker_baseline, 100, tick_bits)
+            .map_err(|_| MixedError::StressHeapLeak)?;
+        if FreeRtosTask::count() != task_baseline {
+            return Err(MixedError::StressTaskCountLeak);
+        }
+        if !wait_active_objects(active_baseline, 100, tick_bits) {
+            return Err(MixedError::StressActiveObjectLeak);
+        }
+    }
+
+    // Phase B: 4 waves × 2 concurrent pipelines.
+    for wave in 0..4u32 {
+        let payload_a = [0xA5, 0, 0, wave as u8];
+        let payload_b = [0x5A, 0, 0, wave as u8];
+
+        let a = PipelineBundle::construct(payload_a).map_err(|_| MixedError::StressSetupFailed)?;
+        let b = PipelineBundle::construct(payload_b).map_err(|_| MixedError::StressSetupFailed)?;
+        a.wait_started(tick_bits)?;
+        b.wait_started(tick_bits)?;
+        a.start_timer()?;
+        b.start_timer()?;
+        a.wait_complete(tick_bits, payload_a)?;
+        b.wait_complete(tick_bits, payload_b)?;
+        drop(a);
+        drop(b);
+
+        harness::wait_until_heap_recovered(worker_baseline, 100, tick_bits)
+            .map_err(|_| MixedError::StressHeapLeak)?;
+        if FreeRtosTask::count() != task_baseline {
+            return Err(MixedError::StressTaskCountLeak);
+        }
+        if !wait_active_objects(active_baseline, 100, tick_bits) {
+            return Err(MixedError::StressActiveObjectLeak);
+        }
+    }
+
+    // Worker must not have been recreated across the whole stress.
+    if diag_worker_create_attempts() != worker_create_attempts_baseline {
+        return Err(MixedError::StressWorkerRecreated);
     }
     Ok(())
 }
