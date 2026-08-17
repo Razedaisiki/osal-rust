@@ -667,6 +667,7 @@ added; final sealing requires successful shutdown + exact heap recovery.
 - Native fixture headers: `TimeOut_t`, `vTaskSetTimeOutState`, `vTaskDelay`,
   `portMAX_DELAY`, `portable.h`.
 - Fixture: `AtomicU64` tick/overflow counters with configurable tick bits
+
   for wrap simulation.
 - 8 backend-specific Clock stabilisation tests, 14 sync stabilisation tests.
 

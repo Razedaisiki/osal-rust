@@ -79,8 +79,6 @@ pub enum MixedError {
 
     // ---- lifecycle stress ----
     StressSetupFailed = 830,
-    StressOperationFailed = 831,
-    StressCrossTalk = 832,
     StressTaskCountLeak = 833,
     StressActiveObjectLeak = 834,
     StressHeapLeak = 835,
@@ -135,6 +133,24 @@ fn wait_active_objects(target: usize, deadline_ticks: u32, tick_bits: u8) -> boo
     let start = sys::tick_snapshot();
     loop {
         if osal_backend_freertos::runtime::active_objects() == target {
+            return true;
+        }
+        let now = sys::tick_snapshot();
+        let start_total = ((start.overflow_count as u128) << tick_bits) | (start.tick_count as u128);
+        let now_total = ((now.overflow_count as u128) << tick_bits) | (now.tick_count as u128);
+        if now_total.saturating_sub(start_total) >= deadline_ticks as u128 {
+            return false;
+        }
+        if sys::delay_ticks(1) != sys::DelayStatus::Ok {
+            return false;
+        }
+    }
+}
+
+fn wait_task_count(target: usize, deadline_ticks: u32, tick_bits: u8) -> bool {
+    let start = sys::tick_snapshot();
+    loop {
+        if FreeRtosTask::count() == target {
             return true;
         }
         let now = sys::tick_snapshot();
@@ -647,8 +663,8 @@ fn mixed_resource_pressure_recovery(tick_bits: u8) -> Result<(), MixedError> {
 }
 
 struct PipelineBundle {
-    mtx: osal::backend::Mutex<u32>,
-    binary: osal::backend::BinarySemaphore,
+    _mtx: osal::backend::Mutex<u32>,
+    _binary: osal::backend::BinarySemaphore,
     counting: osal::backend::CountingSemaphore,
     q: osal::backend::Queue,
     ta: FreeRtosTask,
@@ -747,7 +763,7 @@ impl PipelineBundle {
         let timer = FreeRtosTimer::new("t-mixed-pipe", Duration::from_millis(5), TimerMode::OneShot, cb)
             .map_err(|_| MixedError::TimerCreate)?;
 
-        Ok(Self { mtx, binary, counting, q, ta, tb, timer, state })
+        Ok(Self { _mtx: mtx, _binary: binary, counting, q, ta, tb, timer, state })
     }
 
     fn wait_started(&self, tick_bits: u8) -> Result<(), MixedError> {
@@ -763,7 +779,7 @@ impl PipelineBundle {
         self.timer.start().map_err(|_| MixedError::TimerStart)
     }
 
-    fn wait_complete(&self, tick_bits: u8, payload: [u8; 4]) -> Result<(), MixedError> {
+    fn wait_complete(&self, payload: [u8; 4]) -> Result<(), MixedError> {
         self.counting
             .acquire(Timeout::After(Duration::from_millis(200)))
             .map_err(|_| MixedError::PipelineTimeout)?;
@@ -793,7 +809,6 @@ impl PipelineBundle {
         if self.q.len().map_err(|_| MixedError::QueueCreate)? != 0 {
             return Err(MixedError::PayloadMismatch);
         }
-        let _ = tick_bits;
         Ok(())
     }
 }
@@ -803,7 +818,7 @@ fn run_pipeline_once(tick_bits: u8, payload: [u8; 4]) -> Result<(), MixedError> 
     let bundle = PipelineBundle::construct(payload)?;
     bundle.wait_started(tick_bits)?;
     bundle.start_timer()?;
-    bundle.wait_complete(tick_bits, payload)
+    bundle.wait_complete(payload)
 }
 
 fn mixed_object_pipeline(tick_bits: u8) -> Result<(), MixedError> {
@@ -817,22 +832,21 @@ fn mixed_object_pipeline(tick_bits: u8) -> Result<(), MixedError> {
 
 fn mixed_lifecycle_stress(tick_bits: u8) -> Result<(), MixedError> {
     // Warm up the Timer worker so it becomes a permanent part of the
-    // runtime.  The bounded delay also lets any transient task-trampoline
-    // lease from the preceding case settle before we snapshot baselines.
+    // runtime.  Bounded wait — never block forever if the callback
+    // fails to fire.  The bounded wait also gives the preceding case's
+    // transient task-trampoline cleanup a chance to settle before we
+    // snapshot baselines.
     {
-        let s = Arc::new(PipelineState::new());
-        let s_cb = Arc::clone(&s);
+        let fired = Arc::new(AtomicBool::new(false));
+        let fired_cb = Arc::clone(&fired);
         let cb: TimerCallback = Box::new(move || {
-            s_cb.timer_callback_count.fetch_add(1, Ordering::Release);
+            fired_cb.store(true, Ordering::Release);
         });
         let timer = FreeRtosTimer::new("t-warm", Duration::from_millis(2), TimerMode::OneShot, cb)
             .map_err(|_| MixedError::StressSetupFailed)?;
         timer.start().map_err(|_| MixedError::StressSetupFailed)?;
-        loop {
-            if s.timer_callback_count.load(Ordering::Acquire) >= 1 {
-                break;
-            }
-            sys::delay_ticks(1);
+        if !bounded_wait_bool(&fired, true, 50, tick_bits) {
+            return Err(MixedError::StressSetupFailed);
         }
         drop(timer);
     }
@@ -849,14 +863,14 @@ fn mixed_lifecycle_stress(tick_bits: u8) -> Result<(), MixedError> {
         let payload = [0x41, 0, 0, round as u8];
         run_pipeline_once(tick_bits, payload)?;
 
-        harness::wait_until_heap_recovered(worker_baseline, 100, tick_bits)
-            .map_err(|_| MixedError::StressHeapLeak)?;
-        if FreeRtosTask::count() != task_baseline {
+        if !wait_task_count(task_baseline, 100, tick_bits) {
             return Err(MixedError::StressTaskCountLeak);
         }
         if !wait_active_objects(active_baseline, 100, tick_bits) {
             return Err(MixedError::StressActiveObjectLeak);
         }
+        harness::wait_until_heap_recovered(worker_baseline, 100, tick_bits)
+            .map_err(|_| MixedError::StressHeapLeak)?;
     }
 
     // Phase B: 4 waves × 2 concurrent pipelines.
@@ -870,19 +884,19 @@ fn mixed_lifecycle_stress(tick_bits: u8) -> Result<(), MixedError> {
         b.wait_started(tick_bits)?;
         a.start_timer()?;
         b.start_timer()?;
-        a.wait_complete(tick_bits, payload_a)?;
-        b.wait_complete(tick_bits, payload_b)?;
+        a.wait_complete(payload_a)?;
+        b.wait_complete(payload_b)?;
         drop(a);
         drop(b);
 
-        harness::wait_until_heap_recovered(worker_baseline, 100, tick_bits)
-            .map_err(|_| MixedError::StressHeapLeak)?;
-        if FreeRtosTask::count() != task_baseline {
+        if !wait_task_count(task_baseline, 100, tick_bits) {
             return Err(MixedError::StressTaskCountLeak);
         }
         if !wait_active_objects(active_baseline, 100, tick_bits) {
             return Err(MixedError::StressActiveObjectLeak);
         }
+        harness::wait_until_heap_recovered(worker_baseline, 100, tick_bits)
+            .map_err(|_| MixedError::StressHeapLeak)?;
     }
 
     // Worker must not have been recreated across the whole stress.
