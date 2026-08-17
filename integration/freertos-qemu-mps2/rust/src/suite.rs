@@ -1,8 +1,5 @@
 //! Managed-object real-kernel validation suite dispatcher (P7G Step 4).
 
-#[cfg(feature = "suite-mixed")]
-use osal_api::error::Error;
-
 #[cfg(any(
     feature = "suite-aggregate",
     feature = "suite-queue-blocking",
