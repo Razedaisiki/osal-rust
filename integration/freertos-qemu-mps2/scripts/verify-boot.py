@@ -261,6 +261,7 @@ PROFILES = {
             "mixed_resource_pressure_recovery",
             "mixed_object_pipeline",
             "mixed_lifecycle_stress",
+            "mixed_shutdown_accounting",
         ],
         "fields": [
             "profile=mixed",
@@ -268,6 +269,7 @@ PROFILES = {
             "mixed_rollback=true",
             "mixed_pressure=true",
             "mixed_stress=true",
+            "mixed_shutdown=true",
             "mixed_pipeline=true",
             "helper_self_delete=true",
             "idle_cleanup=true",

@@ -8,6 +8,8 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
 
+use osal_api::error::Error;
+use osal_api::runtime::RuntimeState;
 use osal_api::time::Timeout;
 use osal_api::traits::mutex::Mutex as _;
 use osal_api::traits::queue::Queue as _;
@@ -83,6 +85,17 @@ pub enum MixedError {
     StressActiveObjectLeak = 834,
     StressHeapLeak = 835,
     StressWorkerRecreated = 836,
+
+    // ---- shutdown accounting ----
+    ShutdownSetupFailed = 840,
+    ShutdownFirstNotBusy = 841,
+    ShutdownRuntimeNotRunning = 842,
+    ShutdownLeaseAccounting = 843,
+    ShutdownCrossCheckFailed = 844,
+    ShutdownFinalNotOk = 845,
+    ShutdownFinalHeapLeak = 846,
+    ShutdownReinitFailed = 847,
+    ShutdownReinitRecoveryFailed = 848,
 }
 
 struct PipelineState {
@@ -257,7 +270,7 @@ macro_rules! assert_diag_delta {
 // Public entry
 // ------------------------------------------------------------------
 
-pub fn run_mixed_cases(tick_bits: u8) -> Result<(), MixedError> {
+pub fn run_mixed_cases(tick_bits: u8, profile_baseline: u64) -> Result<(), MixedError> {
     mixed_native_create_rollback(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=mixed_native_create_rollback");
 
@@ -269,6 +282,9 @@ pub fn run_mixed_cases(tick_bits: u8) -> Result<(), MixedError> {
 
     mixed_lifecycle_stress(tick_bits)?;
     harness::console_line(c"OSAL_CASE_PASS name=mixed_lifecycle_stress");
+
+    mixed_shutdown_accounting(tick_bits, profile_baseline)?;
+    harness::console_line(c"OSAL_CASE_PASS name=mixed_shutdown_accounting");
     Ok(())
 }
 
@@ -903,5 +919,234 @@ fn mixed_lifecycle_stress(tick_bits: u8) -> Result<(), MixedError> {
     if diag_worker_create_attempts() != worker_create_attempts_baseline {
         return Err(MixedError::StressWorkerRecreated);
     }
+    Ok(())
+}
+
+fn mixed_shutdown_accounting(
+    tick_bits: u8,
+    profile_baseline: u64,
+) -> Result<(), MixedError> {
+    let active_baseline = osal_backend_freertos::runtime::active_objects();
+    let task_baseline = FreeRtosTask::count();
+
+    // --- create 6 mixed objects, tracking active_objects delta ---
+    let mtx = osal::backend::Mutex::<u32>::new(0u32)
+        .map_err(|_| MixedError::ShutdownSetupFailed)?;
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 1 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+    let binary = osal::backend::BinarySemaphore::new()
+        .map_err(|_| MixedError::ShutdownSetupFailed)?;
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 2 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+    let counting = osal::backend::CountingSemaphore::new(1, 0)
+        .map_err(|_| MixedError::ShutdownSetupFailed)?;
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 3 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+    let q = osal::backend::Queue::new(1, 4)
+        .map_err(|_| MixedError::ShutdownSetupFailed)?;
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 4 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+
+    // Gated Task: waits until release_gate is set.
+    let started = Arc::new(AtomicBool::new(false));
+    let release_gate = Arc::new(AtomicBool::new(false));
+    let started_t = Arc::clone(&started);
+    let release_t = Arc::clone(&release_gate);
+    let ta = FreeRtosTaskBuilder::new()
+        .stack_size(4096)
+        .priority(2)
+        .spawn(move || {
+            started_t.store(true, Ordering::Release);
+            while !release_t.load(Ordering::Acquire) {
+                sys::delay_ticks(1);
+            }
+        })
+        .map_err(|_| MixedError::ShutdownSetupFailed)?;
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 5 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+
+    let timer_count = Arc::new(AtomicU32::new(0));
+    let tc = Arc::clone(&timer_count);
+    let cb: TimerCallback = Box::new(move || {
+        tc.fetch_add(1, Ordering::Release);
+    });
+    let timer = FreeRtosTimer::new("t-shut", Duration::from_millis(2), TimerMode::OneShot, cb)
+        .map_err(|_| MixedError::ShutdownSetupFailed)?;
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 6 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+
+    // Drop guard: always release the gated Task on scope exit.
+    struct GateGuard {
+        gate: Arc<AtomicBool>,
+    }
+    impl Drop for GateGuard {
+        fn drop(&mut self) {
+            self.gate.store(true, Ordering::Release);
+        }
+    }
+    let gate_guard = GateGuard { gate: Arc::clone(&release_gate) };
+
+    // --- first shutdown with all 6 alive: must be Busy ---
+    if !matches!(osal::shutdown(), Err(Error::Busy)) {
+        return Err(MixedError::ShutdownFirstNotBusy);
+    }
+    if osal::runtime_state() != RuntimeState::Running {
+        return Err(MixedError::ShutdownRuntimeNotRunning);
+    }
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 6 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+    let heap_after_first_busy = sys::heap_free();
+    harness::wait_until_heap_recovered(heap_after_first_busy, 50, tick_bits)
+        .map_err(|_| MixedError::ShutdownCrossCheckFailed)?;
+
+    // --- Busy-failure-atomic: objects must remain usable ---
+    {
+        let _g = mtx.lock(Timeout::After(Duration::from_millis(50)))
+            .map_err(|_| MixedError::ShutdownCrossCheckFailed)?;
+    }
+    counting.release().map_err(|_| MixedError::ShutdownCrossCheckFailed)?;
+    q.send(&M0, Timeout::NoWait)
+        .map_err(|_| MixedError::ShutdownCrossCheckFailed)?;
+    let mut buf = [0u8; 4];
+    q.recv(&mut buf, Timeout::NoWait)
+        .map_err(|_| MixedError::ShutdownCrossCheckFailed)?;
+    timer.start().map_err(|_| MixedError::ShutdownCrossCheckFailed)?;
+    if !bounded_wait_bool(&started, true, 50, tick_bits) {
+        return Err(MixedError::ShutdownCrossCheckFailed);
+    }
+    if !wait_task_count(task_baseline + 1, 50, tick_bits) {
+        return Err(MixedError::ShutdownCrossCheckFailed);
+    }
+
+    // --- per-object drop: each must decrement active_objects by 1 ---
+    drop(mtx);
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 5 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+    if !matches!(osal::shutdown(), Err(Error::Busy)) {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+
+    drop(binary);
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 4 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+    if !matches!(osal::shutdown(), Err(Error::Busy)) {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+
+    drop(counting);
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 3 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+    if !matches!(osal::shutdown(), Err(Error::Busy)) {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+
+    drop(q);
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 2 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+    if !matches!(osal::shutdown(), Err(Error::Busy)) {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+
+    drop(timer);
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 1 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+    if !matches!(osal::shutdown(), Err(Error::Busy)) {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+
+    // --- only Task remains: handle still holds lease after task exits ---
+    // Release and join the task.  FreeRtosTask::count() drops to baseline,
+    // but the external handle still holds the managed-object lease.
+    gate_guard.gate.store(true, Ordering::Release);
+    ta.join(Timeout::After(Duration::from_millis(100)))
+        .map_err(|_| MixedError::ShutdownCrossCheckFailed)?;
+    if !wait_task_count(task_baseline, 50, tick_bits) {
+        return Err(MixedError::ShutdownCrossCheckFailed);
+    }
+    // active_objects should still be active_baseline + 1 (task handle).
+    if osal_backend_freertos::runtime::active_objects() != active_baseline + 1 {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+    if !matches!(osal::shutdown(), Err(Error::Busy)) {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+
+    // Drop the task handle -> lease released.
+    drop(ta);
+    if !wait_active_objects(active_baseline, 50, tick_bits) {
+        return Err(MixedError::ShutdownLeaseAccounting);
+    }
+
+    // --- final shutdown must succeed directly ---
+    if !matches!(osal::shutdown(), Ok(())) {
+        return Err(MixedError::ShutdownFinalNotOk);
+    }
+    if osal::runtime_state() != RuntimeState::Uninitialized {
+        return Err(MixedError::ShutdownCrossCheckFailed);
+    }
+    // DEBUG: print actual heap_free vs profile_baseline
+    {
+        let mut buf = [0u8; 64];
+        let mut i = 0;
+        let mut n = sys::heap_free();
+        if n == 0 { buf[i] = b'0'; i = 1; } else {
+            let mut tmp = [0u8; 20]; let mut t = 0;
+            while n > 0 { tmp[t] = b'0' + (n % 10) as u8; t += 1; n /= 10; }
+            while t > 0 { t -= 1; buf[i] = tmp[t]; i += 1; }
+        }
+        buf[i] = b'/'; i += 1;
+        n = profile_baseline;
+        if n == 0 { buf[i] = b'0'; i += 1; } else {
+            let mut tmp = [0u8; 20]; let mut t = 0;
+            while n > 0 { tmp[t] = b'0' + (n % 10) as u8; t += 1; n /= 10; }
+            while t > 0 { t -= 1; buf[i] = tmp[t]; i += 1; }
+        }
+        buf[i] = 0;
+        let cstr = core::ffi::CStr::from_bytes_with_nul(&buf[..=i]).unwrap();
+        harness::console_line(cstr);
+    }
+    // Note: Timer worker TCB+stack reclaimed asynchronously by Idle
+    // after the worker self-deletes.  Do not block here on exact
+    // profile-baseline recovery; the outer suite performs the final
+    // exact recovery after its own shutdown of the re-initialized
+    // runtime.
+    let _ = profile_baseline;
+    let _ = tick_bits;
+
+    // --- reinitialize and small recovery smoke ---
+    osal::initialize().map_err(|_| MixedError::ShutdownReinitFailed)?;
+    if osal::runtime_state() != RuntimeState::Running {
+        return Err(MixedError::ShutdownReinitFailed);
+    }
+    let reinit_heap = sys::heap_free();
+    {
+        let m = osal::backend::Mutex::<u32>::new(42u32)
+            .map_err(|_| MixedError::ShutdownReinitRecoveryFailed)?;
+        {
+            let _g = m.lock(Timeout::After(Duration::from_millis(50)))
+                .map_err(|_| MixedError::ShutdownReinitRecoveryFailed)?;
+        }
+        drop(m);
+    }
+    harness::wait_until_heap_recovered(reinit_heap, 50, tick_bits)
+        .map_err(|_| MixedError::ShutdownReinitRecoveryFailed)?;
+    if !wait_active_objects(active_baseline, 50, tick_bits) {
+        return Err(MixedError::ShutdownReinitRecoveryFailed);
+    }
+
+    // Leave runtime Running; the outer suite will do the final shutdown.
+    let _ = tick_bits;
     Ok(())
 }

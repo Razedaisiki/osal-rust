@@ -244,34 +244,16 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
         return SUITE_RUNTIME_INIT_FAILED;
     }
 
-    let mixed_result = cases::mixed::run_mixed_cases(tick_bits);
+    let mixed_result = cases::mixed::run_mixed_cases(tick_bits, profile_baseline);
 
     if let Err(e) = mixed_result {
         return -(e as i32);
     }
 
-    // Join completion may precede the final native-task cleanup that
-    // releases task-owned runtime state.  Retry only the failure-atomic
-    // Busy result for a bounded number of ticks.
-    let shutdown_ok = {
-        let mut ok = false;
-        for _ in 0..5 {
-            match osal::shutdown() {
-                Ok(()) => {
-                    ok = true;
-                    break;
-                }
-                Err(Error::Busy) => {
-                    if sys::delay_ticks(1) != sys::DelayStatus::Ok {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        ok
-    };
-    if !shutdown_ok {
+    // mixed_shutdown_accounting already verified clean lease accounting
+    // and dropped the last task handle — the final shutdown must
+    // succeed directly.  No retry loop.
+    if !matches!(osal::shutdown(), Ok(())) {
         return SUITE_RUNTIME_SHUTDOWN_FAILED;
     }
     if harness::wait_until_heap_recovered(profile_baseline, 100, tick_bits).is_err() {
@@ -279,7 +261,7 @@ pub fn run_object_suite(tick_bits: u8) -> i32 {
     }
 
     harness::console_line(
-        c"OSAL_OBJECT_PASS profile=mixed mixed=true mixed_rollback=true mixed_pressure=true mixed_pipeline=true mixed_stress=true helper_self_delete=true idle_cleanup=true heap_recovered=true",
+        c"OSAL_OBJECT_PASS profile=mixed mixed=true mixed_rollback=true mixed_pressure=true mixed_pipeline=true mixed_stress=true mixed_shutdown=true task_self_delete=true timer_self_delete=true helper_self_delete=true idle_cleanup=true heap_recovered=true",
     );
     harness::console_line(c"OSAL_OBJECT_END status=pass");
 
