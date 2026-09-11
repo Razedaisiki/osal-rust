@@ -83,15 +83,16 @@ echo ""
 # 5. Build
 # ------------------------------------------------------------------
 CARGO_FEATURES="${CARGO_FEATURES:-default}"
-echo "--- Building firmware (profile: $CARGO_FEATURES) ---"
-make -C "$INTEG_DIR" CARGO_FEATURES="$CARGO_FEATURES" all
+DEMO="${DEMO:-}"
+echo "--- Building firmware (profile: $CARGO_FEATURES${DEMO:+ demo: $DEMO}) ---"
+make -C "$INTEG_DIR" CARGO_FEATURES="$CARGO_FEATURES" DEMO="$DEMO" all
 echo ""
 
 # ------------------------------------------------------------------
 # 5. Symbol check
 # ------------------------------------------------------------------
 echo "--- Symbol check ---"
-make -C "$INTEG_DIR" check-symbols
+make -C "$INTEG_DIR" CARGO_FEATURES="$CARGO_FEATURES" DEMO="$DEMO" check-symbols
 echo ""
 
 # ------------------------------------------------------------------

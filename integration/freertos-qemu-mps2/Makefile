@@ -96,7 +96,7 @@ SIZE_FILE = $(BUILD)/freertos-qemu-mps2.size.txt
 # ------------------------------------------------------------------
 # Targets
 # ------------------------------------------------------------------
-.PHONY: all clean verify
+.PHONY: all clean verify rust-staticlib check-symbols
 
 .DEFAULT_GOAL := all
 
@@ -112,7 +112,16 @@ all: $(ELF) size
 #   make                          → suite-aggregate (default)
 #   make CARGO_FEATURES=suite-queue-blocking → queue-blocking
 #   make CARGO_FEATURES=suite-task           → task
+#   make CARGO_FEATURES=demo DEMO=queue      → portable demo
 CARGO_FEATURES ?= default
+
+# Portable demo selection (only meaningful when CARGO_FEATURES=demo).
+VALID_DEMOS := mutex queue semaphore system task timer pipeline_demo
+DEMO ?=
+
+# Demo builds use their own C build directory so a suite object file can
+# never be reused for a demo (and vice versa) when only CFLAGS change.
+DEMO_BUILD := build/demo
 
 # Task profile: enable integration diagnostics in both the sys shim and
 # the integration C files (test_task.c provides the observer definitions).
@@ -124,6 +133,12 @@ PROJECT_CFLAGS += -DOSAL_FREERTOS_INTEGRATION_DIAGNOSTICS=1
 endif
 ifeq ($(CARGO_FEATURES),suite-mixed)
 PROJECT_CFLAGS += -DOSAL_FREERTOS_INTEGRATION_DIAGNOSTICS=1
+endif
+
+# Demo profile: switch the firmware boot task from the conformance suite
+# to the shared portable demo entry point.
+ifeq ($(CARGO_FEATURES),demo)
+PROJECT_CFLAGS += -DOSAL_FREERTOS_DEMO_MODE=1
 endif
 
 # Pass the ARM cross-compiler and FreeRTOS include paths so the
@@ -154,6 +169,11 @@ endif
 RUST_BUILD_ENV += OSAL_FREERTOS_KERNEL_INCLUDE=$(abspath $(KERNEL)/include)
 RUST_BUILD_ENV += OSAL_FREERTOS_CONFIG_INCLUDE=$(abspath config)
 RUST_BUILD_ENV += OSAL_FREERTOS_PORT_INCLUDE=$(abspath $(KERNEL)/portable/GCC/ARM_CM3)
+
+# Demo selector — consumed by rust/build.rs (rerun-if-env-changed guarded).
+ifeq ($(CARGO_FEATURES),demo)
+RUST_BUILD_ENV += OSAL_FREERTOS_DEMO=$(DEMO)
+endif
 
 CARGO_BUILD_LOG := $(abspath $(BUILD)/cargo-build.log)
 
@@ -215,28 +235,47 @@ clean:
 # ------------------------------------------------------------------
 # Symbol check — must always pass.
 # ------------------------------------------------------------------
+
+# Validation-suite builds link the C-shim smoke and the managed-object
+# conformance entries.
+SUITE_SYMBOLS = Reset_Handler main vTaskStartScheduler \
+                xPortPendSVHandler xPortSysTickHandler \
+                vPortSVCHandler boot_task \
+                osal_rust_smoke_entry \
+                osal_test_object_entry \
+                osal_test_harness_set_phase \
+                osal_test_harness_set_result \
+                osal_test_harness_record_start \
+                osal_test_harness_record_end \
+                osal_freertos_probe_capabilities \
+                osal_freertos_scheduler_state \
+                osal_freertos_tick_snapshot \
+                osal_freertos_delay_ticks \
+                osal_freertos_heap_alloc \
+                osal_freertos_heap_dealloc \
+                osal_test_task_spawn \
+                osal_test_task_exit \
+                osal_test_console_line \
+                harness_smoke_helper \
+                pvPortMalloc vPortFree
+
+# Demo builds link the portable demo entry instead of the object suite.
+DEMO_SYMBOLS = Reset_Handler main vTaskStartScheduler \
+               xPortPendSVHandler xPortSysTickHandler \
+               vPortSVCHandler boot_task \
+               osal_demo_entry \
+               console_write_byte \
+               pvPortMalloc vPortFree
+
+ifeq ($(CARGO_FEATURES),demo)
+CHECK_SYMBOLS = $(DEMO_SYMBOLS)
+else
+CHECK_SYMBOLS = $(SUITE_SYMBOLS)
+endif
+
 check-symbols:
-	@echo "=== Checking required symbols ==="
-	@for sym in Reset_Handler main vTaskStartScheduler \
-	            xPortPendSVHandler xPortSysTickHandler \
-	            vPortSVCHandler boot_task \
-	            osal_rust_smoke_entry \
-	            osal_test_object_entry \
-	            osal_test_harness_set_phase \
-	            osal_test_harness_set_result \
-	            osal_test_harness_record_start \
-	            osal_test_harness_record_end \
-	            osal_freertos_probe_capabilities \
-	            osal_freertos_scheduler_state \
-	            osal_freertos_tick_snapshot \
-	            osal_freertos_delay_ticks \
-	            osal_freertos_heap_alloc \
-	            osal_freertos_heap_dealloc \
-	            osal_test_task_spawn \
-	            osal_test_task_exit \
-	            osal_test_console_line \
-	            harness_smoke_helper \
-	            pvPortMalloc vPortFree; do \
+	@echo "=== Checking required symbols ($(CARGO_FEATURES)) ==="
+	@for sym in $(CHECK_SYMBOLS); do \
 	    if $(NM) $(ELF) | grep -q " [tT] $$sym"; then \
 	        echo "  OK   $$sym"; \
 	    else \
@@ -281,3 +320,44 @@ check-symbols:
 # ------------------------------------------------------------------
 verify: all check-symbols
 	@echo "=== Build + symbol check passed ==="
+
+# ------------------------------------------------------------------
+# Portable demos
+#
+#   make demo     DEMO=queue      build the demo firmware
+#   make run-demo DEMO=queue      build + boot it in QEMU
+#   make run-all-demos            build + boot all seven demos
+#
+# Demo artifacts live in build/demo/ so they never collide with the
+# validation firmware in build/.
+# ------------------------------------------------------------------
+.PHONY: check-demo demo run-demo run-all-demos
+
+check-demo:
+	@if [ "$(CARGO_FEATURES)" = "demo" ]; then \
+	    case "$(DEMO)" in \
+	        mutex|queue|semaphore|system|task|timer|pipeline_demo) ;; \
+	        "") \
+	            echo "ERROR: DEMO is required in demo mode (one of: $(VALID_DEMOS))" >&2; \
+	            exit 1 ;; \
+	        *) \
+	            echo "ERROR: invalid DEMO=$(DEMO) (valid: $(VALID_DEMOS))" >&2; \
+	            exit 1 ;; \
+	    esac; \
+	fi
+
+demo: check-demo
+	$(MAKE) BUILD=$(DEMO_BUILD) CARGO_FEATURES=demo DEMO=$(DEMO) all check-symbols
+
+run-demo: demo
+	DEMO=$(DEMO) BUILD_DIR=$(abspath $(DEMO_BUILD)) ./scripts/run-demo.sh
+
+run-all-demos:
+	@set -e; \
+	for demo in $(VALID_DEMOS); do \
+	    echo ""; \
+	    echo "############################## $$demo ##############################"; \
+	    $(MAKE) run-demo DEMO=$$demo; \
+	done; \
+	echo ""; \
+	echo "=== All portable demos passed ==="
