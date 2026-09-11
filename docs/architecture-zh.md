@@ -3,6 +3,10 @@
 > **注意：** 本文档为辅助中文说明。MVP 快速迭代期间，英文
 > [`docs/architecture.md`](architecture.md) 和代码 rustdoc
 > 为权威来源。若中英文存在不一致，以英文文档为准。
+>
+> 本中文文档**不是**当前项目进度或 capability status 的权威来源。
+> 当前里程碑与实现状态请以 `README.md`、`CHANGELOG.md` 及对应英文
+> 文档为准；需要完整的中文同步时请拆为独立后续任务。
 
 ## 1. 概述
 

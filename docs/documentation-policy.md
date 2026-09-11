@@ -101,6 +101,23 @@ compiles, not on what the intended runtime semantics are.
 - Foundation slice: update status
 - README: update capability matrix
 
+### Real-kernel validation milestone
+
+When a backend capability moves from host-only verification to
+real-kernel validation (e.g. QEMU mps2-an385), check **all** of:
+
+- `README.md` current phase and capability matrix / MVP scope
+- Relevant `docs/*-foundation-slice.md` Status and Architecture
+- `integration/freertos-qemu-mps2/README.md` profile case counts
+- `integration/freertos-qemu-mps2/scripts/verify-boot.py` `PROFILES`
+- `crates/osal-backend-freertos/src/lib.rs` rustdoc capability status
+- `CHANGELOG.md` phase/step entry
+- `docs/behavior-contract.md` conformance matrix test-applicability
+  (if it changes when the capability becomes testable on that backend)
+
+Test case numbers are authoritative in the verifier / profile
+definition; documentation only copies the current verifier numbers.
+
 ## Status terminology
 
 Capability status and crate maturity are separate vocabularies.
@@ -171,3 +188,11 @@ Before marking a document change complete, verify:
 - [ ] ADR index in README includes all ADRs
 - [ ] CHANGELOG phase numbering matches README status
 - [ ] Status terminology matches the table above
+- [ ] README current phase agrees with CHANGELOG latest step/phase
+- [ ] No foundation slice claims already-completed real-kernel
+  validation is still required for `Validated` promotion
+- [ ] Integration profile case counts match `verify-boot.py`
+  (the verifier is the single source of truth; docs only copy it)
+- [ ] Backend crate rustdoc capability status matches README matrix
+- [ ] No current documentation (outside CHANGELOG history / archived
+  ADR text) uses retired integration identifiers (e.g. `ROUSSATL_FREERTOS_`)
