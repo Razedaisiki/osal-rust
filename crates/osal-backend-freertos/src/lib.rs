@@ -5,40 +5,36 @@
 //! is a guest of the kernel (ADR 0020).
 //!
 //! Capability status follows the terminology in
-//! `docs/documentation-policy.md`:
+//! `docs/documentation-policy.md` (Validated / Implemented / Deferred):
 //!
-//! **Implemented** (host-contract-verified):
-//! - Runtime lifecycle — init/shutdown/acquire lifecycle tested
+//! **Validated** (host + real-kernel on QEMU mps2-an385, Cortex-M3,
+//! FreeRTOS Kernel V11.3.0 — isolated profiles in `integration/freertos-qemu-mps2/`):
+//! - Mutex — P7G Step 4A (8 cases)
+//! - CountingSemaphore / BinarySemaphore — P7G Step 4B (aggregate: 18 semaphore cases)
+//! - Queue Core — P7G Step 4C-1 (9 cases)
+//! - Queue Blocking — P7G Step 4C-2 + Step 4C-3 timeout/wake boundary-race closure (queue-blocking profile: 15 required cases = 1 harness + 14 Queue-specific cases)
+//! - Task — P7G Step 4D (20 cases)
+//! - Timer — P7G Step 4E (20 cases)
+//! - System — Validated per README capability matrix (`xPortGetFreeHeapSize` + `taskENTER_CRITICAL`/`taskEXIT_CRITICAL`)
+//! - Mixed-object integration / resource pressure — P7G Step 4F (`suite-mixed`: 6 required cases = 1 harness + 5 mixed-object cases)
+//!
+//! **Implemented** (host-contract-verified; QEMU exercised as part of
+//! managed-object profiles, full promotion per README matrix):
 //! - Clock — monotonic tick snapshots, chunked delay with per-chunk guard
-//! - System — heap introspection, nesting critical sections
-//! - Mutex — native priority-inheritance, RAII guard, !Send+!Sync
-//! - CountingSemaphore — kernel count sole source of truth
-//! - BinarySemaphore — native binary semaphore, initial unsignaled
-//! - Queue — ByteQueue + native mutex + dual wake semaphore, waiter-credit
-//!   protocol, close-drain broadcast
-//! - Task — xTaskCreate + EventGroup completion + TLS identity, cached
-//!   concurrent join; 17 shared core contract cases and 21 FreeRTOS
-//!   concurrency/boundary tests passing
-//! - Timer — custom OSAL Timer Service Task + osal-portable::TimerState;
-//!   lazy worker creation, binary semaphore wake, take-execute-restore
-//!   dispatch; deterministic Virtual-mode fixture bridge with request/ack
-//!   flush; core + controlled contracts; TimerState semantics, callback
-//!   reentry, drop/shutdown lifecycle, failure rollback, scheduling and
-//!   finite-chunk wait coverage
-//!
-//! **Validated** (host + FreeRTOS kernel integration tested):
-//! - *(none yet — requires real FreeRTOS runtime tests)*
+//! - Runtime Lifecycle — init/shutdown/acquire (backend-local `RuntimeLifecycle`)
 //!
 //! **Deferred to P7G+:** ISR extensions.
 //!
-//! ## Implementation vs Validation
+//! ## Validation layers
 //!
-//! All primitives pass Linux-host fixture contract tests including
-//! cross-thread blocking and wake-one semantics.  Promotion from
-//! **Implemented** to **Validated** requires running these tests
-//! against a real FreeRTOS kernel (QEMU or physical MCU) to verify
-//! priority inheritance, real tick-interrupt timing, and kernel-level
-//! waiter scheduling.
+//! - Host fixtures provide deterministic contract coverage (Virtual-mode
+//!   fixture bridge with request/ack flush for Timer, sync fixtures for
+//!   Mutex/Semaphore/Queue/Task).
+//! - Real-kernel validation already exists on FreeRTOS V11.3.0 / QEMU
+//!   mps2-an385 / Cortex-M3 via isolated profiles: `aggregate`,
+//!   `queue-blocking`, `task`, `timer`, `mixed`.
+//! - Physical MCU validation remains outstanding (deployment validation,
+//!   not a P7G final-seal gate for the QEMU matrix).
 
 #![no_std]
 

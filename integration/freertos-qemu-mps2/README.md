@@ -45,10 +45,14 @@ PROFILE=mixed scripts/run-qemu.sh            # boot in QEMU, verify output
 | Profile | Cargo Feature | Cases | Description |
 |---------|--------------|-------|-------------|
 | `suite-aggregate` | (default) | 36 | Mutex (8) + Semaphore (18) + Queue Core (9) + harness (1) |
-| `suite-queue-blocking` | `suite-queue-blocking` | 15 | Queue Blocking isolated (independent QEMU run) |
+| `suite-queue-blocking` | `suite-queue-blocking` | 15 | Queue Blocking isolated: 15 required cases = 1 harness + 14 Queue Blocking cases (incl. 4 timeout/wake boundary-race) |
 | `suite-task` | `suite-task` | 20 | Task real-kernel contracts (1 harness + 19 Task cases) |
 | `suite-timer` | `suite-timer` | 20 | Timer real-kernel contracts (1 harness + 19 Timer cases) |
-| `suite-mixed` | `suite-mixed` | 2 | Mixed-object pipeline (1 harness + 1 mixed case) |
+| `suite-mixed` | `suite-mixed` | 6 | Mixed-object integration: 6 required cases = 1 harness + 5 mixed-object cases |
+
+> Case counts are authoritative in `scripts/verify-boot.py` (`PROFILES`).
+> This README copies the current verifier numbers; if they diverge,
+> the verifier is the source of truth.
 
 ### suite-task
 
@@ -65,6 +69,41 @@ Sealing evidence: lazy worker identity, one-shot/periodic/coalescing,
 callback reentry and outside-lock destruction, clone/in-flight last-drop,
 scheduler preconditions, shutdown lease and self-shutdown, same-deadline
 (deadline,id) ordering, 56-lifecycle stress with per-round recovery.
+
+### suite-mixed
+
+6 required cases (`verify-boot.py` profile `mixed`) with strict
+profile-aware verifier. Final shutdown + worker self-delete + exact
+`profile_baseline` heap recovery required before `OBJECT_PASS`.
+
+- `mixed_native_create_rollback` — stage-accurate native handle rollback
+  at every Queue/Mutex/Semaphore allocation stage with diagnostic deltas.
+- `mixed_resource_pressure_recovery` — real heap pressure via
+  `pvPortMalloc`/`vPortFree` (not fault injection), oversized Task Stack
+  OOM reaching `xTaskCreate`, and Mutex native-cost subcase.
+- `mixed_object_pipeline` — Queue/Task/Timer/Mutex/BinarySemaphore/
+  CountingSemaphore composition (Timer → BinarySemaphore → Task A →
+  Queue → Task B → Mutex/Counter → CountingSemaphore).
+- `mixed_lifecycle_stress` — 16 sequential + 4×2 concurrent pipeline
+  lifecycles with per-round/wave heap/task/lease recovery.
+- `mixed_shutdown_accounting` — heterogeneous 6-object lease accounting:
+  first shutdown `Busy` failure-atomic, per-drop `active_objects` deltas,
+  finished-handle lease retention, final exact heap recovery + reinit smoke.
+
+This is the P7G Step 4F sealing suite; verifier gates include
+`mixed=true mixed_rollback=true mixed_pressure=true mixed_pipeline=true
+mixed_stress=true mixed_shutdown=true` plus task/timer self-delete,
+helper cleanup, and `heap_recovered=true`.
+
+### Profile → CI job
+
+| Profile | CI job |
+|---------|--------|
+| `aggregate` | `freertos-qemu-boot` (aggregate QEMU job) |
+| `queue-blocking` | `freertos-qemu-queue-blocking` |
+| `task` | `freertos-qemu-task` |
+| `timer` | `freertos-qemu-timer` |
+| `mixed` | `freertos-qemu-mixed` |
 
 ## Boot Protocol
 
