@@ -28,15 +28,39 @@ compile_error!("exactly one integration suite feature must be selected; multiple
     feature = "suite-task",
     feature = "suite-timer",
     feature = "suite-mixed",
+    feature = "demo",
 )))]
-compile_error!("at least one integration suite feature must be selected; use --features suite-aggregate, suite-queue-blocking, suite-task, suite-timer, or suite-mixed");
+compile_error!("at least one integration feature must be selected; use --features suite-aggregate, suite-queue-blocking, suite-task, suite-timer, suite-mixed, or demo");
+
+// Demo mode and validation-suite mode are different firmware builds:
+// demo mode runs a portable user demo instead of the conformance suite.
+#[cfg(all(
+    feature = "demo",
+    any(
+        feature = "suite-aggregate",
+        feature = "suite-queue-blocking",
+        feature = "suite-task",
+        feature = "suite-timer",
+        feature = "suite-mixed",
+    )
+))]
+compile_error!("demo mode and validation suite mode are mutually exclusive");
 
 extern crate alloc;
 
 mod allocator;
+
+#[cfg(not(feature = "demo"))]
 mod harness;
+
+#[cfg(not(feature = "demo"))]
 mod cases;
+
+#[cfg(not(feature = "demo"))]
 mod suite;
+
+#[cfg(feature = "demo")]
+mod demo_runner;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -379,13 +403,27 @@ pub extern "C" fn osal_rust_smoke_entry() -> i32 {
 }
 
 // ------------------------------------------------------------------
-// Object test entry (P7G Step 4)
+// Object test entry (P7G Step 4) — validation suites only.
 // ------------------------------------------------------------------
 
+#[cfg(not(feature = "demo"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn osal_test_object_entry() -> i32 {
     let caps = sys::capabilities();
     suite::run_object_suite(caps.tick_bits)
+}
+
+// ------------------------------------------------------------------
+// Portable demo entry — demo mode only.
+//
+// One entry point for all seven demos; the selector is resolved at
+// compile time by build.rs so no per-demo export exists.
+// ------------------------------------------------------------------
+
+#[cfg(feature = "demo")]
+#[unsafe(no_mangle)]
+pub extern "C" fn osal_demo_entry() -> i32 {
+    demo_runner::run()
 }
 
 // ------------------------------------------------------------------

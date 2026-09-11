@@ -15,6 +15,10 @@ osal-backend-freertos = { path = "../../../crates/osal-backend-freertos", featur
 osal-api = { path = "../../../crates/osal-api" }
 osal = { path = "../../../crates/osal", default-features = false, features = ["backend-freertos"] }
 
+# Portable demos — the very same `osal_demo::<name>::run()` functions the
+# POSIX host binaries call. Only the platform shell differs.
+osal-demo = { path = "../../../examples/osal-demo", default-features = false, features = ["backend-freertos"], optional = true }
+
 [features]
 default = ["suite-aggregate"]
 suite-aggregate = []
@@ -22,6 +26,7 @@ suite-queue-blocking = []
 suite-task = []
 suite-timer = []
 suite-mixed = []
+demo = ["dep:osal-demo"]
 
 [profile.dev]
 panic = "abort"

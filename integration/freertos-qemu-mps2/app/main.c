@@ -41,8 +41,13 @@ static void console_write_u32(uint32_t value);
 /* Rust staticlib entry (allocator smoke). */
 extern int32_t osal_rust_smoke_entry(void);
 
+#if defined(OSAL_FREERTOS_DEMO_MODE)
+/* Rust portable-demo entry — shared with the POSIX host binaries. */
+extern int32_t osal_demo_entry(void);
+#else
 /* Rust object test entry — managed-object real-kernel validation. */
 extern int32_t osal_test_object_entry(void);
+#endif
 
 #ifdef OSAL_FREERTOS_INTEGRATION_DIAGNOSTICS
 /* Rust Task contract bridges. */
@@ -252,6 +257,36 @@ static void boot_task(void *context)
         console_write_line("");
     }
 
+#if defined(OSAL_FREERTOS_DEMO_MODE)
+    /* Demo mode: the portable demo owns its own OSAL runtime lifecycle.
+     * No boot protocol, no conformance suite — just the shared user demo
+     * and the QEMU exit. */
+    {
+        int32_t demo_code = osal_demo_entry();
+        if (demo_code != 0) {
+            boot_fail_u32("demo-entry", (uint32_t)demo_code);
+        }
+    }
+
+    /* 7. High-water mark after the demo completes.                   */
+    {
+        uint32_t after_hwm = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+        console_write("OSAL_BOOT_DIAG stack_hwm_after=");
+        console_write_u32(after_hwm);
+        console_write_line("");
+
+        if (after_hwm < MIN_BOOT_STACK_MARGIN_WORDS) {
+            boot_fail("stack-margin");
+        }
+    }
+
+    qemu_exit_success();
+
+    /* If semihosting did not exit QEMU, spin as a safe fallback. */
+    for (;;) {
+        __asm__ volatile ("wfi");
+    }
+#else
     /* 4. Call into the Rust staticlib entry (full C-shim smoke).     */
     int32_t rust_code = osal_rust_smoke_entry();
     if (rust_code != 0) {
@@ -301,6 +336,7 @@ static void boot_task(void *context)
     for (;;) {
         __asm__ volatile ("wfi");
     }
+#endif /* OSAL_FREERTOS_DEMO_MODE */
 }
 
 /* ------------------------------------------------------------------ */
