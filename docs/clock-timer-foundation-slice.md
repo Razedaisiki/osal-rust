@@ -2,9 +2,13 @@
 
 ## Status
 
-Complete — Clock and Timer are implemented across the full stack.
-Mock and POSIX are host-contract-verified; FreeRTOS Timer is
-additionally real-kernel-validated on QEMU mps2-an385.
+- Clock: Mock / POSIX `Validated`; FreeRTOS `Implemented` (tick-snapshot
+  monotonic time, chunked delay) — per README capability matrix.
+- Timer: Mock / POSIX `Validated`; FreeRTOS `Validated` (host fixture
+  + real-kernel on QEMU mps2-an385, 20 cases, P7G Step 4E).
+- Policy vocabulary: `Validated` / `Implemented` / `Deferred` / `N/A`
+  per `docs/documentation-policy.md`.
+- Physical MCU validation remains outstanding (not a seal gate).
 
 ## Architecture
 
@@ -61,11 +65,15 @@ PosixTimerSvc  MockTimeRuntime   FreeRtosTimerSvc
 ## Validation Status
 
 - **Mock, POSIX**: host-contract-verified.
-- **FreeRTOS**: real-kernel-validated on FreeRTOS Kernel V11.3.0, ARM_CM3 /
-  Cortex-M3, QEMU mps2-an385 (P7G Step 4E, 20 cases).
-- Physical MCU validation: not yet performed.
+- **FreeRTOS Timer**: real-kernel-validated on FreeRTOS Kernel V11.3.0,
+  ARM_CM3 / Cortex-M3, QEMU mps2-an385 (P7G Step 4E, 20 cases).
+- **FreeRTOS Clock**: `Implemented` — tick-snapshot delay validated on
+  QEMU as part of Timer/managed-object profiles; full Clock promotion
+  criteria remain per README matrix.
+- Physical MCU validation remains outstanding (deployment validation;
+  not a P7G seal gate).
 
 ## Next Steps
 
 1. ISR Timer extensions (FreeRTOS)
-2. Physical MCU validation
+2. Physical MCU validation (deployment validation)

@@ -2,10 +2,18 @@
 
 ## Status
 
-Stabilized (P1.1) — Non-recursive Mutex with corrected memory safety,
-handle model, and monotonic clock. Mock, POSIX, and FreeRTOS pass all
-core contracts. POSIX additionally passes the blocking and contention tests.
-FreeRTOS host fixture passes cross-thread blocking and wakeup tests.
+- **Validation:**
+  - Mock / POSIX: `Validated` — all core + (POSIX) blocking contracts pass.
+  - FreeRTOS: `Validated` — core contracts via host fixture **and**
+    real-kernel validation on **QEMU mps2-an385 / Cortex-M3 /
+    FreeRTOS Kernel V11.3.0** in **P7G Step 4A** (8 cases: basic clone,
+    non-recursive, nowait/zero, finite timeout, blocking wake, Forever
+    wake, scheduler suspended, runtime lease with heap recovery).
+  - Host fixture cross-thread tests (Mutex + Semaphore) remain
+    deterministic via `BLOCKED_COUNT`.
+- **Policy vocabulary:** Foundation-slice capability states use
+  `Validated` / `Implemented` / `Deferred` / `N/A` per
+  `docs/documentation-policy.md`.
 
 ## Architecture
 
@@ -78,12 +86,12 @@ FreeRTOS host fixture passes cross-thread blocking and wakeup tests.
 - Mock blocking/concurrency tests (single execution context; cross-task
   contention not simulated)
 - ISR mutex operations (requires extension trait; ADR 0003, ADR 0008)
-- Real FreeRTOS kernel runtime tests (QEMU or physical MCU) for
-  `Validated` promotion
-- `close()` on Mutex (requires ADR; not part of current trait)
+- `RecursiveMutex` trait
+- Physical MCU validation (deployment validation; not a P7G seal gate)
 
 ## Next Steps
 
-1. FreeRTOS Queue, Task, and Timer primitives (P7D+)
-2. Real FreeRTOS kernel validation channel (QEMU/MCU)
-3. `RecursiveMutex` trait
+1. `RecursiveMutex` trait
+2. Deterministic Mock blocking scheduler
+3. ISR extension traits
+4. Optional performance/memory optimisations

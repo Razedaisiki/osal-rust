@@ -2,9 +2,16 @@
 
 ## Status
 
-Complete — CountingSemaphore and BinarySemaphore are implemented across
-the full stack: API traits, portable state machine, Mock backend, POSIX
-backend, FreeRTOS backend, contract tests, facade, and examples.
+- **Validation:**
+  - Mock / POSIX: `Validated` — Counting (14) + Binary (9) core contracts
+    and (POSIX) 8 blocking contracts pass on host.
+  - FreeRTOS: `Validated` — CountingSemaphore and BinarySemaphore pass
+    host fixture contracts **and** real-kernel validation on
+    **QEMU mps2-an385 / Cortex-M3 / FreeRTOS Kernel V11.3.0** in
+    **P7G Step 4B** (aggregate suite: 18 Semaphore cases — 9 Counting
+    + 7 Binary + 2 lifecycle/scheduler).
+- **Policy vocabulary:** Capability states use `Validated` / `Deferred` /
+  `N/A` per `docs/documentation-policy.md`.
 
 ## Architecture
 
@@ -87,14 +94,13 @@ After(ZERO) timeout, clone sharing, drop clone preserves resource.
   ADR 0003, ADR 0008)
 - Mock blocking scheduler emulation (Mock returns `Unsupported`
   for `Forever` on empty)
-- Real FreeRTOS kernel runtime tests (QEMU or physical MCU) for
-  `Validated` promotion
 - Strict FIFO wake ordering
 - Named / process-shared semaphores
 - Priority inheritance
 
 ## Next Steps
 
-1. FreeRTOS Queue, Task, and Timer primitives (P7D+)
-2. Real FreeRTOS kernel validation channel (QEMU/MCU)
-3. ISR extension traits
+1. ISR extension traits (`IsrSemaphore`)
+2. Deterministic Mock blocking scheduler
+3. Strict cross-semaphore ordering if adopted
+4. Physical MCU validation (deployment validation; not a P7G seal gate)

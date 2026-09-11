@@ -2,8 +2,12 @@
 
 ## Status
 
-Complete — Task is implemented across API, Mock, POSIX, FreeRTOS,
-contract tests, and facade.
+- Task Core: Mock `Foundation` (synchronous execution; concurrency
+  deferred), POSIX `Validated`, FreeRTOS `Validated`.
+- Task Concurrency: POSIX `Validated`, FreeRTOS `Validated` (QEMU
+  mps2-an385).
+- Policy vocabulary: `Validated` / `Foundation` / `Deferred` / `N/A`
+  per `docs/documentation-policy.md`.
 
 ## Scope
 
@@ -163,7 +167,7 @@ completion, and FreeRTOS TLS for `current()`:
 - **Completion**: A native EventGroup with sticky `TASK_COMPLETED_BIT` is
   set once on task exit.  All joiners (past, present, future) observe it
   without a waiter-credit protocol.  State machine: `Running → Finished`.
-- **TLS**: `vTaskSetThreadLocalStoragePointer` at `ROUSSATL_FREERTOS_TASK_TLS_INDEX`
+- **TLS**: `vTaskSetThreadLocalStoragePointer` at `OSAL_FREERTOS_TASK_TLS_INDEX`
   provides per-task identity for `current()`.
 - **Stack**: bytes→words checked conversion with rounding, minimum
   enforcement, and native `configSTACK_DEPTH_TYPE` overflow detection.
@@ -234,4 +238,5 @@ validation.
 - Stack high-water mark
 - `TaskState` runtime queries
 - Deterministic mock scheduler (cooperative yield model)
-- Timer (P7F+)
+- ISR Task extensions
+- Physical MCU validation (deployment validation; not a P7G seal gate)

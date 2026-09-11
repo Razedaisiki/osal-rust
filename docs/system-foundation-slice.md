@@ -2,8 +2,10 @@
 
 ## Status
 
-Complete — System is implemented across API, Mock, POSIX, contract
-tests, and facade.
+- **Validation:** `Validated` across **Mock**, **POSIX**, and **FreeRTOS**
+  (QEMU mps2-an385) — 5 shared contract tests.
+- **Policy vocabulary:** Capability states use `Validated` / `Deferred` /
+  `N/A` per `docs/documentation-policy.md`.
 
 ## Scope
 
@@ -15,6 +17,7 @@ The System foundation slice provides:
 - nested critical-section support
 - Mock backend implementation (atomic nesting counter)
 - POSIX backend implementation (process-local recursive mutex)
+- FreeRTOS backend implementation (`taskENTER_CRITICAL` / `taskEXIT_CRITICAL`)
 - shared contract tests (5 tests)
 - facade exposure through `osal::prelude::*`
 
@@ -35,14 +38,12 @@ This slice does **not** provide:
 ```
                  osal (facade)
                      |
-         +-----------+-----------+
-         |                       |
-  osal-backend-posix    osal-backend-mock
-         |                       |
-    PosixSystem             MockSystem
-         |                       |
-   recursive pthread      atomic nesting
-   mutex (pthread_once)   counter
+       +-------------+-------------+-------------+
+       |             |             |             |
+  PosixSystem   MockSystem   FreeRtosSystem
+       |             |             |
+ recursive pthread atomic nesting taskENTER_CRITICAL
+ mutex (pthread_once) counter      / taskEXIT_CRITICAL
 ```
 
 ## Components
@@ -53,6 +54,7 @@ This slice does **not** provide:
 | POSIX    | `PosixSystem`      | `crates/osal-backend-posix/src/system.rs` |
 | POSIX    | `PosixRecursiveMutex` | `crates/osal-backend-posix/src/sys/recursive_mutex.rs` |
 | Mock     | `MockSystem`       | `crates/osal-backend-mock/src/system.rs`  |
+| FreeRTOS | `FreeRtosSystem`   | `crates/osal-backend-freertos/src/system.rs` |
 | Facade   | `System` alias     | `crates/osal/src/backend.rs`              |
 | Testkit  | System contracts   | `crates/osal-testkit/src/contract/system.rs` |
 | Example  | `system.rs`        | `crates/osal/examples/system.rs`          |
@@ -66,6 +68,7 @@ can report it. For the MVP backends, returning `usize::MAX` is valid:
 - **POSIX** host systems use virtual memory and do not expose a
   portable, stable heap-free value.
 
+FreeRTOS reports kernel heap via `xPortGetFreeHeapSize()`.
 Real heap introspection (board memory regions, allocator statistics)
 is deferred to the BSP/resource phase.
 
@@ -81,14 +84,17 @@ only after **all** nested guards have been dropped.
 |----------|---------------|
 | Mock     | `AtomicUsize` nesting counter — validates nesting contract, no thread-level mutual exclusion |
 | POSIX    | Process-local recursive `pthread_mutex_t` (`PTHREAD_MUTEX_RECURSIVE`), lazy-initialised via `pthread_once` |
-| FreeRTOS | `taskENTER_CRITICAL()` / `taskEXIT_CRITICAL()` (interrupt disable, nesting supported) |
+| FreeRTOS | `taskENTER_CRITICAL()` / `taskEXIT_CRITICAL()` (interrupt disable, nesting supported — `FreeRtosCriticalSectionGuard` is `!Send + !Sync` via `PhantomData<Rc<()>>`) |
 
 ### Guard hardening
 
-Both `MockCriticalSectionGuard` and `PosixCriticalSectionGuard` carry a
+`MockCriticalSectionGuard` and `PosixCriticalSectionGuard` carry a
 private `_private: ()` field. This prevents external code from directly
 constructing a guard (which would underflow the counter on Mock or call
 `pthread_mutex_unlock` on an unheld mutex on POSIX).
+
+`FreeRtosCriticalSectionGuard` uses `PhantomData<Rc<()>>` to make the
+guard `!Send + !Sync`, preventing cross-task migration.
 
 Guards are only obtainable through `System::enter_critical()`.
 
@@ -137,11 +143,13 @@ System contract tests verify:
 
 | Decision | Value |
 |----------|-------|
-| Guard constructibility | Non-constructible (`_private: ()`) |
+| Guard constructibility | Non-constructible (`_private: ()` / `PhantomData`) |
 | POSIX critical section | Recursive mutex, not non-recursive `PosixMutex` |
 | Mock critical section | Atomic nesting counter, no real lock |
-| `heap_free()` MVP default | `usize::MAX` |
-| Lazy init | `pthread_once` (POSIX), none needed (Mock) |
+| FreeRTOS critical section | `taskENTER_CRITICAL` / `taskEXIT_CRITICAL`, `!Send + !Sync` guard |
+| FreeRTOS heap | `xPortGetFreeHeapSize()` |
+| `heap_free()` MVP default | `usize::MAX` (Mock/POSIX) |
+| Lazy init | `pthread_once` (POSIX), none needed (Mock/FreeRTOS) |
 | ISR / scheduler / yield | Deferred |
 
 ## Intentionally deferred
@@ -150,10 +158,10 @@ System contract tests verify:
 - Scheduler control (`System::start()` / `System::stop()`)
 - ISR-specific system extension traits
 - SMP critical sections (`configNUMBER_OF_CORES > 1`)
-- Real FreeRTOS kernel runtime tests for `Validated` promotion
+- Physical MCU validation (deployment validation; not a P7G final-seal gate)
 
 ## Next steps
 
-1. FreeRTOS Queue, Task, and Timer primitives (P7D+)
-2. SMP support (multi-core critical sections)
-3. BSP resource phase (real heap introspection)
+1. SMP support (multi-core critical sections)
+2. BSP resource phase (real heap introspection)
+3. Physical MCU validation (non-blocking for P7G seal)
