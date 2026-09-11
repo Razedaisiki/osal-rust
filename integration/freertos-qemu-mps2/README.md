@@ -170,6 +170,51 @@ high-water-mark evidence stays comparable.
 
 `demo` and any `suite-*` feature are mutually exclusive at compile time.
 
+### Demo output protocol
+
+Demos use their own machine-readable markers, independent of the boot/object
+protocol above. `scripts/run-demo.sh` verifies exactly these.
+
+A successful run looks like this (captured from `DEMO=queue`):
+
+```
+OSAL_BOOT_BEGIN
+OSAL_BOOT_DIAG stack_hwm_before=2017
+OSAL_DEMO_BEGIN name=queue backend=freertos
+[queue] sent=1
+[queue] received=1
+[queue] final_len=0
+[queue] roundtrip OK
+OSAL_DEMO_PASS name=queue
+OSAL_DEMO_END status=pass
+OSAL_BOOT_DIAG stack_hwm_after=1139
+```
+
+The `stack_hwm_*` values are run-dependent and are not part of the pass
+criteria; only the firmware's own 128-word margin check uses them.
+
+| Marker | Meaning |
+|--------|---------|
+| `OSAL_DEMO_BEGIN name=<demo> backend=freertos` | Demo entry reached |
+| `OSAL_DEMO_PASS name=<demo>` | Demo returned a passing report |
+| `OSAL_DEMO_END status=pass` | Demo run complete |
+| `OSAL_DEMO_FAIL name=<demo> error=...` | Demo failed (the error text follows) |
+
+Pass criteria, all required:
+
+1. QEMU exits 0 (the process exit code is the final authority — a log that
+   looks correct but exits non-zero is still a failure, and vice versa);
+2. `OSAL_DEMO_BEGIN`, `OSAL_DEMO_PASS`, `OSAL_DEMO_END status=pass` are all
+   present, with the right demo name;
+3. no `OSAL_DEMO_FAIL`, `OSAL_BOOT_FAIL`, or `OSAL_BOOT_FATAL` anywhere.
+
+Demo mode deliberately does **not** emit `OSAL_BOOT_PASS` or the object
+protocol, and does not run `verify-boot.py`.
+
+`pipeline_demo` additionally prints intermediate `[pipeline]` / `[monitor]`
+lines between `OSAL_DEMO_BEGIN` and `OSAL_DEMO_PASS`; those are informational
+and are not part of the pass criteria.
+
 ## Troubleshooting
 
 ### QEMU hangs with no UART output (exit 124)
