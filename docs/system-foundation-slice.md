@@ -57,7 +57,7 @@ This slice does **not** provide:
 | FreeRTOS | `FreeRtosSystem`   | `crates/osal-backend-freertos/src/system.rs` |
 | Facade   | `System` alias     | `crates/osal/src/backend.rs`              |
 | Testkit  | System contracts   | `crates/osal-testkit/src/contract/system.rs` |
-| Example  | `system.rs`        | `crates/osal/examples/system.rs`          |
+| Demo     | `osal_demo::system::run()` | `examples/osal-demo/src/system.rs`        |
 
 ## Heap model
 

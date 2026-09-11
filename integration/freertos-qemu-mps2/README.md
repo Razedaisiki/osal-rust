@@ -24,6 +24,10 @@ make CARGO_FEATURES=suite-queue-blocking  # Queue Blocking isolated suite
 make CARGO_FEATURES=suite-task            # Task real-kernel contract suite
 make CARGO_FEATURES=suite-timer           # Timer real-kernel contract suite
 make CARGO_FEATURES=suite-mixed           # Mixed-object real-kernel contract suite
+
+make demo DEMO=queue                      # portable demo firmware (see below)
+make run-demo DEMO=queue                  # portable demo, build + boot
+make run-all-demos                        # all seven portable demos
 ```
 
 Output in `build/`:
@@ -105,6 +109,44 @@ helper cleanup, and `heap_recovered=true`.
 | `timer` | `freertos-qemu-timer` |
 | `mixed` | `freertos-qemu-mixed` |
 
+## Portable OSAL Demos
+
+This firmware also hosts the user-facing portable demos. They are **not**
+conformance runs: they execute the shared application in
+`examples/osal-demo/src/` on a real FreeRTOS kernel to show the same source
+running on POSIX and on an RTOS.
+
+```bash
+make run-demo DEMO=mutex
+make run-demo DEMO=queue
+make run-demo DEMO=semaphore
+make run-demo DEMO=system
+make run-demo DEMO=task
+make run-demo DEMO=timer
+make run-demo DEMO=pipeline_demo
+
+make run-all-demos          # all seven in sequence
+```
+
+`DEMO` is resolved at compile time by `rust/build.rs` into a single
+`osal_demo_entry()` export; there is no per-demo entry point and no `cargo
+clean` between demos (`rerun-if-env-changed` handles the selector).
+
+| Shared logic | FreeRTOS glue only |
+|--------------|--------------------|
+| `examples/osal-demo/src/` | `rust/src/demo_runner.rs` (UART + selector) |
+
+Demo builds are fully separate from validation builds:
+
+| | Validation suites | Portable demos |
+|---|---|---|
+| Cargo feature | `suite-*` | `demo` |
+| C build dir | `build/` | `build/demo/` |
+| Protocol | boot + object (verified by `verify-boot.py`) | `OSAL_DEMO_BEGIN/PASS/END` (checked by `scripts/run-demo.sh`) |
+| CI job | see table above | `freertos-qemu-demos` |
+
+`demo` and any `suite-*` feature are mutually exclusive at compile time.
+
 ## Boot Protocol
 
 | Marker | Meaning |
@@ -135,9 +177,20 @@ integration/freertos-qemu-mps2/
 ├── scripts/
 │   ├── build.sh
 │   ├── run-qemu.sh
+│   ├── run-demo.sh
 │   └── verify-boot.py
-└── build/
-    └── (artifacts, gitignored)
+├── rust/
+│   ├── Cargo.toml
+│   ├── build.rs           # resolves OSAL_FREERTOS_DEMO in demo mode
+│   └── src/
+│       ├── lib.rs
+│       ├── demo_runner.rs # portable demo UART shell (demo mode only)
+│       ├── allocator.rs
+│       ├── harness.rs     # suite mode only
+│       ├── cases/         # suite mode only
+│       └── suite.rs       # suite mode only
+└── build/                 # validation artifacts (gitignored)
+    └── demo/              # portable demo artifacts (gitignored)
 ```
 
 ## License

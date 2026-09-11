@@ -44,7 +44,7 @@
 | FreeRTOS wait | `wait_native()` | `crates/osal-backend-freertos/src/wait.rs` |
 | Facade | `Mutex` alias | `crates/osal/src/backend.rs` |
 | Testkit | Mutex core contracts | `crates/osal-testkit/src/contract/mutex.rs` |
-| Examples | mock_mutex, posix_mutex | `crates/osal/examples/` |
+| Demo | `osal_demo::mutex::run()` | `examples/osal-demo/src/mutex.rs` |
 
 ## Design Decisions
 

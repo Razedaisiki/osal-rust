@@ -81,6 +81,7 @@ board-support functionality.
 | `osal-backend-freertos-sys` | Active       |
 | `osal-testkit`              | Active       |
 | `osal` (facade)             | Active       |
+| `osal-demo`                 | Active       |
 | `osal-bsp`                  | Skeleton     |
 | `osal-bsp-linux`            | Skeleton     |
 
@@ -239,6 +240,22 @@ Responsibilities:
 - Guard against multiple-backend selection at compile time
 - Provide `prelude` module for convenient imports
 - Expose `initialize()`, `shutdown()`, `runtime_state()` at crate root
+
+### 4.8 `examples/osal-demo` — Portable Demos
+
+User-facing demonstrations of the OSAL API. A `no_std` crate whose only
+dependency is the `osal` facade; it is deliberately not a conformance
+layer.
+
+- Seven demos (Mutex, Queue, Semaphore, System, Task, Timer, Pipeline),
+  each with exactly **one** implementation under
+  `examples/osal-demo/src/`.
+- Demos return typed reports rather than printing; the report `Display`
+  implementations live here too, so POSIX and FreeRTOS render identical
+  output bodies.
+- POSIX runs them through thin host binaries in `src/bin/`; FreeRTOS runs
+  the same functions through `integration/freertos-qemu-mps2/` with UART
+  and QEMU exit as the only platform-specific parts.
 
 ## 5. Runtime and Allocation Model
 

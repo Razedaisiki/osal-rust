@@ -1,5 +1,40 @@
 # Changelog
 
+## P7G — Shared POSIX / FreeRTOS Portable Demos — Completed
+
+- Added `examples/osal-demo`, a `no_std` shared demo crate depending only
+  on `osal` (plus `core`/`alloc`).
+- Mutex, Queue, Semaphore, System, Task, Timer, and Pipeline demos now have
+  a single application implementation shared by POSIX and FreeRTOS. Both
+  platforms call the same `osal_demo::<name>::run()` functions; there is no
+  second copy of any demo.
+- Demos return typed reports (`MutexReport`, `QueueReport`, …) instead of
+  printing. The `Display` implementations live in the shared crate, so both
+  platforms render an identical report body; only the runner-injected
+  `backend=` field differs.
+- POSIX uses thin host binaries under `examples/osal-demo/src/bin/`
+  (`support::run(name, osal_demo::<name>::run)`).
+- FreeRTOS reuses the same functions from the QEMU MPS2 firmware via
+  `rust/src/demo_runner.rs`, a UART shell with a compile-time selector
+  (`rust/build.rs` → `OSAL_FREERTOS_DEMO`). A single `osal_demo_entry()`
+  export covers all seven demos.
+- Added `make demo` / `make run-demo DEMO=<name>` / `make run-all-demos`,
+  `scripts/run-demo.sh` (demo-specific `OSAL_DEMO_*` protocol, separate from
+  `verify-boot.py`), and a separate `build/demo/` artifact directory.
+- `demo` and `suite-*` cargo features are mutually exclusive; demo mode does
+  not compile the managed-object suites.
+- Removed the host-only `crates/osal/examples/` implementations. The
+  canonical commands are now `cargo run -p osal-demo --bin <demo>` and
+  `make -C integration/freertos-qemu-mps2 run-demo DEMO=<demo>`.
+- Added CI: a host demo matrix and a `freertos-qemu-demos` job.
+- README examples section rewritten for the shared demos; the previous
+  reference to non-existent `crates/osal-backend-*/examples/` directories
+  was dropped.
+
+This is a portability demonstration layer, not a conformance milestone:
+no OSAL semantics, backend ownership rules, or behavior-contract
+requirements changed.
+
 ## P7G — FreeRTOS Real-Kernel Integration and Validation
 
 ### Step 2 — C-only Kernel Boot on QEMU Cortex-M3 — Completed

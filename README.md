@@ -257,32 +257,55 @@ fn main() -> Result<()> {
 }
 ```
 
-## Examples
+## Portable Demos
 
-Facade examples live under `crates/osal/examples/`. Each example is
-capability-oriented and backend-agnostic — the same code runs on any
-selected backend.
+The user-facing demos live in `examples/osal-demo/`.
 
-```bash
-# POSIX backend (default)
-cargo run -p osal --example queue
-cargo run -p osal --example mutex
-cargo run -p osal --example semaphore
-cargo run -p osal --example timer
-cargo run -p osal --example system
-cargo run -p osal --example task
+The application logic is shared between POSIX and FreeRTOS. The two
+platforms use different bootstrap/output shells, but both execute the
+same `osal_demo::<name>::run()` implementation:
 
-# Mock backend
-cargo run -p osal --example queue --no-default-features --features backend-mock
-cargo run -p osal --example timer --no-default-features --features backend-mock
-cargo run -p osal --example task --no-default-features --features backend-mock
+```
+examples/osal-demo/src/queue.rs
+             │
+             │  same Queue demo
+       ┌─────┴─────┐
+       │           │
+     POSIX      FreeRTOS
+       │           │
+    pthread      kernel
 ```
 
-Backend-specific examples (cross-thread blocking, fault injection,
-controlled clock) live under the respective backend crate:
+The platform runners contain no duplicated application logic. Backend
+specific code is limited to bootstrap, console/output, and
+process/firmware termination.
 
-- `crates/osal-backend-mock/examples/`
-- `crates/osal-backend-posix/examples/`
+### POSIX
+
+```bash
+cargo run -p osal-demo --bin mutex
+cargo run -p osal-demo --bin queue
+cargo run -p osal-demo --bin semaphore
+cargo run -p osal-demo --bin system
+cargo run -p osal-demo --bin task
+cargo run -p osal-demo --bin timer
+cargo run -p osal-demo --bin pipeline_demo
+```
+
+### FreeRTOS / QEMU
+
+```bash
+make -C integration/freertos-qemu-mps2 run-demo DEMO=queue
+make -C integration/freertos-qemu-mps2 run-demo DEMO=mutex
+make -C integration/freertos-qemu-mps2 run-demo DEMO=semaphore
+make -C integration/freertos-qemu-mps2 run-demo DEMO=system
+make -C integration/freertos-qemu-mps2 run-demo DEMO=task
+make -C integration/freertos-qemu-mps2 run-demo DEMO=timer
+make -C integration/freertos-qemu-mps2 run-demo DEMO=pipeline_demo
+```
+
+See [examples/osal-demo/README.md](examples/osal-demo/README.md) for the
+shared-source guarantee, the report protocol, and the Mock capability note.
 
 ## License
 

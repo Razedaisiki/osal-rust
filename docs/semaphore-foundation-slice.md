@@ -49,7 +49,7 @@ FreeRTOS uses a dedicated native binary semaphore (`xSemaphoreCreateBinary`).
 | FreeRTOS wait | `wait_native()` | `crates/osal-backend-freertos/src/wait.rs` |
 | Facade | Type aliases | `crates/osal/src/backend.rs` |
 | Testkit | Core + blocking contracts | `crates/osal-testkit/src/contract/semaphore.rs` |
-| Examples | mock_semaphore, posix_semaphore | `crates/osal/examples/` |
+| Demo | `osal_demo::semaphore::run()` | `examples/osal-demo/src/semaphore.rs` |
 
 ## Design Decisions
 
