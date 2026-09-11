@@ -31,6 +31,11 @@ echo "Timeout: ${TIMEOUT_SEC}s"
 echo ""
 
 set +e
+# stdin is bound to /dev/null on purpose. With `-nographic -serial stdio`,
+# QEMU takes over the terminal when stdin is an interactive TTY and the
+# guest then never makes progress (the run times out with no UART output
+# at all). CI has no TTY so this never showed up there; binding stdin keeps
+# interactive use identical to CI.
 timeout "$TIMEOUT_SEC" qemu-system-arm \
     -machine mps2-an385 \
     -cpu cortex-m3 \
@@ -40,6 +45,7 @@ timeout "$TIMEOUT_SEC" qemu-system-arm \
     -serial stdio \
     -semihosting \
     -no-reboot \
+    < /dev/null \
     > "$LOG" 2>&1
 QEMU_EXIT=$?
 set -e
