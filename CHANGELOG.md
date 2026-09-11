@@ -70,7 +70,12 @@ This is a portability demonstration layer, not a conformance milestone:
 no OSAL semantics, backend ownership rules, or behavior-contract
 requirements changed.
 
-## P7G — FreeRTOS Real-Kernel Integration and Validation
+## P7G — FreeRTOS Real-Kernel Integration and Validation — Completed
+
+Sealed by CI run [34569160234](https://github.com/Razedaisiki/osal-rust/actions/runs/34569160234)
+on commit `50d944a` (all 19 jobs green). That is the last code change in the
+phase; later documentation commits do not alter the verified code. Physical
+MCU validation remains outstanding and is not a P7G seal condition.
 
 ### Step 2 — C-only Kernel Boot on QEMU Cortex-M3 — Completed
 
@@ -143,7 +148,7 @@ Task, Timer) on real kernel — deferred to Step 4.
   with_mutex→after_shutdown — all exact recovery confirmed.
 - Host CI: 0 failures.  QEMU exit code 0.
 
-### Step 4 — Managed Object Real-Kernel Validation — In Progress
+### Step 4 — Managed Object Real-Kernel Validation — Completed
 
 #### Step 4-0 — Deterministic native helper-task harness — Completed
 
@@ -404,13 +409,15 @@ clock-control; deferred to Step 4C-3). Subsequently addressed by Step
 - Aggregate suite (36 cases) no regression.
 - Two QEMU profiles: `make` (aggregate) and `make CARGO_FEATURES=suite-queue-blocking`.
 
-### Step 4C-3 — Queue Timeout/Wake Boundary Race Closure — In Progress (implementation present; final seal pending)
+### Step 4C-3 — Queue Timeout/Wake Boundary Race Closure — Completed
 
-**Status note:** The four timeout/wake boundary-race cases and
-their verifier gates already exist in the queue-blocking profile.
-This step records their coverage as a distinct P7G sub-step.
-Formal sealing (separate milestone dating/CI) is pending
-confirmation of the complete host + QEMU CI matrix.
+**Sealed by:** CI run [34569160234](https://github.com/Razedaisiki/osal-rust/actions/runs/34569160234)
+on commit `50d944a`, which runs the `queue-blocking` profile
+(`freertos-qemu-queue-blocking`) carrying the four boundary-race cases.
+
+- Four timeout/wake boundary-race cases and their verifier gates live in
+  the queue-blocking profile; this step records them as a distinct P7G
+  sub-step.
 
 - Extends the queue-blocking isolated profile (`suite-queue-blocking`,
   `PROFILE=queue-blocking`, CI job `freertos-qemu-queue-blocking`) from
@@ -540,12 +547,13 @@ Production fixes in this step:
 Verifier fields: `timer_order=true timer_stress=true timer_self_delete=true`
 added; final sealing requires successful shutdown + exact heap recovery.
 
-### Step 4F — Cross-Object Stress, Resource Pressure, and P7G Final Seal — In Progress (implementation present; final seal pending)
+### Step 4F — Cross-Object Stress, Resource Pressure, and P7G Final Seal — Completed
 
-**Status note:** The mixed-object suite and `freertos-qemu-mixed` CI job
-already exist. This step records their coverage as the P7G final-seal
-profile. Formal sealing is pending confirmation of the complete host +
-QEMU CI matrix (aggregate, queue-blocking, task, timer, mixed + host CI).
+**Sealed by:** CI run [34569160234](https://github.com/Razedaisiki/osal-rust/actions/runs/34569160234)
+on commit `50d944a` — all 19 jobs green, covering the host gates
+(`format`, `clippy`, `test`, `rustdoc`, `feature-guards`, `task-tests`),
+every QEMU profile (`aggregate`, `queue-blocking`, `task`, `timer`,
+`mixed`), the host demo matrix, and `freertos-qemu-demos`.
 
 - Isolated FreeRTOS session: Cargo feature `suite-mixed`,
   `PROFILE=mixed`, CI job `freertos-qemu-mixed`, independent QEMU run.
@@ -574,9 +582,11 @@ QEMU CI matrix (aggregate, queue-blocking, task, timer, mixed + host CI).
   and uses real `heap_alloc`/`heap_dealloc` pressure rather than fault
   injection for the Timer/Mutex pressure paths.
 
-**Gate to mark P7G / Step 4F Completed:** Confirm all host + QEMU profiles
-green, reconcile documentation, then close P7G and promote Step 4 from
-`In Progress` to `Completed`. Do not invent a completion date or CI number.
+**Sealing gate (met):** all host + QEMU profiles green, documentation
+reconciled, P7G closed. CI run
+[34569160234](https://github.com/Razedaisiki/osal-rust/actions/runs/34569160234)
+on `50d944a`. Physical MCU validation remains outstanding and is **not** a
+P7G seal condition.
 
 ## P7E — FreeRTOS Task Foundation (2026-07-28) — Completed
 

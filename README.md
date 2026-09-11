@@ -11,11 +11,45 @@ across different platforms by switching the backend.
 
 ## Project Status
 
-**Current phase: P7G — FreeRTOS Real-Kernel Integration and Validation.**
+**Current phase: P7G — FreeRTOS Real-Kernel Integration and Validation — Completed.**
 
-**Status:** Steps 4A–4E are completed. Queue timeout/wake boundary-race
-coverage and the Step 4F mixed-object/resource-pressure suite are implemented.
-P7G final sealing is pending confirmation of the complete host + QEMU CI matrix.
+Sealed by CI run [34569160234](https://github.com/Razedaisiki/osal-rust/actions/runs/34569160234)
+on commit `50d944a`: all 19 jobs green, covering every host gate and every
+QEMU profile. (That commit is the last code change; documentation commits
+after it do not alter the verified code.)
+
+**Validated:**
+
+- POSIX backend — full non-deferred `osal-api` trait surface
+- Mock backend — same surface except blocking Queue contracts
+- FreeRTOS QEMU mps2-an385 / Cortex-M3 / FreeRTOS Kernel V11.3.0 —
+  Mutex, CountingSemaphore, BinarySemaphore, Queue Core, Queue Blocking
+  (incl. timeout/wake boundary-race), Task, Timer, System, and
+  mixed-object stress / resource pressure
+- Portable demo firmware — 7 demos shared with POSIX
+
+**Outstanding:**
+
+- Physical MCU validation (not a P7G seal condition)
+- ISR extension traits, deterministic Mock scheduler, advanced task
+  controls, production BSP — see Deferred list below
+
+## Quick Start
+
+```bash
+# Portable demos — POSIX
+cargo run -p osal-demo --bin mutex
+cargo run -p osal-demo --bin pipeline_demo
+
+# Portable demos — FreeRTOS on QEMU (all seven)
+make -C integration/freertos-qemu-mps2 run-all-demos
+
+# FreeRTOS real-kernel validation suites (build + symbol check)
+make -C integration/freertos-qemu-mps2 verify
+
+# Full host test suite
+cargo test --workspace --features testkit -- --test-threads=1
+```
 
 The POSIX backend fully implements the current non-deferred `osal-api`
 trait surface. The Mock backend implements the same surface with the
@@ -138,8 +172,9 @@ not a capability status — the capability vocabulary above does not apply here.
 Available demos: Mutex, Queue, Semaphore, System, Task, Timer, Pipeline.
 
 Both platforms execute the same `osal_demo::<demo>::run()` implementation;
-see [examples/osal-demo/README.md](examples/osal-demo/README.md). This does
-not change the P7G status above, which remains pending its own final seal.
+see [examples/osal-demo/README.md](examples/osal-demo/README.md). The demo
+layer is not part of the P7G conformance seal; P7G is closed independently
+and its evidence is recorded above.
 
 ## Architecture
 
@@ -188,6 +223,7 @@ the full authority model, update triggers, and status terminology.
 
 ### Core design documents
 
+- [Engineering Handover](docs/HANDOVER.md) — start here when picking the project up
 - [Architecture](docs/architecture.md)
 - [Behavior Contract](docs/behavior-contract.md) — **source of truth** for backend conformance
 - [Documentation Policy](docs/documentation-policy.md) — authority rules and update triggers
@@ -239,7 +275,7 @@ the full authority model, update triggers, and status terminology.
 > source of truth for backend conformance. Chinese translations are
 > supplementary and may lag behind during active MVP development.
 
-## Quick Start
+## Library Usage
 
 ```toml
 [dependencies]
