@@ -161,9 +161,33 @@ timeout so a demo bug cannot hang CI or QEMU forever.
 
 ## Pipeline demo live trace
 
-`pipeline_demo` is the one demo that also emits optional runtime events, so it
-doubles as the demonstration that shared application logic can still produce
-platform-appropriate output:
+`pipeline_demo` is the **only** demo with live runtime output. The other six
+are silent:
+
+```
+mutex / queue / semaphore / system / task / timer
+
+    run()  ──>  Report  ──>  Display  ──>  runner prints once  ──>  exit
+```
+
+`pipeline_demo` runs longer and has something worth watching, so it also has
+a traced entry point:
+
+```
+pipeline_demo
+
+    run_with_reporter()  ──>  event stream  ──>  stdout / UART
+```
+
+Both entry points return the same `PipelineReport` and check the same
+invariants — the trace is purely additive:
+
+| Entry point | Trace |
+|-------------|-------|
+| `pipeline_demo::run()` | silent (equivalent to `run_with_reporter(&NullReporter)`) |
+| `pipeline_demo::run_with_reporter(&r)` | emits `PipelineEvent`s to `r` |
+
+The trace backend is platform-specific, but the events are not:
 
 ```
                  examples/osal-demo
@@ -179,27 +203,42 @@ platform-appropriate output:
         stdout                    UART console
 ```
 
-`run()` is silent. `run_with_reporter(&r)` emits `PipelineEvent`s to a
-caller-supplied `PipelineReporter`, which is how both platforms show a live
-trace without this crate knowing anything about output.
-
 Events cover initialization, worker startup, supervisor state changes,
-periodic statistics, and the shutdown summary:
+periodic statistics, and the shutdown summary. Actual POSIX output:
 
 ```
+OSAL_DEMO_BEGIN name=pipeline_demo backend=posix
 [pipeline] init queue=128 packet=16
 [pipeline] worker producer-0 started
+[pipeline] worker producer-1 started
 [pipeline] worker consumer-0 started
+[pipeline] worker consumer-1 started
+[pipeline] worker consumer-2 started
+[pipeline] worker monitor started
 [pipeline] started
-[monitor] tick=1022 produced=84 consumed=3 dropped=0 timeout=0 checksum_error=0
-[monitor] tick=2005 produced=164 consumed=102 dropped=0 timeout=0 checksum_error=0
+[monitor] tick=1023 produced=84 consumed=3 dropped=0 timeout=0 checksum_error=0
+[monitor] tick=2006 produced=164 consumed=102 dropped=0 timeout=0 checksum_error=0
+[monitor] tick=3009 produced=244 consumed=201 dropped=0 timeout=0 checksum_error=0
 [pipeline] stopping
 [summary] produced=484 consumed=484 dropped=0
+[pipeline] produced=484
+[pipeline] consumed=484
+[pipeline] dropped=0
+[pipeline] timeout=0
+[pipeline] checksum_error=0
+[pipeline] timer_fires=9
+[pipeline] monitor_samples=9
+[pipeline] invariants OK
+OSAL_DEMO_PASS name=pipeline_demo
+OSAL_DEMO_END status=pass
 ```
 
-The event *text* comes from `PipelineEvent`'s `Display` here, so the two
-platforms produce the same body; only the line ending differs (the UART shell
-writes CRLF). Reporters live in platform code:
+The FreeRTOS UART run produces the same body with `backend=freertos`; only
+the line ending differs (CRLF).
+
+The event *text* comes from `PipelineEvent`'s `Display` in this crate, so the
+two platforms cannot drift into two format strings. The reporters themselves
+live in platform code:
 
 | Platform | Reporter | Sink |
 |----------|----------|------|
