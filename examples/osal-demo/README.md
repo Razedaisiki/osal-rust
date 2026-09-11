@@ -34,7 +34,7 @@ POSIX and FreeRTOS both call the same functions:
 | system | `osal_demo::system::run()` |
 | task | `osal_demo::task::run()` |
 | timer | `osal_demo::timer::run()` |
-| pipeline_demo | `osal_demo::pipeline_demo::run()` |
+| pipeline_demo | `osal_demo::pipeline_demo::run_with_reporter(...)` (each platform passes its own reporter) |
 
 There is no second implementation anywhere. Backend-specific code is limited
 to bootstrap, console/output, and process/firmware termination.
@@ -57,9 +57,9 @@ to bootstrap, console/output, and process/firmware termination.
 
 ## How demos report
 
-Demos never print. Each returns a typed report (`MutexReport`,
+Most demos do not print. They return a typed report (`MutexReport`,
 `QueueReport`, …) whose `Display` implementation lives here too — so both
-platforms render the identical body. The platform shell only adds the
+platforms render the identical body. The platform runner only adds the
 protocol markers and the `backend=` field:
 
 ```
@@ -72,8 +72,11 @@ OSAL_DEMO_PASS name=queue
 OSAL_DEMO_END status=pass
 ```
 
-The report is the pass/fail artifact. `pipeline_demo` additionally supports
-an *optional* live trace, described below.
+`pipeline_demo` is the exception: besides its report, it supports optional
+live tracing during execution. See
+[Pipeline demo live trace](#pipeline-demo-live-trace) below.
+
+The report is the pass/fail artifact in every case.
 
 This crate is `#![no_std]` and depends only on `osal`, `core`, and `alloc`.
 
@@ -156,17 +159,37 @@ Worker tasks record the first failure in an atomic slot instead of panicking
 (the firmware runs `panic = "abort"`), and the supervisor joins with a finite
 timeout so a demo bug cannot hang CI or QEMU forever.
 
-### Optional live trace
+## Pipeline demo live trace
 
-`pipeline_demo::run()` is silent. `pipeline_demo::run_with_reporter(&r)`
-additionally emits `PipelineEvent`s to a caller-supplied `PipelineReporter`,
-which is how both platforms show a live trace without this crate knowing
-anything about output:
+`pipeline_demo` is the one demo that also emits optional runtime events, so it
+doubles as the demonstration that shared application logic can still produce
+platform-appropriate output:
+
+```
+                 examples/osal-demo
+                         │
+                    demo logic
+                         │
+                run_with_reporter()
+                         │
+          ┌──────────────┴──────────────┐
+          │                             │
+   PosixPipelineReporter        FreertosReporter
+          │                             │
+        stdout                    UART console
+```
+
+`run()` is silent. `run_with_reporter(&r)` emits `PipelineEvent`s to a
+caller-supplied `PipelineReporter`, which is how both platforms show a live
+trace without this crate knowing anything about output.
+
+Events cover initialization, worker startup, supervisor state changes,
+periodic statistics, and the shutdown summary:
 
 ```
 [pipeline] init queue=128 packet=16
 [pipeline] worker producer-0 started
-...
+[pipeline] worker consumer-0 started
 [pipeline] started
 [monitor] tick=1022 produced=84 consumed=3 dropped=0 timeout=0 checksum_error=0
 [monitor] tick=2005 produced=164 consumed=102 dropped=0 timeout=0 checksum_error=0
@@ -175,8 +198,8 @@ anything about output:
 ```
 
 The event *text* comes from `PipelineEvent`'s `Display` here, so the two
-platforms produce the same body; only the line ending differs (the UART
-shell writes CRLF). Reporters live in platform code:
+platforms produce the same body; only the line ending differs (the UART shell
+writes CRLF). Reporters live in platform code:
 
 | Platform | Reporter | Sink |
 |----------|----------|------|

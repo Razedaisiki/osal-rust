@@ -109,12 +109,29 @@ helper cleanup, and `heap_recovered=true`.
 | `timer` | `freertos-qemu-timer` |
 | `mixed` | `freertos-qemu-mixed` |
 
+## Firmware Modes
+
+This firmware builds in two modes that are easy to confuse, so they are kept
+strictly separate (different Cargo feature, build directory, protocol, and CI
+job).
+
+**Validation firmware** (`suite-*`) — conformance:
+
+- executes the OSAL contract suites
+- checks kernel behaviour (scheduler, tick, blocking, heap recovery)
+- uses the strict boot + object protocol verified by `verify-boot.py`
+
+**Demo firmware** (`demo`) — portable demos:
+
+- runs the user-facing demos from `examples/osal-demo/`
+- demonstrates one shared application source across POSIX and FreeRTOS
+- uses the smaller `OSAL_DEMO_*` protocol checked by `run-demo.sh`
+
 ## Portable OSAL Demos
 
-This firmware also hosts the user-facing portable demos. They are **not**
-conformance runs: they execute the shared application in
-`examples/osal-demo/src/` on a real FreeRTOS kernel to show the same source
-running on POSIX and on an RTOS.
+The demo firmware runs the shared application in `examples/osal-demo/src/` on
+a real FreeRTOS kernel, to show the same source running on POSIX and on an
+RTOS.
 
 ```bash
 make run-demo DEMO=mutex
@@ -136,7 +153,12 @@ clean` between demos (`rerun-if-env-changed` handles the selector).
 |--------------|--------------------|
 | `examples/osal-demo/src/` | `rust/src/demo_runner.rs` (UART + selector) |
 
-Demo builds are fully separate from validation builds:
+`pipeline_demo` additionally renders a live trace through a platform
+reporter; the shared crate defines the event text, so the FreeRTOS UART body
+matches the POSIX stdout body. Rendering that trace costs more stack than the
+validation path, so demo mode builds the boot task with 2048 words instead of
+1600; the validation stack size is deliberately unchanged so its
+high-water-mark evidence stays comparable.
 
 | | Validation suites | Portable demos |
 |---|---|---|
@@ -144,8 +166,36 @@ Demo builds are fully separate from validation builds:
 | C build dir | `build/` | `build/demo/` |
 | Protocol | boot + object (verified by `verify-boot.py`) | `OSAL_DEMO_BEGIN/PASS/END` (checked by `scripts/run-demo.sh`) |
 | CI job | see table above | `freertos-qemu-demos` |
+| Boot task stack | 1600 words | 2048 words |
 
 `demo` and any `suite-*` feature are mutually exclusive at compile time.
+
+## Troubleshooting
+
+### QEMU hangs with no UART output (exit 124)
+
+QEMU is invoked with `-nographic -serial stdio`. If stdin is an interactive
+terminal, QEMU takes over the tty and the guest never makes progress: no
+output at all, then a kill after the 30 s timeout.
+
+Both `run-qemu.sh` and `run-demo.sh` bind stdin to `/dev/null` for exactly
+this reason — the firmware needs no console input. CI has no tty, so this
+symptom only appears when running from an interactive shell with a
+hand-written QEMU command line.
+
+If you write your own invocation, add `< /dev/null`.
+
+### `make run-demo` reports a missing `OSAL_DEMO_BEGIN` marker
+
+Check that the firmware was built in demo mode. A validation firmware boots
+and emits `OSAL_BOOT_*`/`OSAL_OBJECT_*` instead, and is not a demo failure.
+
+### Demo fails on `runtime.shutdown` with `Busy`
+
+The FreeRTOS task trampoline publishes completion before it drops the internal
+`Arc`s that carry the `RuntimeLease` (ADR 0028 §6). The shared demos therefore
+wait, with an upper bound, for the runtime to become quiescent before
+shutting down. A persistent `Busy` means a real lease leak.
 
 ## Boot Protocol
 

@@ -123,6 +123,24 @@ Public APIs may change before version 1.0.
 blocking remains deferred until a deterministic scheduler is
 implemented.
 
+## Portable Demo Status
+
+The shared demos in `examples/osal-demo/` are implemented and their output
+parity is verified on both platforms. This reports **executed test results**,
+not a capability status — the capability vocabulary above does not apply here.
+
+| Target | Result |
+|--------|--------|
+| POSIX backend (`cargo run -p osal-demo --bin <demo>`) | PASS (7/7 demos) |
+| FreeRTOS QEMU mps2-an385 / Cortex-M3 (`make run-all-demos`) | PASS (7/7 demos) |
+| Mock backend (6 demos; `pipeline_demo` gated) | PASS |
+
+Available demos: Mutex, Queue, Semaphore, System, Task, Timer, Pipeline.
+
+Both platforms execute the same `osal_demo::<demo>::run()` implementation;
+see [examples/osal-demo/README.md](examples/osal-demo/README.md). This does
+not change the P7G status above, which remains pending its own final seal.
+
 ## Architecture
 
 OSAL uses a layered crate architecture:
@@ -274,6 +292,23 @@ examples/osal-demo/src/queue.rs
      POSIX      FreeRTOS
        │           │
     pthread      kernel
+```
+
+`pipeline_demo` additionally supports optional live tracing, which is how a
+shared application can still emit platform-appropriate output:
+
+```
+                examples/osal-demo
+                        │
+                   demo logic
+                        │
+               run_with_reporter()
+                        │
+         ┌──────────────┴──────────────┐
+         │                             │
+  PosixPipelineReporter        FreertosReporter
+         │                             │
+       stdout                    UART console
 ```
 
 The platform runners contain no duplicated application logic. Backend

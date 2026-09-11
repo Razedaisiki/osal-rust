@@ -2,43 +2,58 @@
 
 ## P7G — Shared POSIX / FreeRTOS Portable Demos — Completed
 
-- Added `examples/osal-demo`, a `no_std` shared demo crate depending only
-  on `osal` (plus `core`/`alloc`).
+### Added
+
+- Added portable OSAL demos shared between POSIX and FreeRTOS:
+  `examples/osal-demo`, a `no_std` crate depending only on `osal` (plus
+  `core`/`alloc`).
+- Added a FreeRTOS QEMU demo firmware runner: `rust/build.rs` resolves
+  `OSAL_FREERTOS_DEMO` into a compile-time selector, and
+  `rust/src/demo_runner.rs` renders through the MPS2 UART. A single
+  `osal_demo_entry()` export covers all seven demos.
+- Added pipeline live tracing with platform-specific output sinks:
+  `PipelineEvent`, `PipelineReporter`, and `run_with_reporter(&R)`, with
+  POSIX rendering to stdout and FreeRTOS to the UART console.
+- Added unified demo reporting and a pass/fail protocol: every demo returns
+  a typed report whose `Display` lives in the shared crate, and
+  `scripts/run-demo.sh` checks the `OSAL_DEMO_BEGIN/PASS/END` markers.
+- Added `make demo` / `make run-demo DEMO=<name>` / `make run-all-demos` and
+  a separate `build/demo/` artifact directory.
+- Added CI: a host demo matrix (`host-demos`) and a `freertos-qemu-demos` job.
+
+### Changed
+
 - Mutex, Queue, Semaphore, System, Task, Timer, and Pipeline demos now have
   a single application implementation shared by POSIX and FreeRTOS. Both
   platforms call the same `osal_demo::<name>::run()` functions; there is no
   second copy of any demo.
-- Demos return typed reports (`MutexReport`, `QueueReport`, …) instead of
-  printing. The `Display` implementations live in the shared crate, so both
-  platforms render an identical report body; only the runner-injected
-  `backend=` field differs.
 - POSIX uses thin host binaries under `examples/osal-demo/src/bin/`
   (`support::run(name, osal_demo::<name>::run)`).
-- FreeRTOS reuses the same functions from the QEMU MPS2 firmware via
-  `rust/src/demo_runner.rs`, a UART shell with a compile-time selector
-  (`rust/build.rs` → `OSAL_FREERTOS_DEMO`). A single `osal_demo_entry()`
-  export covers all seven demos.
-- Added `make demo` / `make run-demo DEMO=<name>` / `make run-all-demos`,
-  `scripts/run-demo.sh` (demo-specific `OSAL_DEMO_*` protocol, separate from
-  `verify-boot.py`), and a separate `build/demo/` artifact directory.
 - `demo` and `suite-*` cargo features are mutually exclusive; demo mode does
   not compile the managed-object suites.
-- Removed the host-only `crates/osal/examples/` implementations. The
-  canonical commands are now `cargo run -p osal-demo --bin <demo>` and
-  `make -C integration/freertos-qemu-mps2 run-demo DEMO=<demo>`.
-- Added CI: a host demo matrix and a `freertos-qemu-demos` job.
+- Demo-mode FreeRTOS boot task stack raised 1600 → 2048 words: the trace's
+  formatting machinery costs more stack than the validation path, and the
+  existing 128-word margin gate caught it (HWM fell to 100 words). The
+  validation stack size is untouched so its HWM evidence stays comparable.
 - README examples section rewritten for the shared demos; the previous
   reference to non-existent `crates/osal-backend-*/examples/` directories
   was dropped.
 
-### Portable Demo Live Trace
+### Removed
 
-- `pipeline_demo` regained its live trace without reintroducing any
-  platform-dependent printing into the shared crate.
-- Added `PipelineEvent` (init, worker started, started, monitor, stopping,
-  finished) plus a `PipelineReporter` trait to `examples/osal-demo`. The
-  event `Display` lives in the shared crate, so POSIX (stdout) and FreeRTOS
-  (UART) render the same body; only the line ending differs.
+- Removed the host-only `crates/osal/examples/` implementations. The
+  canonical commands are now `cargo run -p osal-demo --bin <demo>` and
+  `make -C integration/freertos-qemu-mps2 run-demo DEMO=<demo>`.
+
+### Fixed
+
+- `run-qemu.sh` and `run-demo.sh` bound QEMU's stdin to `/dev/null`. With
+  `-nographic -serial stdio` and an interactive terminal, QEMU took over the
+  tty and the guest produced no UART output at all before the 30 s timeout
+  (exit 124). CI has no tty, so only interactive runs were affected.
+
+### Notes
+
 - `pipeline_demo::run()` stays silent and is now
   `run_with_reporter(&NullReporter)`; `run_with_reporter(&R)` is the
   trace-enabled entry point.
@@ -50,10 +65,6 @@
   packet flow, so the trace cannot saturate a UART.
 - Final invariants are still asserted on the report, not on trace events, so
   the trace cannot weaken the demo's pass/fail criteria.
-- Demo-mode FreeRTOS boot task stack raised 1600 → 2048 words: the trace's
-  formatting machinery costs more stack than the validation path, and the
-  existing 128-word margin gate caught it (HWM fell to 100 words). The
-  validation stack size is untouched so its HWM evidence stays comparable.
 
 This is a portability demonstration layer, not a conformance milestone:
 no OSAL semantics, backend ownership rules, or behavior-contract
