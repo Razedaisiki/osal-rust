@@ -300,7 +300,8 @@ Physical MCU validation remains outstanding.
   queue_close/queue_suspended/queue_lease OBJECT_PASS fields.
 
 **Deferred:** timeout/wake race, close/timeout priority (require
-clock-control; deferred to Step 4C-3).
+clock-control; deferred to Step 4C-3). Subsequently addressed by Step
+4C-3.
 
 ### Step 4C-2 — Queue Blocking Real-Kernel Contracts — Completed
 
@@ -332,6 +333,44 @@ clock-control; deferred to Step 4C-3).
 - Stack margin: 399 words (threshold 128) in queue-blocking profile.
 - Aggregate suite (36 cases) no regression.
 - Two QEMU profiles: `make` (aggregate) and `make CARGO_FEATURES=suite-queue-blocking`.
+
+### Step 4C-3 — Queue Timeout/Wake Boundary Race Closure — In Progress (implementation present; final seal pending)
+
+**Status note:** The four timeout/wake boundary-race cases and
+their verifier gates already exist in the queue-blocking profile.
+This step records their coverage as a distinct P7G sub-step.
+Formal sealing (separate milestone dating/CI) is pending
+confirmation of the complete host + QEMU CI matrix.
+
+- Extends the queue-blocking isolated profile (`suite-queue-blocking`,
+  `PROFILE=queue-blocking`, CI job `freertos-qemu-queue-blocking`) from
+  11 to 15 required cases (1 harness + 14 Queue-specific cases).
+- New cases in `integration/freertos-qemu-mps2/rust/src/cases/queue_blocking.rs`:
+
+  | Case | What it proves |
+  |------|---------------|
+  | `queue_recv_timeout_wake_race` | Recv timeout/wake boundary: controller-injected send at the blocking wait's timeout boundary is not lost; helper acquires and payload is preserved |
+  | `queue_send_timeout_wake_race` | Send timeout/wake boundary: controller-injected recv at the blocking wait's timeout boundary is not lost; helper sends and payload is drainable |
+  | `queue_recv_close_timeout_priority` | Close vs timeout priority (recv): close injected at the timeout boundary wakes the waiter with `QueueClosed`, not `Timeout` |
+  | `queue_send_close_timeout_priority` | Close vs timeout priority (send): close injected at the timeout boundary wakes the waiter with `QueueClosed`; M0 remains drainable; close idempotent |
+
+- Deterministic coordination infrastructure:
+  - `crates/osal-backend-freertos/src/queue_hooks.rs` + `queue_hooks` module
+  - Feature `integration-test-hooks` (QEMU integration firmware only)
+  - `TimeoutHookGuard` / `on_timeout_boundary()` / `wait_at_boundary()` —
+    helper parks at the timeout boundary so the controller can inject a
+    wake/close between timeout detection and race reconciliation.
+- Updated `crates/osal-backend-freertos/src/queue.rs` race-reconciliation
+  path to handle the injected wake token without stranding waiters.
+- Verifier updates in `integration/freertos-qemu-mps2/scripts/verify-boot.py`
+  (queue-blocking profile): `queue_timeout_race=true`,
+  `queue_close_timeout_priority=true`.
+- Heap accounting: each race case records a `task_baseline` and waits for
+  TCB/stack reclamation via `wait_until_heap_recovered`.
+
+**Gate to mark Completed:** Confirm all host + QEMU profiles green,
+reconcile documentation, then close Step 4C-3 alongside P7G final seal.
+Do not invent a completion date or CI number from code presence alone.
 
 ### Step 1 — Integration Contract Neutralization — Completed
 
@@ -430,6 +469,44 @@ Production fixes in this step:
 
 Verifier fields: `timer_order=true timer_stress=true timer_self_delete=true`
 added; final sealing requires successful shutdown + exact heap recovery.
+
+### Step 4F — Cross-Object Stress, Resource Pressure, and P7G Final Seal — In Progress (implementation present; final seal pending)
+
+**Status note:** The mixed-object suite and `freertos-qemu-mixed` CI job
+already exist. This step records their coverage as the P7G final-seal
+profile. Formal sealing is pending confirmation of the complete host +
+QEMU CI matrix (aggregate, queue-blocking, task, timer, mixed + host CI).
+
+- Isolated FreeRTOS session: Cargo feature `suite-mixed`,
+  `PROFILE=mixed`, CI job `freertos-qemu-mixed`, independent QEMU run.
+- Verifier: `integration/freertos-qemu-mps2/scripts/verify-boot.py`
+  profile `mixed` — 6 required cases (1 harness + 5 mixed-object cases)
+  with `mixed_rollback`, `mixed_pressure`, `mixed_pipeline`,
+  `mixed_stress`, `mixed_shutdown` gates and final exact heap recovery.
+
+**Cases (real FreeRTOS Kernel V11.3.0, Cortex-M3, QEMU mps2-an385):**
+
+| Case | What it proves |
+|------|---------------|
+| `mixed_native_create_rollback` | Native create failure at each allocation stage (Mutex, CountingSemaphore, BinarySemaphore, Queue stage 1/2/3) returns `OutOfMemory`, performs stage-accurate native handle rollback with diagnostic deltas, no RuntimeLease or heap leak, and immediate recovery smoke |
+| `mixed_resource_pressure_recovery` | Real heap pressure from `pvPortMalloc`/`vPortFree` (not injected faults): large pressure block reduces heap, oversized Task stack OOM reaches `xTaskCreate` attempt without success, exact recovery after pressure release, Mutex native-cost subcase, and cross-object recovery smoke |
+| `mixed_object_pipeline` | Cross-object pipeline composing Queue/Task/Timer/Mutex/BinarySemaphore/CountingSemaphore: Timer releases BinarySemaphore → Task A sends Queue payload → Task B recvs, increments Mutex counter, releases CountingSemaphore; validates payload preservation, counter coherency, and timer callback accounting |
+| `mixed_lifecycle_stress` | Warms the lazy Timer worker to a permanent baseline, then 16 sequential pipeline rounds + 4 waves × 2 concurrent pipelines; exact heap/task/lease recovery per round/wave; worker create-attempt count stable across all lifecycles |
+| `mixed_shutdown_accounting` | Heterogeneous 6-object accounting (Mutex + BinarySemaphore + CountingSemaphore + Queue + gated Task + Timer): first shutdown → `Busy` failure-atomic with unchanged heap/lease/state; per-object drop decrements by 1 with failure-atomic checks; finished Task handle still holds lease; final shutdown → exact profile-baseline heap recovery and reinit smoke |
+
+- Infrastructure: `integration/freertos-qemu-mps2/rust/src/cases/mixed.rs`,
+  `GateGuard` error-path safety, `SyncCreateFailureGuard`,
+  `ExpectedMallocFailureGuard`, `HeapPressureGuard`, diagnostic counters
+  (`integration_diag`), bounded tick waits, and `profile_baseline` heap gate
+  (captured before `osal::initialize()`; verifies storage + task TCB/stack
+  reclamation after final shutdown/Idle cleanup).
+- Resource-pressure evidence: measures native handle heap cost dynamically
+  and uses real `heap_alloc`/`heap_dealloc` pressure rather than fault
+  injection for the Timer/Mutex pressure paths.
+
+**Gate to mark P7G / Step 4F Completed:** Confirm all host + QEMU profiles
+green, reconcile documentation, then close P7G and promote Step 4 from
+`In Progress` to `Completed`. Do not invent a completion date or CI number.
 
 ## P7E — FreeRTOS Task Foundation (2026-07-28) — Completed
 

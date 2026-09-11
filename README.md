@@ -11,25 +11,34 @@ across different platforms by switching the backend.
 
 ## Project Status
 
-**Latest completed milestone: P7G Step 4E — Timer Real-Kernel Contracts — Completed.**
-**Current milestone: P7G Step 4E — Timer Real-Kernel Contracts — Completed.**
-**Next: P7G Step 4F — Cross-object stress, resource pressure, Queue race debt, and P7G final seal.**
+**Current phase: P7G — FreeRTOS Real-Kernel Integration and Validation.**
+
+**Status:** Steps 4A–4E are completed. Queue timeout/wake boundary-race
+coverage and the Step 4F mixed-object/resource-pressure suite are implemented.
+P7G final sealing is pending confirmation of the complete host + QEMU CI matrix.
 
 The POSIX backend fully implements the current non-deferred `osal-api`
 trait surface. The Mock backend implements the same surface with the
 exception of blocking Queue contracts (deferred until a deterministic
 scheduler is implemented).
 
-FreeRTOS integration: ADRs 0020–0029 define scheduler ownership,
+FreeRTOS integration: ADRs 0020–0030 define scheduler ownership,
 configuration contract, FFI boundary, tick/time model, System mapping,
 blocking wait model, sync object model, queue object model, task
-object model, and timer service model. The `osal-backend-freertos` crate provides the full
-execution, synchronization, and messaging layer: Task (xTaskCreate +
-EventGroup completion + TLS identity, cached concurrent join), Mutex
-(native priority-inheritance mutex with RAII guard), CountingSemaphore
-and BinarySemaphore (native kernel semaphores), Queue (ByteQueue +
-native mutex + dual wake semaphore with close-drain broadcast), Clock
-(tick-snapshot-based monotonic time), System (heap introspection +
+object model, timer service model, and the QEMU mps2-an385 real-kernel
+validation platform. Real-kernel validation on **QEMU mps2-an385 /
+Cortex-M3 / FreeRTOS Kernel V11.3.0** covers Mutex, CountingSemaphore,
+BinarySemaphore, Queue (Core + Blocking + timeout/wake boundary-race),
+Task, Timer, System, and mixed-object integration/resource pressure
+(isolated profiles: aggregate, queue-blocking, task, timer, mixed).
+Physical MCU validation remains outstanding. The `osal-backend-freertos`
+crate provides the full execution, synchronization, and messaging layer:
+Task (xTaskCreate + EventGroup completion + TLS identity, cached
+concurrent join), Mutex (native priority-inheritance mutex with RAII
+guard), CountingSemaphore and BinarySemaphore (native kernel semaphores),
+Queue (ByteQueue + native mutex + dual wake semaphore with close-drain
+broadcast and deterministic timeout-boundary coordination),
+Clock (tick-snapshot-based monotonic time), System (heap introspection +
 nesting critical sections), and Timer (custom Timer Service Task +
 osal-portable::TimerState with lazy worker, take-execute-restore
 dispatch, callback reentry, clone/last-drop lifecycle). ISR extensions
@@ -48,18 +57,22 @@ Public APIs may change before version 1.0.
 
 - POSIX backend (`backend-posix`)
 - Mock backend (`backend-mock`)
-- FreeRTOS backend foundation (`backend-freertos`): Runtime Lifecycle,
-  Clock, System, Mutex, CountingSemaphore, BinarySemaphore, Queue,
-  Task (spawn + cached concurrent join), and Timer (custom Timer Service
-  Task + TimerState; host-contract-verified with deterministic
-  Virtual-mode fixture bridge)
+- FreeRTOS backend (`backend-freertos`): Runtime Lifecycle, Clock,
+  System, Mutex, CountingSemaphore, BinarySemaphore, Queue (Core +
+  Blocking including timeout/wake boundary-race closure with
+  `integration-test-hooks`/`queue_hooks.rs` coordination), Task, and
+  Timer (custom Timer Service Task + TimerState) — with host fixture
+  contract coverage, real-kernel validation on QEMU mps2-an385
+  (Cortex-M3, FreeRTOS V11.3.0) via isolated profiles (aggregate,
+  queue-blocking, task, timer) and a mixed-object stress/resource-pressure
+  profile (`suite-mixed`, `PROFILE=mixed`)
 - Queue (core + blocking on POSIX and FreeRTOS; Mock blocking deferred)
 - Mutex (non-recursive, ADR 0007)
 - CountingSemaphore and BinarySemaphore
 - Clock
-- Timer (host-contract-verified; FreeRTOS real-kernel-validated on QEMU mps2-an385)
-- System operations
-- Task foundation (spawn, join with timeout, repeated join, cached exit code)
+- Timer (host-contract-verified; FreeRTOS real-kernel-validated on QEMU mps2-an385, 20 cases)
+- System operations (FreeRTOS Validated on QEMU mps2-an385 via `xPortGetFreeHeapSize` + `taskENTER_CRITICAL`/`taskEXIT_CRITICAL`)
+- Task foundation (spawn, join with timeout, repeated join, cached exit code; FreeRTOS Validated on QEMU mps2-an385)
 - Shared backend contract tests (Core, Blocking where applicable)
 - Facade backend selection
 - Explicit runtime lifecycle (`osal::initialize()` / `osal::shutdown()`)
