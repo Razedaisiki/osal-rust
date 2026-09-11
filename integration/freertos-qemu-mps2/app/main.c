@@ -19,8 +19,17 @@
 
 /* ------------------------------------------------------------------ */
 /* Boot task stack and priority.                                      */
+/*                                                                    */
+/* Demo mode renders a live trace (pipeline events) through the       */
+/* shared crate's formatting machinery, which costs noticeably more   */
+/* stack than the validation path. Give demo mode its own stack size  */
+/* so the validation high-water-mark evidence stays comparable.       */
 /* ------------------------------------------------------------------ */
+#if defined(OSAL_FREERTOS_DEMO_MODE)
+#define BOOT_TASK_STACK_WORDS       2048U
+#else
 #define BOOT_TASK_STACK_WORDS       1600U
+#endif
 #define MIN_BOOT_STACK_MARGIN_WORDS  128U
 #define BOOT_TASK_PRIORITY     (configMAX_PRIORITIES - 1)
 

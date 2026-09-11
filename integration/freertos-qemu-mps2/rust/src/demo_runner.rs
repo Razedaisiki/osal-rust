@@ -8,6 +8,7 @@ use core::ffi::c_char;
 use core::fmt::{self, Write};
 
 use osal_demo::DemoResult;
+use osal_demo::pipeline_demo::{PipelineEvent, PipelineReporter};
 
 unsafe extern "C" {
     fn console_write_byte(value: c_char);
@@ -28,6 +29,19 @@ impl fmt::Write for Console {
     }
 }
 
+/// Renders the shared pipeline trace to the MPS2 UART.
+///
+/// The event text comes from `PipelineEvent`'s `Display` in the shared
+/// crate, so the body matches the POSIX runner byte for byte.
+struct FreertosReporter;
+
+impl PipelineReporter for FreertosReporter {
+    fn report(&self, event: PipelineEvent) {
+        let mut out = Console;
+        let _ = writeln!(out, "{event}");
+    }
+}
+
 /// Demo selector resolved by `build.rs` from `OSAL_FREERTOS_DEMO`.
 const DEMO: &str = env!("OSAL_FREERTOS_DEMO");
 
@@ -45,7 +59,9 @@ pub fn run() -> i32 {
         "system" => run_demo(&mut out, "system", osal_demo::system::run),
         "task" => run_demo(&mut out, "task", osal_demo::task::run),
         "timer" => run_demo(&mut out, "timer", osal_demo::timer::run),
-        "pipeline_demo" => run_demo(&mut out, "pipeline_demo", osal_demo::pipeline_demo::run),
+        "pipeline_demo" => run_demo(&mut out, "pipeline_demo", || {
+            osal_demo::pipeline_demo::run_with_reporter(&FreertosReporter)
+        }),
         _ => {
             // build.rs rejects unknown selectors at compile time; this is
             // unreachable defence only.

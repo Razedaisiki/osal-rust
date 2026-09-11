@@ -31,6 +31,30 @@
   reference to non-existent `crates/osal-backend-*/examples/` directories
   was dropped.
 
+### Portable Demo Live Trace
+
+- `pipeline_demo` regained its live trace without reintroducing any
+  platform-dependent printing into the shared crate.
+- Added `PipelineEvent` (init, worker started, started, monitor, stopping,
+  finished) plus a `PipelineReporter` trait to `examples/osal-demo`. The
+  event `Display` lives in the shared crate, so POSIX (stdout) and FreeRTOS
+  (UART) render the same body; only the line ending differs.
+- `pipeline_demo::run()` stays silent and is now
+  `run_with_reporter(&NullReporter)`; `run_with_reporter(&R)` is the
+  trace-enabled entry point.
+- The reporter is borrowed (`&R`) because events are emitted from the
+  supervisor's own task — `TaskBuilder::spawn` requires a `'static` closure,
+  so a reporter captured by a worker task could not be a plain reference.
+  Emitting from one task also prevents interleaved console writes.
+- Monitor events are paced by the heartbeat timer (1 s, then 500 ms), not by
+  packet flow, so the trace cannot saturate a UART.
+- Final invariants are still asserted on the report, not on trace events, so
+  the trace cannot weaken the demo's pass/fail criteria.
+- Demo-mode FreeRTOS boot task stack raised 1600 → 2048 words: the trace's
+  formatting machinery costs more stack than the validation path, and the
+  existing 128-word margin gate caught it (HWM fell to 100 words). The
+  validation stack size is untouched so its HWM evidence stays comparable.
+
 This is a portability demonstration layer, not a conformance milestone:
 no OSAL semantics, backend ownership rules, or behavior-contract
 requirements changed.
