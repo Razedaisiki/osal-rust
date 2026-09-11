@@ -12,6 +12,7 @@ members = [
     "crates/osal-bsp-linux",
     "crates/osal-testkit",
     "crates/osal",
+    "examples/osal-demo",
 ]
 
 [workspace.package]

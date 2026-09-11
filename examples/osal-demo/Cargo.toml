@@ -1,0 +1,32 @@
+[package]
+name = "osal-demo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Portable OSAL demos shared by POSIX and FreeRTOS"
+
+[lib]
+crate-type = ["rlib"]
+
+# `pipeline` is a capability gate, not a backend fork: the pipeline demo
+# spawns OSAL tasks sharing state through `Arc`, which requires `Send`
+# task/queue/semaphore objects. The Mock backend is `Rc`-based (single
+# execution context, no deterministic scheduler) and therefore cannot
+# compile it. POSIX and FreeRTOS both support it.
+[features]
+default = ["backend-posix"]
+backend-posix = ["osal/backend-posix", "pipeline"]
+backend-mock = ["osal/backend-mock"]
+backend-freertos = ["osal/backend-freertos", "pipeline"]
+pipeline = []
+
+[[bin]]
+name = "pipeline_demo"
+path = "src/bin/pipeline_demo.rs"
+required-features = ["pipeline"]
+
+[dependencies]
+osal = { path = "../../crates/osal", default-features = false }

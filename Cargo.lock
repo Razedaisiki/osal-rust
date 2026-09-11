@@ -101,6 +101,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "osal-demo"
+version = "0.1.0"
+dependencies = [
+ "osal",
+]
+
+[[package]]
 name = "osal-portable"
 version = "0.1.0"
 dependencies = [
