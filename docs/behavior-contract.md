@@ -857,7 +857,7 @@ Rules:
 |-----------|--------------------------------|---------------|
 | Mock      | Atomic nesting counter         | `usize::MAX`  |
 | POSIX     | Process-local recursive `pthread_mutex_t` | `usize::MAX` |
-| FreeRTOS  | Deferred                       | Backend-defined |
+| FreeRTOS  | `taskENTER_CRITICAL()` / `taskEXIT_CRITICAL()` (nesting supported, `!Send + !Sync` guard) | `xPortGetFreeHeapSize()` |
 
 ### Non-requirements
 
@@ -1142,55 +1142,76 @@ Backends must pass all non-skipped tests.
 | Cancel / kill | Forced task termination | S | S |
 | Deterministic mock scheduling | Cooperative yield, virtual-time scheduling | S | S |
 
-### Mutex tests
+### Mutex tests — Core (Mock + POSIX + FreeRTOS)
 
-| Test | Requirement | POSIX | Mock |
-|------|-------------|-------|------|
-| Create and store value | `Mutex::new(v)` works | R | R |
-| Lock and unlock | Guard provides &mut T, drop releases | R | R |
-| Non-recursive: second lock fails | Re-lock while held → LockFailed | R | R |
-| Cross-task mutual exclusion | Other task blocks while locked | R | R |
-| Non-blocking try-lock | `Timeout::NoWait` returns `LockFailed` if held | R | R |
-| Timeout expires | `Timeout::After(d)` returns `Timeout` | R | R |
-| Forever blocks until release | `Timeout::Forever` succeeds after release | R | R |
-| Guard is `!Send` | Compile-time check | R | R |
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| Create and store value | `Mutex::new(v)` works | R | R | R |
+| Lock and unlock | Guard provides &mut T, drop releases | R | R | R |
+| Non-recursive: second lock fails | Re-lock while held → LockFailed | R | R | R |
+| Non-blocking try-lock | `Timeout::NoWait` returns `LockFailed` if held | R | R | R |
+| Timeout expires | `Timeout::After(d)` returns `Timeout` | R | R | R |
+| Guard is `!Send` | Compile-time check | R | R | R |
 
-### Semaphore tests
+### Mutex tests — Blocking/Concurrency (POSIX + FreeRTOS)
 
-| Test | Requirement | POSIX | Mock |
-|------|-------------|-------|------|
-| Create with valid counts | `new(max, initial)` works | R | R |
-| Reject initial > max | `Error::InvalidParameter` | R | R |
-| Reject max == 0 | `Error::InvalidParameter` | R | R |
-| acquire decrements count | count goes from N to N-1 | R | R |
-| release increments count | count goes from N to N+1 | R | R |
-| acquire blocks on empty | Task waits until release | R | S |
-| Timeout on empty | `Timeout::After(d)` returns `Timeout` | R | R |
-| release at max fails | `Error::Overflow` | R | R |
-| release wakes exactly one | N releases wake N waiters, not more | R | S |
-| BinarySemaphore basics | `new()`, `acquire()`, `release()`, `is_signaled()` | R | R |
-| Clone shares state | Clone sees same count | R | R |
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| Cross-task mutual exclusion | Other task blocks while locked | R | S | R |
+| Forever blocks until release | `Timeout::Forever` succeeds after release | R | S | R |
 
-### Queue tests
+### Semaphore tests — Core (Mock + POSIX + FreeRTOS)
 
-| Test | Requirement | POSIX | Mock |
-|------|-------------|-------|------|
-| Create with valid params | `Queue::new(cap, size)` works | R | R |
-| Reject zero capacity | `Error::InvalidParameter` | R | R |
-| Reject zero msg_size | `Error::InvalidParameter` | R | R |
-| Send and recv single message | Round-trip preserves bytes | R | R |
-| FIFO ordering | Messages received in send order | R | R |
-| Send blocks on full | Sender waits until recv | R | R |
-| Recv blocks on empty | Receiver waits until send | R | R |
-| Non-blocking send on full | `Error::QueueFull` | R | R |
-| Non-blocking recv on empty | `Error::QueueEmpty` | R | R |
-| Message size mismatch | `Error::InvalidMessageSize` on send/recv | R | R |
-| Close wakes blocked senders | Pending sends return `QueueClosed` | R | R |
-| Close wakes receivers only if empty | Blocked receivers on empty queue return `QueueClosed` | R | R |
-| Close is idempotent | Calling close twice is safe | R | R |
-| Send fails after close | `send` returns `QueueClosed` | R | R |
-| Recv drains remaining after close | `recv` succeeds while messages remain | R | R |
-| Recv fails after close and empty | `recv` returns `QueueClosed` | R | R |
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| Create with valid counts | `new(max, initial)` works | R | R | R |
+| Reject initial > max | `Error::InvalidParameter` | R | R | R |
+| Reject max == 0 | `Error::InvalidParameter` | R | R | R |
+| acquire decrements count | count goes from N to N-1 | R | R | R |
+| release increments count | count goes from N to N+1 | R | R | R |
+| Timeout on empty | `Timeout::After(d)` returns `Timeout` | R | R | R |
+| release at max fails | `Error::Overflow` | R | R | R |
+| BinarySemaphore basics | `new()`, `acquire()`, `release()`, `is_signaled()` | R | R | R |
+| Clone shares state | Clone sees same count | R | R | R |
+
+### Semaphore tests — Blocking/Concurrency (POSIX + FreeRTOS)
+
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| acquire blocks on empty | Task waits until release | R | S | R |
+| release wakes exactly one | N releases wake N waiters, not more | R | S | R |
+
+### Queue tests — Core (Mock + POSIX + FreeRTOS)
+
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| Create with valid params | `Queue::new(cap, size)` works | R | R | R |
+| Reject zero capacity | `Error::InvalidParameter` | R | R | R |
+| Reject zero msg_size | `Error::InvalidParameter` | R | R | R |
+| Send and recv single message | Round-trip preserves bytes | R | R | R |
+| FIFO ordering | Messages received in send order | R | R | R |
+| Non-blocking send on full | `Error::QueueFull` | R | R | R |
+| Non-blocking recv on empty | `Error::QueueEmpty` | R | R | R |
+| Message size mismatch | `Error::InvalidMessageSize` on send/recv | R | R | R |
+| Close is idempotent | Calling close twice is safe | R | R | R |
+| Send fails after close | `send` returns `QueueClosed` | R | R | R |
+| Recv drains remaining after close | `recv` succeeds while messages remain | R | R | R |
+| Recv fails after close and empty | `recv` returns `QueueClosed` | R | R | R |
+
+### Queue tests — Blocking/Concurrency (POSIX + FreeRTOS)
+
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| Send blocks on full | Sender waits until recv | R | S | R |
+| Recv blocks on empty | Receiver waits until send | R | S | R |
+| Close wakes blocked senders | Pending sends return `QueueClosed` | R | S | R |
+| Close wakes receivers only if empty | Blocked receivers on empty queue return `QueueClosed` | R | S | R |
+| Timeout/wake boundary-race (`queue_recv_timeout_wake_race` / `queue_send_timeout_wake_race`) | Injected wake at timeout boundary is not lost | S¹ | S | R |
+| Close vs timeout priority (`queue_recv_close_timeout_priority` / `queue_send_close_timeout_priority`) | Injected close at timeout boundary → `QueueClosed`, not `Timeout` | S¹ | S | R |
+
+¹ POSIX queue blocking path already reconciles timeout races; the
+deterministic boundary-hook tests are QEMU integration contracts for the
+FreeRTOS implementation. Marked `S` for POSIX/Mock test-applicability.
 
 ### Timer tests
 
@@ -1207,17 +1228,32 @@ Backends must pass all non-skipped tests.
 | Callback outside lock | Nested timer operations in callback OK | R | R | R |
 | Missed periods coalesced | N missed → 1 callback | R | R | R |
 
-### Clock and System tests
+### Clock tests — Basic (Mock + POSIX + FreeRTOS)
 
-| Test | Requirement | POSIX | Mock |
-|------|-------------|-------|------|
-| now() is monotonic | `now()` never decreases | R | R |
-| elapsed() is correct | `elapsed(s) + s ≈ now()` | R | R |
-| delay() blocks at least d | Tick count increased after delay | R | R |
-| delay(0) returns immediately | Zero delay is near-instant | R | R |
-| heap_free() returns value | Non-zero on POSIX, usize::MAX OK | R | R |
-| task_count() returns tasks | Matches spawned count | R | R |
-| Critical section mutual exclusion | Nested enter/exit are safe | R | R |
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| now() is monotonic | `now()` never decreases | R | R | R |
+| elapsed() is correct | `elapsed(s) + s ≈ now()` | R | R | R |
+| delay(0) returns immediately | Zero delay is near-instant | R | R | R |
+
+### Clock tests — Realtime (POSIX + FreeRTOS)
+
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| delay() blocks at least d | Tick count / wall-clock increased after delay | R | S | R |
+
+### Clock tests — Controlled (Mock)
+
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| Controlled advance increases now/elapsed | `advance_clock(d)` is observable | S | R | S |
+
+### System tests
+
+| Test | Requirement | POSIX | Mock | FreeRTOS |
+|------|-------------|-------|------|----------|
+| heap_free() returns value | Non-zero on POSIX, `usize::MAX` OK; FreeRTOS returns `xPortGetFreeHeapSize()` | R | R | R |
+| Critical section mutual exclusion | Nested enter/exit are safe | R | R | R |
 
 ---
 

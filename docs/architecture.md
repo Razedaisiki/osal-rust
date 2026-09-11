@@ -70,19 +70,19 @@ board-support functionality.
 
 ### 3.3 Crate maturity
 
-| Crate                       | Status               |
-| --------------------------- | -------------------- |
-| `osal-api`                  | Active               |
-| `osal-shared`               | Active / stabilizing |
-| `osal-portable`             | Active               |
-| `osal-backend-posix`        | Active               |
-| `osal-backend-mock`         | Active               |
-| `osal-backend-freertos`     | Active               |
-| `osal-backend-freertos-sys` | Active               |
-| `osal-testkit`              | Active               |
-| `osal` (facade)             | Active               |
-| `osal-bsp`                  | Skeleton / deferred  |
-| `osal-bsp-linux`            | Skeleton / deferred  |
+| Crate                       | Status       |
+| --------------------------- | ------------ |
+| `osal-api`                  | Active       |
+| `osal-shared`               | Stabilizing  |
+| `osal-portable`             | Active       |
+| `osal-backend-posix`        | Stabilizing  |
+| `osal-backend-mock`         | Active       |
+| `osal-backend-freertos`     | Stabilizing  |
+| `osal-backend-freertos-sys` | Active       |
+| `osal-testkit`              | Active       |
+| `osal` (facade)             | Active       |
+| `osal-bsp`                  | Skeleton     |
+| `osal-bsp-linux`            | Skeleton     |
 
 ## 4. Crate Descriptions
 
@@ -197,6 +197,12 @@ Backends depend on `osal-api`, `osal-shared`, and optionally
 `osal-portable`. They must not depend on each other. Each backend
 owns its own `RuntimeLifecycle` instance (ADR 0019).
 
+Real-kernel managed-object validation lives under
+`integration/freertos-qemu-mps2/` (profiles: aggregate, queue-blocking,
+task, timer, mixed). See `integration/freertos-qemu-mps2/README.md`
+and `integration/freertos-qemu-mps2/scripts/verify-boot.py` as the
+source of truth for profile case counts.
+
 ### 4.5 `osal-bsp` + `osal-bsp-*` — Board Support (deferred)
 
 Separates platform hardware configuration from OS backend logic.
@@ -281,7 +287,7 @@ Rules:
 - `backend-posix` is the default for development convenience
 - `backend-mock` is used for testing
 - `backend-freertos` builds the native FreeRTOS path (requires
-  `ROUSSATL_FREERTOS_{KERNEL,CONFIG,PORT}_INCLUDE` env vars)
+  `OSAL_FREERTOS_{KERNEL,CONFIG,PORT}_INCLUDE` env vars)
 - `freertos-test-fixture` builds the host-compilable fixture path
   (no real FreeRTOS kernel; for CI and contract testing)
 
