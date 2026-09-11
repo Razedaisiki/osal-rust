@@ -13,6 +13,17 @@
 //! The supervisor runs on the caller's context (host `main` thread or the
 //! FreeRTOS boot task); workers are spawned through the OSAL `Task` API,
 //! so the same code becomes pthreads or FreeRTOS tasks.
+//!
+//! # Optional trace
+//!
+//! `run` is silent. `run_with_reporter` additionally emits `PipelineEvent`s
+//! to a caller-supplied `PipelineReporter`, letting a platform render a live
+//! trace (stdout, UART, …) while this crate stays `no_std` and knows nothing
+//! about output.
+//!
+//! The reporter is platform code, but the *text* of each event comes from
+//! `PipelineEvent`'s `Display` here, so every platform's trace is identical
+//! by construction.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -49,6 +60,13 @@ const MONITOR_WAIT_MS: u64 = 2000;
 const TIMER_PERIOD_MS: u64 = 1000;
 const HEARTBEAT_FAST_MS: u64 = 500;
 
+/// Granularity at which the supervisor surfaces monitor samples.
+///
+/// This only bounds how quickly a sample becomes visible; the sample rate
+/// itself is the heartbeat timer's period (1 s, then 500 ms), so the trace
+/// cannot become a per-packet firehose that saturates a UART.
+const REPORT_POLL_MS: u64 = 20;
+
 /// Worker join budget during shutdown.
 const JOIN_TIMEOUT_SECS: u64 = 2;
 
@@ -56,6 +74,123 @@ const JOIN_TIMEOUT_SECS: u64 = 2;
 const START_BIT: u8 = 1 << 0;
 const STOP_BIT: u8 = 1 << 1;
 const CONSUMER_GO_BIT: u8 = 1 << 2;
+
+// ---------------------------------------------------------------------------
+// Trace events
+// ---------------------------------------------------------------------------
+
+/// A milestone in the pipeline demo's timeline.
+///
+/// Emitted only when a `PipelineReporter` is supplied. The `Display`
+/// implementation below is the canonical rendering, so every platform
+/// produces the same trace text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineEvent {
+    /// Resources were created; the demo is about to spawn workers.
+    Init {
+        /// Capacity of the shared queue, in messages.
+        queue_capacity: usize,
+        /// Size of each message, in bytes.
+        packet_size: usize,
+    },
+
+    /// A worker task was spawned.
+    WorkerStarted {
+        /// Static task name (`producer-0`, `consumer-1`, `monitor`, …).
+        name: &'static str,
+    },
+
+    /// Every worker signalled ready and the supervisor released the start gate.
+    Started,
+
+    /// The monitor task completed one observation of the shared stats.
+    Monitor {
+        /// Milliseconds since the demo started.
+        elapsed_ms: u64,
+        /// Packets accepted by the queue so far.
+        produced: u32,
+        /// Packets received by consumers so far.
+        consumed: u32,
+        /// Sends that timed out on a saturated queue.
+        dropped: u32,
+        /// Receives that timed out on an empty queue.
+        timeout: u32,
+        /// Corrupt packets observed by consumers.
+        checksum_error: u32,
+    },
+
+    /// The supervisor stopped the demo and is reaping workers.
+    Stopping,
+
+    /// All workers have been joined.
+    Finished {
+        /// Final packet count accepted by the queue.
+        produced: u32,
+        /// Final packet count received by consumers.
+        consumed: u32,
+        /// Final timed-out send count.
+        dropped: u32,
+    },
+}
+
+impl fmt::Display for PipelineEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PipelineEvent::Init {
+                queue_capacity,
+                packet_size,
+            } => write!(
+                f,
+                "[pipeline] init queue={queue_capacity} packet={packet_size}"
+            ),
+            PipelineEvent::WorkerStarted { name } => {
+                write!(f, "[pipeline] worker {name} started")
+            }
+            PipelineEvent::Started => write!(f, "[pipeline] started"),
+            PipelineEvent::Monitor {
+                elapsed_ms,
+                produced,
+                consumed,
+                dropped,
+                timeout,
+                checksum_error,
+            } => write!(
+                f,
+                "[monitor] tick={elapsed_ms} produced={produced} consumed={consumed} \
+                 dropped={dropped} timeout={timeout} checksum_error={checksum_error}"
+            ),
+            PipelineEvent::Stopping => write!(f, "[pipeline] stopping"),
+            PipelineEvent::Finished {
+                produced,
+                consumed,
+                dropped,
+            } => write!(
+                f,
+                "[summary] produced={produced} consumed={consumed} dropped={dropped}"
+            ),
+        }
+    }
+}
+
+/// Receives the demo's trace events.
+///
+/// Implemented by platform runners (stdout on POSIX, UART on FreeRTOS).
+/// Deliberately free of any output assumption so this crate stays `no_std`
+/// and platform-agnostic.
+///
+/// Implementations must not block: events are emitted from the supervisor's
+/// task, which is also driving the demo's phase timing.
+pub trait PipelineReporter {
+    /// Handle one event.
+    fn report(&self, event: PipelineEvent);
+}
+
+/// Reporter that discards every event — used by `run`.
+pub struct NullReporter;
+
+impl PipelineReporter for NullReporter {
+    fn report(&self, _event: PipelineEvent) {}
+}
 
 // ---------------------------------------------------------------------------
 // Worker error codes — recorded once, first failure wins
@@ -83,7 +218,7 @@ fn record_worker_error(state: &AppState, error: WorkerError) {
 /// Outcome of the pipeline demo.
 ///
 /// Counts are backend- and timing-dependent; only the invariants checked in
-/// [`run`] are portable.
+/// `run` are portable.
 pub struct PipelineReport {
     /// Packets accepted by the queue.
     pub produced: u32,
@@ -218,17 +353,17 @@ fn verify_packet(buf: &[u8; PACKET_SIZE]) -> bool {
 
 fn producer_name(id: u32) -> &'static str {
     match id {
-        0 => "prod-0",
-        1 => "prod-1",
+        0 => "producer-0",
+        1 => "producer-1",
         _ => "producer",
     }
 }
 
 fn consumer_name(id: u32) -> &'static str {
     match id {
-        0 => "cons-0",
-        1 => "cons-1",
-        2 => "cons-2",
+        0 => "consumer-0",
+        1 => "consumer-1",
+        2 => "consumer-2",
         _ => "consumer",
     }
 }
@@ -415,6 +550,13 @@ fn consumer_task(_id: u32, state: Arc<AppState>) {
 // Monitor task — reads stats whenever the timer fires
 // ---------------------------------------------------------------------------
 
+/// The monitor never renders output: it records an observation by bumping
+/// `monitor_samples`, and the supervisor turns that into a
+/// `PipelineEvent::Monitor`.
+///
+/// Keeping emission on the supervisor's single task is what lets the
+/// reporter be a plain `&R` — a reporter captured by a spawned task would
+/// have to be `'static` — and it also rules out interleaved console writes.
 fn monitor_task(state: Arc<AppState>, _start: Duration) {
     if !signal_ready(&state) {
         return;
@@ -469,7 +611,54 @@ fn monitor_task(state: Arc<AppState>, _start: Duration) {
 // Supervisor — lifecycle controller
 // ---------------------------------------------------------------------------
 
-fn supervisor_main(state: &Arc<AppState>, timer: &Timer) -> DemoResult<()> {
+/// Block for `total`, surfacing any monitor sample that appears meanwhile.
+///
+/// Phase timing is preserved: polling only subdivides the same interval, so
+/// the demo still runs for the configured duration.
+fn delay_reporting<R>(
+    state: &Arc<AppState>,
+    reporter: &R,
+    demo_start: Duration,
+    total: Duration,
+) -> DemoResult<()>
+where
+    R: PipelineReporter + ?Sized,
+{
+    let end = Clock::now() + total;
+    let mut reported = state.monitor_samples.load(Ordering::Acquire);
+
+    while Clock::now() < end {
+        Clock::delay(Duration::from_millis(REPORT_POLL_MS));
+
+        let samples = state.monitor_samples.load(Ordering::Acquire);
+        if samples == reported {
+            continue;
+        }
+        reported = samples;
+
+        let snapshot = read_stats(state)?;
+        reporter.report(PipelineEvent::Monitor {
+            elapsed_ms: Clock::now().saturating_sub(demo_start).as_millis() as u64,
+            produced: snapshot.produced,
+            consumed: snapshot.consumed,
+            dropped: snapshot.dropped,
+            timeout: snapshot.queue_timeout,
+            checksum_error: snapshot.checksum_error,
+        });
+    }
+
+    Ok(())
+}
+
+fn supervisor_main<R>(
+    state: &Arc<AppState>,
+    timer: &Timer,
+    reporter: &R,
+    demo_start: Duration,
+) -> DemoResult<()>
+where
+    R: PipelineReporter + ?Sized,
+{
     // Phase 0 — every worker signals ready.
     for _ in 0..TOTAL_READY_TASKS {
         state
@@ -480,12 +669,23 @@ fn supervisor_main(state: &Arc<AppState>, timer: &Timer) -> DemoResult<()> {
 
     state.events.fetch_or(START_BIT, Ordering::Release);
     timer.start().demo_context("pipeline.timer.start")?;
+    reporter.report(PipelineEvent::Started);
 
     // Phase 1 — producer head start.
-    Clock::delay(Duration::from_millis(PRODUCER_HEAD_START_MS));
+    delay_reporting(
+        state,
+        reporter,
+        demo_start,
+        Duration::from_millis(PRODUCER_HEAD_START_MS),
+    )?;
 
     // Phase 2 — default heartbeat period.
-    Clock::delay(Duration::from_millis(DEMO_FIRST_PHASE_MS));
+    delay_reporting(
+        state,
+        reporter,
+        demo_start,
+        Duration::from_millis(DEMO_FIRST_PHASE_MS),
+    )?;
 
     timer
         .change_period(Duration::from_millis(HEARTBEAT_FAST_MS))
@@ -493,9 +693,15 @@ fn supervisor_main(state: &Arc<AppState>, timer: &Timer) -> DemoResult<()> {
     timer.reset().demo_context("pipeline.timer.reset")?;
 
     // Phase 3 — faster heartbeat period.
-    Clock::delay(Duration::from_millis(DEMO_SECOND_PHASE_MS));
+    delay_reporting(
+        state,
+        reporter,
+        demo_start,
+        Duration::from_millis(DEMO_SECOND_PHASE_MS),
+    )?;
 
     // Phase 4 — stop.
+    reporter.report(PipelineEvent::Stopping);
     state.events.fetch_or(STOP_BIT, Ordering::Release);
     timer.stop().demo_context("pipeline.timer.stop")?;
 
@@ -506,11 +712,15 @@ fn supervisor_main(state: &Arc<AppState>, timer: &Timer) -> DemoResult<()> {
 // Worker set
 // ---------------------------------------------------------------------------
 
-fn spawn_workers(
+fn spawn_workers<R>(
     state: &Arc<AppState>,
     tasks: &mut Vec<Task>,
+    reporter: &R,
     demo_start: Duration,
-) -> DemoResult<()> {
+) -> DemoResult<()>
+where
+    R: PipelineReporter + ?Sized,
+{
     for id in 0..PRODUCER_COUNT {
         let worker_state = Arc::clone(state);
         let task = TaskBuilder::new()
@@ -519,6 +729,9 @@ fn spawn_workers(
             .spawn(move || producer_task(id, worker_state, demo_start))
             .demo_context("pipeline.producer.spawn")?;
         tasks.push(task);
+        reporter.report(PipelineEvent::WorkerStarted {
+            name: producer_name(id),
+        });
     }
 
     for id in 0..CONSUMER_COUNT {
@@ -529,6 +742,9 @@ fn spawn_workers(
             .spawn(move || consumer_task(id, worker_state))
             .demo_context("pipeline.consumer.spawn")?;
         tasks.push(task);
+        reporter.report(PipelineEvent::WorkerStarted {
+            name: consumer_name(id),
+        });
     }
 
     let worker_state = Arc::clone(state);
@@ -538,6 +754,7 @@ fn spawn_workers(
         .spawn(move || monitor_task(worker_state, demo_start))
         .demo_context("pipeline.monitor.spawn")?;
     tasks.push(task);
+    reporter.report(PipelineEvent::WorkerStarted { name: "monitor" });
 
     Ok(())
 }
@@ -587,11 +804,24 @@ fn read_stats(state: &AppState) -> DemoResult<StatsSnapshot> {
 }
 
 // ---------------------------------------------------------------------------
-// Entry point
+// Entry points
 // ---------------------------------------------------------------------------
 
-/// Run the pipeline demo against the active backend.
+/// Run the pipeline demo against the active backend, without a trace.
 pub fn run() -> DemoResult<PipelineReport> {
+    run_with_reporter(&NullReporter)
+}
+
+/// Run the pipeline demo and emit `PipelineEvent`s to `reporter`.
+///
+/// `reporter` is borrowed rather than owned because every event is emitted
+/// from the supervisor's own task: `TaskBuilder::spawn` requires a
+/// `'static` closure, so a reporter captured by a worker task could not be
+/// a plain reference.
+pub fn run_with_reporter<R>(reporter: &R) -> DemoResult<PipelineReport>
+where
+    R: PipelineReporter + ?Sized,
+{
     with_runtime(|| {
         let queue =
             Queue::new(QUEUE_CAPACITY, PACKET_SIZE).demo_context("pipeline.queue.create")?;
@@ -609,6 +839,11 @@ pub fn run() -> DemoResult<PipelineReport> {
             timer_fires: AtomicU32::new(0),
         });
 
+        reporter.report(PipelineEvent::Init {
+            queue_capacity: QUEUE_CAPACITY,
+            packet_size: PACKET_SIZE,
+        });
+
         let timer_state = Arc::clone(&state);
         let timer = Timer::new(
             "heartbeat",
@@ -623,13 +858,13 @@ pub fn run() -> DemoResult<PipelineReport> {
         let demo_start = Clock::now();
         let mut tasks: Vec<Task> = Vec::new();
 
-        if let Err(error) = spawn_workers(&state, &mut tasks, demo_start) {
+        if let Err(error) = spawn_workers(&state, &mut tasks, reporter, demo_start) {
             // Reap whatever did spawn so no lease outlives the demo.
             let _ = stop_and_join(&state, &timer, &tasks);
             return Err(error);
         }
 
-        if let Err(error) = supervisor_main(&state, &timer) {
+        if let Err(error) = supervisor_main(&state, &timer, reporter, demo_start) {
             let _ = stop_and_join(&state, &timer, &tasks);
             return Err(error);
         }
@@ -641,6 +876,12 @@ pub fn run() -> DemoResult<PipelineReport> {
         let monitor_samples = state.monitor_samples.load(Ordering::Acquire);
         let worker_error = state.worker_error.load(Ordering::Acquire);
         let final_len = state.queue.len().demo_context("pipeline.queue.len")?;
+
+        reporter.report(PipelineEvent::Finished {
+            produced: snapshot.produced,
+            consumed: snapshot.consumed,
+            dropped: snapshot.dropped,
+        });
 
         drop(tasks);
         drop(timer);

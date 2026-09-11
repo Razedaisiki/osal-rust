@@ -72,6 +72,9 @@ OSAL_DEMO_PASS name=queue
 OSAL_DEMO_END status=pass
 ```
 
+The report is the pass/fail artifact. `pipeline_demo` additionally supports
+an *optional* live trace, described below.
+
 This crate is `#![no_std]` and depends only on `osal`, `core`, and `alloc`.
 
 ## POSIX
@@ -152,6 +155,46 @@ worker_error == 0
 Worker tasks record the first failure in an atomic slot instead of panicking
 (the firmware runs `panic = "abort"`), and the supervisor joins with a finite
 timeout so a demo bug cannot hang CI or QEMU forever.
+
+### Optional live trace
+
+`pipeline_demo::run()` is silent. `pipeline_demo::run_with_reporter(&r)`
+additionally emits `PipelineEvent`s to a caller-supplied `PipelineReporter`,
+which is how both platforms show a live trace without this crate knowing
+anything about output:
+
+```
+[pipeline] init queue=128 packet=16
+[pipeline] worker producer-0 started
+...
+[pipeline] started
+[monitor] tick=1022 produced=84 consumed=3 dropped=0 timeout=0 checksum_error=0
+[monitor] tick=2005 produced=164 consumed=102 dropped=0 timeout=0 checksum_error=0
+[pipeline] stopping
+[summary] produced=484 consumed=484 dropped=0
+```
+
+The event *text* comes from `PipelineEvent`'s `Display` here, so the two
+platforms produce the same body; only the line ending differs (the UART
+shell writes CRLF). Reporters live in platform code:
+
+| Platform | Reporter | Sink |
+|----------|----------|------|
+| POSIX | `PosixPipelineReporter` in `src/bin/pipeline_demo.rs` | stdout |
+| FreeRTOS | `FreertosReporter` in `integration/.../rust/src/demo_runner.rs` | UART |
+
+Two properties are worth knowing:
+
+- **A sample, not a firehose.** Monitor events are paced by the heartbeat
+  timer (1 s, then 500 ms), not by packet flow, so the trace cannot saturate
+  a UART. The supervisor only bounds how quickly a sample becomes visible.
+- **Borrowed, not owned.** `run_with_reporter` takes `&R` because every event
+  is emitted from the supervisor's own task. `TaskBuilder::spawn` needs a
+  `'static` closure, so a reporter captured by a worker task could not be a
+  plain reference. Emitting from one task also rules out interleaved writes.
+
+Invariants are still checked on the final report, not on trace events, so a
+trace never weakens the pass/fail criteria.
 
 ## Relationship to the validation suites
 
